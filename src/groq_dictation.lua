@@ -24,7 +24,7 @@ local config = {
   startStopKeycode = 61, startStopFlag = "alt",    -- Option destro
   pauseKeycode     = 60, pauseFlag     = "shift",  -- Shift destro
   doubleTapSec = 0.50,
-  restoreClipboard = true,
+  restoreClipboard = false,   -- false = il testo trascritto RESTA in clipboard | true = ripristina la clipboard precedente
 }
 
 local N_BARS = 14
@@ -198,7 +198,8 @@ local function ensureCanvas()
     if msg ~= "mouseUp" then return end
     if id == "pause" then M.togglePause()
     elseif id == "stop" then M.stop()
-    elseif id == "mic" then openMicChooser() end
+    elseif id == "mic" then openMicChooser()
+    elseif id == "close" then hideOverlay() end
   end)
 end
 
@@ -262,7 +263,13 @@ local function setProcessingElements(text)
   els[1] = bgEl()
   els[2] = { type = "circle", action = "fill", fillColor = COL.gold, center = { x = 30, y = 33 }, radius = 6 }
   els[3] = { type = "text", text = text or "…", textSize = 17, textColor = COL.white,
-             textFont = "Menlo-Bold", textAlignment = "left", frame = { x = 48, y = 22, w = W - 64, h = 26 } }
+             textFont = "Menlo-Bold", textAlignment = "left", frame = { x = 48, y = 22, w = W - 96, h = 26 } }
+  -- bolla di chiusura in alto a destra
+  els[4] = { type = "circle", action = "strokeAndFill", fillColor = COL.clear,
+             strokeColor = COL.gold, strokeWidth = 1.2, center = { x = W - 18, y = 18 }, radius = 9,
+             trackMouseUp = true, id = "close" }
+  els[5] = { type = "text", text = "✕", textSize = 12, textColor = COL.gold,
+             textFont = "Menlo-Bold", textAlignment = "center", frame = { x = W - 27, y = 11, w = 18, h = 16 } }
   overlay:replaceElements(els)
   mode = "proc"
 end

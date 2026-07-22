@@ -15,7 +15,8 @@ microphone waveform, and pause / stop buttons.
 ## Features
 
 - **Global hotkeys** — double‑tap **Right Option** to start/stop, double‑tap **Right Shift** to pause/resume.
-- **Paste at cursor** — the transcription lands wherever you're typing; your clipboard is restored afterwards.
+- **Paste at cursor + clipboard** — the transcription lands wherever you're typing **and** stays on the clipboard, so you never lose it (toggle with `restoreClipboard`).
+- **Dismissable HUD** — the transcribing bubble has a ✕ in the top‑right to close it.
 - **Fast** — uses `whisper-large-v3-turbo`; a ~20s note transcribes in ~1–2s.
 - **Live HUD** (black / white / gold) — recording timer, a **real** microphone waveform, pause & stop buttons.
 - **Clean pause** — recording is segmented, so pausing doesn't record dead silence.
@@ -78,7 +79,7 @@ return {
   startStopKeycode = 61, startStopFlag = "alt",    -- Right Option
   pauseKeycode     = 60, pauseFlag     = "shift",  -- Right Shift
   doubleTapSec     = 0.50,                          -- double-tap window
-  restoreClipboard = true,
+  restoreClipboard = false,                         -- false = transcript stays on the clipboard | true = restore previous clipboard
 }
 ```
 

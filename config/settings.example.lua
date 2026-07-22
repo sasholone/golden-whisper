@@ -21,5 +21,5 @@ return {
   pauseFlag    = "shift",
 
   doubleTapSec = 0.50,                    -- finestra del doppio tap (secondi)
-  restoreClipboard = true,                -- ripristina la clipboard dopo aver incollato
+  restoreClipboard = false,   -- false = il testo resta in clipboard (consigliato) | true = ripristina quella precedente
 }
