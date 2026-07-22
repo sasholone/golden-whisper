@@ -212,7 +212,7 @@ end
 -- La card (pill) è inset di MT/MR dentro il canvas, così il badge ✕ può sporgere
 -- dall'angolo in alto a destra senza allargare la card.
 ------------------------------------------------------------------------
-local PILL_W, PILL_H = 322, 66   -- larghezza tagliata subito dopo lo stop (no spazio morto a destra)
+local PILL_W, PILL_H = 332, 66   -- ~22px di respiro a destra dello stop, bilanciato col lato sinistro
 local MT, MR = 11, 12
 local W, H = PILL_W + MR, PILL_H + MT
 
