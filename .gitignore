@@ -1,0 +1,6 @@
+# credenziali e config personale — NON committare
+api_key
+config/settings.lua
+
+# macOS
+.DS_Store
