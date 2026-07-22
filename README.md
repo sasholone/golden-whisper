@@ -16,7 +16,7 @@ microphone waveform, and pause / stop buttons.
 
 - **Global hotkeys** — double‑tap **Right Option** to start/stop, double‑tap **Right Shift** to pause/resume.
 - **Paste at cursor + clipboard** — the transcription lands wherever you're typing **and** stays on the clipboard, so you never lose it (toggle with `restoreClipboard`).
-- **Dismissable HUD** — the transcribing bubble has a ✕ in the top‑right to close it.
+- **Cancel anytime** — a ✕ in the top‑right of the HUD stops recording and **discards** it (no transcription).
 - **Fast** — uses `whisper-large-v3-turbo`; a ~20s note transcribes in ~1–2s.
 - **Live HUD** (black / white / gold) — recording timer, a **real** microphone waveform, pause & stop buttons.
 - **Clean pause** — recording is segmented, so pausing doesn't record dead silence.
@@ -62,7 +62,8 @@ Put your cursor where you want the text, then:
 | Start / stop recording | double‑tap **Right Option** (⌥) |
 | Pause / resume | double‑tap **Right Shift** (⇧) |
 | Switch microphone | pause, then click the 🎙️ button in the HUD |
-| Stop from the HUD | click the ■ button |
+| Stop & transcribe | click the ■ button |
+| Cancel & discard | click the ✕ bubble (top‑right) |
 
 After you stop, the HUD shows the pipeline — **Received → Sent → Transcribing → Done** — and the text is pasted.
 

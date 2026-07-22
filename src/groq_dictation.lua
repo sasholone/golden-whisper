@@ -27,7 +27,7 @@ local config = {
   restoreClipboard = false,   -- false = il testo trascritto RESTA in clipboard | true = ripristina la clipboard precedente
 }
 
-local N_BARS = 14
+local N_BARS = 12
 
 ------------------------------------------------------------------------
 -- STATO
@@ -199,6 +199,7 @@ local function ensureCanvas()
     if id == "pause" then M.togglePause()
     elseif id == "stop" then M.stop()
     elseif id == "mic" then openMicChooser()
+    elseif id == "cancel" then M.cancel()
     elseif id == "close" then hideOverlay() end
   end)
 end
@@ -240,18 +241,25 @@ local function setRecordingElements(isPaused)
   -- pausa / play
   add({ type = "rectangle", action = "fill", fillColor = COL.gold,
     roundedRectRadii = { xRadius = 9, yRadius = 9 },
-    frame = { x = 244, y = 17, w = 42, h = 32 }, trackMouseUp = true, id = "pause" })
+    frame = { x = 226, y = 17, w = 38, h = 32 }, trackMouseUp = true, id = "pause" })
   add({ type = "image", image = isPaused and IMG.play or IMG.pause, imageScaling = "scaleProportionally",
-    frame = { x = 253, y = 23, w = 24, h = 20 } })
+    frame = { x = 234, y = 23, w = 22, h = 20 } })
 
-  -- stop
+  -- stop (ferma e trascrive)
   add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear,
     strokeColor = COL.gold, strokeWidth = 1.4,
     roundedRectRadii = { xRadius = 9, yRadius = 9 },
-    frame = { x = 294, y = 17, w = 42, h = 32 }, trackMouseUp = true, id = "stop" })
+    frame = { x = 272, y = 17, w = 38, h = 32 }, trackMouseUp = true, id = "stop" })
   add({ type = "rectangle", action = "fill", fillColor = COL.gold,
     roundedRectRadii = { xRadius = 3, yRadius = 3 },
-    frame = { x = 308, y = 26, w = 15, h = 15 } })
+    frame = { x = 284, y = 26, w = 14, h = 14 } })
+
+  -- ✕ annulla (butta l'audio, niente trascrizione) — bolla in alto a destra
+  idx.cancel = add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg,
+    strokeColor = COL.gold, strokeWidth = 1.2, center = { x = W - 16, y = 15 }, radius = 10,
+    trackMouseUp = true, id = "cancel" })
+  add({ type = "text", text = "✕", textSize = 13, textColor = COL.gold,
+    textFont = "Menlo-Bold", textAlignment = "center", frame = { x = W - 25, y = 8, w = 18, h = 16 } })
 
   overlay:replaceElements(els)
   RECIDX = idx
@@ -413,7 +421,8 @@ end
 local function onSegmentFinished()
   recTask = nil
   if intent == "pause" then intent = nil
-  elseif intent == "stop" then intent = nil; finalizeAndTranscribe() end
+  elseif intent == "stop" then intent = nil; finalizeAndTranscribe()
+  elseif intent == "cancel" then intent = nil; cleanupSegments() end
 end
 
 local function startSegment()
@@ -456,6 +465,20 @@ function M.stop()
   else
     elapsed = elapsed + (now() - (segStart or now()))
     stopCurrentSegment("stop")
+  end
+end
+
+function M.cancel()
+  -- Ferma la registrazione e BUTTA l'audio: niente trascrizione, chiude l'HUD.
+  if not recording then hideOverlay(); cleanupSegments(); return end
+  recording = false
+  paused = false
+  busy = false
+  hideOverlay()
+  if recTask then
+    stopCurrentSegment("cancel")   -- ffmpeg killato; onSegmentFinished ripulisce i segmenti
+  else
+    cleanupSegments()
   end
 end
 
