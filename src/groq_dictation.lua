@@ -16,6 +16,7 @@ local config = {
   keyPath      = os.getenv("HOME") .. "/.config/groq-dictation/api_key",
   settingsPath = os.getenv("HOME") .. "/.config/groq-dictation/settings.lua",
   recDir       = os.getenv("HOME") .. "/.config/groq-dictation/recordings",
+  workDir      = os.getenv("HOME") .. "/.config/groq-dictation/segments",  -- persistente (NON /tmp): sopravvive a reload/crash
   audioDevice  = ":0",
   language     = "it",
   model        = "whisper-large-v3-turbo",
@@ -115,7 +116,7 @@ local function fileSize(path)
   local sz = f:seek("end"); f:close(); return sz or 0
 end
 
-local function segPath(i) return string.format("/tmp/groq_seg_%d.wav", i) end
+local function segPath(i) return string.format("%s/groq_seg_%d.wav", config.workDir, i) end
 local function now() return hs.timer.secondsSinceEpoch() end
 
 local function fmtTime(t)
@@ -139,6 +140,29 @@ end
 local function resetLevels()
   levels = {}
   for _ = 1, N_BARS do levels[#levels + 1] = 0 end
+end
+
+-- Recupero anti-perdita: se in workDir ci sono segmenti di una sessione interrotta
+-- (reload/crash), li salva (con header riparato) in recordings/ e avvisa. Mai persi in silenzio.
+local function recoverOrphans()
+  local out = hs.execute("ls -1 '" .. config.workDir .. "'/groq_seg_*.wav 2>/dev/null")
+  local files = {}
+  for l in (out or ""):gmatch("[^\n]+") do files[#files + 1] = l end
+  if #files == 0 then return end
+  hs.execute("mkdir -p '" .. config.recDir .. "'")
+  local stamp = os.date("%Y%m%d-%H%M%S")
+  local n = 0
+  for i, p in ipairs(files) do
+    if fileSize(p) > 1000 then
+      n = n + 1
+      local dest = string.format("%s/recovered-%s-%d.wav", config.recDir, stamp, i)
+      -- remux per riparare l'header di un wav non finalizzato; se fallisce, copia grezza
+      hs.execute(string.format("'%s' -y -i '%s' -c copy '%s' 2>/dev/null || cp '%s' '%s'",
+        config.ffmpeg, p, dest, p, dest))
+    end
+    os.remove(p)
+  end
+  if n > 0 then hs.alert.show("💾 Recuperato audio da una sessione interrotta:\n" .. config.recDir, 8) end
 end
 
 ------------------------------------------------------------------------
@@ -486,6 +510,7 @@ rotate = function()
 end
 
 local function start()
+  recoverOrphans()   -- salva eventuali segmenti di una sessione interrotta prima di ripulire
   cleanupSegments()
   elapsed = 0; segStart = nil; paused = false; segIndex = 0
   resetLevels()
@@ -563,6 +588,8 @@ end
 
 function M.init()
   loadSettings()
+  hs.execute("mkdir -p '" .. config.workDir .. "' '" .. config.recDir .. "'")
+  recoverOrphans()   -- recupera audio di un'eventuale sessione interrotta (reload/crash)
   initHotkeys()
   return M
 end
