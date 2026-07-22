@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# whisperflow-groq — installer per macOS
+# Golden Whisper — installer per macOS
 # Copia il modulo in Hammerspoon, installa le dipendenze, configura la chiave Groq.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HS_DIR="$HOME/.hammerspoon"
 CFG_DIR="$HOME/.config/groq-dictation"
-MARKER="whisperflow-groq"
+MARKER="golden-whisper"
 
 say() { printf "\033[1;33m▶\033[0m %s\n" "$1"; }
 ok()  { printf "\033[1;32m✓\033[0m %s\n" "$1"; }
@@ -40,16 +40,20 @@ touch "$INIT"
 if ! grep -q "$MARKER" "$INIT"; then
   cat >> "$INIT" <<'LUA'
 
--- >>> whisperflow-groq >>>
+-- >>> golden-whisper >>>
 require("hs.ipc")
 require("groq_dictation").init()
-hs.alert.show("🎙️ Groq Dictation attivo — doppio Option destro", 2)
--- <<< whisperflow-groq <<<
+hs.alert.show("🎙️ Golden Whisper attivo — doppio Option destro", 2)
+-- <<< golden-whisper <<<
 LUA
   ok "Aggiunto il caricamento a init.lua"
 else
   ok "init.lua già configurato"
 fi
+
+# 4b. Registra il path del clone per l'auto-update
+printf '%s' "$SCRIPT_DIR" > "$CFG_DIR/repo_path"
+ok "Path repo registrato per l'auto-update"
 
 # 5. settings.lua (non sovrascrive se esiste)
 if [ ! -f "$CFG_DIR/settings.lua" ]; then
@@ -91,4 +95,7 @@ echo
 say "USO:"
 echo "   • doppio tap Option destro  → start / stop"
 echo "   • doppio tap Shift destro   → pausa / riprendi (in pausa scegli il mic dall'HUD)"
+echo "   • ✕ in alto a destra        → annulla e scarta la registrazione"
 echo "   Metti il cursore dove vuoi il testo, detta, e viene incollato lì."
+echo
+say "Golden Whisper si auto-aggiorna da GitHub (update manuale: bash $SCRIPT_DIR/update.sh)"

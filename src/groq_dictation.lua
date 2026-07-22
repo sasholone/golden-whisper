@@ -28,6 +28,10 @@ local config = {
   doubleTapSec = 0.50,
   maxSegmentSec = 480,        -- auto-taglio ogni 8 min (sotto il limite ~13min/25MB di Groq)
   restoreClipboard = false,   -- false = il testo resta in clipboard | true = ripristina quella precedente
+  autoUpdate   = true,        -- controlla GitHub e si aggiorna da solo (mai durante una registrazione)
+  updateCheckHours = 24,      -- ogni quante ore controllare gli update
+  git          = "/usr/bin/git",
+  repoDir      = os.getenv("HOME") .. "/golden-whisper",   -- clone locale (install.sh scrive il path reale in repo_path)
 }
 
 local N_BARS = 12
@@ -87,6 +91,11 @@ local function loadSettings()
   if s.doubleTapSec     then config.doubleTapSec = s.doubleTapSec end
   if s.maxSegmentSec    then config.maxSegmentSec = s.maxSegmentSec end
   if s.restoreClipboard ~= nil then config.restoreClipboard = s.restoreClipboard end
+  if s.autoUpdate ~= nil then config.autoUpdate = s.autoUpdate end
+  if s.repoDir then config.repoDir = s.repoDir end
+  -- path del clone scritto da install.sh (ha priorità)
+  local rf = io.open(os.getenv("HOME") .. "/.config/groq-dictation/repo_path", "r")
+  if rf then local p = rf:read("*a"); rf:close(); p = (p or ""):gsub("%s+$", ""); if p ~= "" then config.repoDir = p end end
 end
 
 local function persistSetting(key, value)
@@ -586,11 +595,55 @@ local function initHotkeys()
   watcher:start()
 end
 
+------------------------------------------------------------------------
+-- AUTO-UPDATE (controlla GitHub, si aggiorna da solo; mai durante una registrazione)
+------------------------------------------------------------------------
+local deferReload
+deferReload = function()
+  if recording or busy then hs.timer.doAfter(30, deferReload); return end
+  hs.reload()
+end
+
+local function applyUpdate(dir)
+  local t = hs.task.new(config.git, function(code)
+    if code ~= 0 then hs.alert.show("Golden Whisper: update fallito (git pull)") return end
+    hs.execute(string.format("cp '%s/src/groq_dictation.lua' '%s/.hammerspoon/groq_dictation.lua'",
+      dir, os.getenv("HOME")))
+    hs.alert.show("⬆️ Golden Whisper aggiornato — riavvio appena sei fermo", 4)
+    deferReload()
+  end, { "-C", dir, "pull", "--ff-only", "--quiet" })
+  t:start()
+end
+
+local function checkUpdate(silent)
+  local dir = config.repoDir
+  if not dir or fileSize(dir .. "/.git/HEAD") == 0 then
+    if not silent then hs.alert.show("Update: " .. tostring(dir) .. " non è un clone git") end
+    return
+  end
+  local t = hs.task.new(config.git, function(code)
+    if code ~= 0 then if not silent then hs.alert.show("Update: fetch fallito") end return end
+    local loc = trim(hs.execute(config.git .. " -C '" .. dir .. "' rev-parse HEAD 2>/dev/null"))
+    local rem = trim(hs.execute(config.git .. " -C '" .. dir .. "' rev-parse '@{u}' 2>/dev/null"))
+    if loc ~= "" and rem ~= "" and loc ~= rem then
+      if config.autoUpdate then applyUpdate(dir)
+      else hs.alert.show("⬆️ Golden Whisper: update disponibile — lancia update.sh", 5) end
+    elseif not silent then hs.alert.show("Golden Whisper è aggiornato ✓", 2) end
+  end, { "-C", dir, "fetch", "--quiet" })
+  t:start()
+end
+
+function M.update() checkUpdate(false) end   -- update manuale:  hs -c "require('groq_dictation').update()"
+
 function M.init()
   loadSettings()
   hs.execute("mkdir -p '" .. config.workDir .. "' '" .. config.recDir .. "'")
   recoverOrphans()   -- recupera audio di un'eventuale sessione interrotta (reload/crash)
   initHotkeys()
+  if config.autoUpdate ~= false then
+    hs.timer.doAfter(45, function() checkUpdate(true) end)
+    hs.timer.doEvery(config.updateCheckHours * 3600, function() checkUpdate(true) end)
+  end
   return M
 end
 

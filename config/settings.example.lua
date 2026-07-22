@@ -1,4 +1,4 @@
--- Impostazioni Groq Dictation
+-- Golden Whisper — impostazioni
 -- Dopo aver modificato, ricarica:  hs -c "hs.reload()"
 --
 -- Il microfono si può scegliere anche dall'HUD: metti in pausa (doppio Shift destro) e
@@ -22,5 +22,6 @@ return {
 
   doubleTapSec  = 0.50,                   -- finestra del doppio tap (secondi)
   maxSegmentSec = 480,                    -- auto-taglia l'audio ogni N sec (sotto il limite ~13min/25MB di Groq)
-  restoreClipboard = false,   -- false = il testo resta in clipboard (consigliato) | true = ripristina quella precedente
+  restoreClipboard = false,               -- false = il testo resta in clipboard (consigliato) | true = ripristina quella precedente
+  autoUpdate = true,                      -- controlla GitHub ogni giorno e si aggiorna da solo (mai durante una registrazione)
 }

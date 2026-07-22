@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# whisperflow-groq — disinstalla (lascia intatta la tua init.lua a parte il nostro blocco)
+# golden-whisper — disinstalla (lascia intatta la tua init.lua a parte il nostro blocco)
 set -euo pipefail
 
 HS_DIR="$HOME/.hammerspoon"
@@ -10,7 +10,7 @@ rm -f "$HS_DIR/groq_dictation.lua"
 
 # rimuove solo il blocco marcato da init.lua
 if [ -f "$INIT" ]; then
-  /usr/bin/sed -i '' '/-- >>> whisperflow-groq >>>/,/-- <<< whisperflow-groq <<</d' "$INIT"
+  /usr/bin/sed -i '' '/-- >>> golden-whisper >>>/,/-- <<< golden-whisper <<</d' "$INIT"
 fi
 
 echo "Rimosso il modulo e il blocco da init.lua."
