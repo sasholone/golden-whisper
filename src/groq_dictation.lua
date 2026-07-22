@@ -1,10 +1,10 @@
 -- groq_dictation.lua
 -- Dettatura vocale stile Whisper Flow per macOS.
 -- Trigger: doppio tap Option destro = start/stop | doppio tap Shift destro = pausa/riprendi.
--- Registra (ffmpeg) -> Groq Whisper -> incolla al cursore.
--- HUD in basso (black/white/gold): timer, waveform REALE del microfono (RMS via stderr),
--- pulsanti Pausa/Stop con icone di sistema, feedback a step (Ricevuto->Inviato->Trascrivo->Fatto).
--- In pausa: pulsante microfono a sinistra -> sceglie l'input tra quelli del Mac (salvato in settings).
+-- Registra (ffmpeg) -> Groq Whisper -> incolla al cursore (+ resta in clipboard).
+-- HUD in basso (black/white/gold): timer, waveform reale del microfono, pausa/stop, badge ✕ (annulla).
+-- Robustezza: auto-spezza l'audio ogni maxSegmentSec (limite Groq ~25MB), trascrive ogni pezzo e
+-- unisce il testo; se una trascrizione fallisce, salva l'audio in ~/.config/groq-dictation/recordings/.
 -- Impostazioni utente in ~/.config/groq-dictation/settings.lua.
 
 local M = {}
@@ -15,6 +15,7 @@ local M = {}
 local config = {
   keyPath      = os.getenv("HOME") .. "/.config/groq-dictation/api_key",
   settingsPath = os.getenv("HOME") .. "/.config/groq-dictation/settings.lua",
+  recDir       = os.getenv("HOME") .. "/.config/groq-dictation/recordings",
   audioDevice  = ":0",
   language     = "it",
   model        = "whisper-large-v3-turbo",
@@ -24,7 +25,8 @@ local config = {
   startStopKeycode = 61, startStopFlag = "alt",    -- Option destro
   pauseKeycode     = 60, pauseFlag     = "shift",  -- Shift destro
   doubleTapSec = 0.50,
-  restoreClipboard = false,   -- false = il testo trascritto RESTA in clipboard | true = ripristina la clipboard precedente
+  maxSegmentSec = 480,        -- auto-taglio ogni 8 min (sotto il limite ~13min/25MB di Groq)
+  restoreClipboard = false,   -- false = il testo resta in clipboard | true = ripristina quella precedente
 }
 
 local N_BARS = 12
@@ -36,7 +38,7 @@ local recording = false
 local paused    = false
 local busy      = false
 local recTask   = nil
-local intent    = nil
+local intent    = nil          -- "pause" | "stop" | "cancel" | "rotate"
 local segments  = {}
 local segIndex  = 0
 local elapsed   = 0
@@ -45,9 +47,10 @@ local levels    = {}
 
 local overlay   = nil
 local uiTimer   = nil
+local rotTimer  = nil
 local mode      = nil          -- "rec" | "proc"
-local RECIDX    = nil          -- mappa indici elementi in modalità rec
-local taps      = {}           -- keycode -> ultimo tap
+local RECIDX    = nil
+local taps      = {}
 
 ------------------------------------------------------------------------
 -- PALETTE (black / white / gold)
@@ -64,7 +67,6 @@ local IMG = {
   mic   = hs.image.imageFromName("NSTouchBarAudioInputTemplate"),
   pause = hs.image.imageFromName("NSTouchBarPauseTemplate"),
   play  = hs.image.imageFromName("NSTouchBarPlayTemplate"),
-  stop  = hs.image.imageFromName("NSTouchBarRecordStopTemplate"),
 }
 
 ------------------------------------------------------------------------
@@ -82,6 +84,7 @@ local function loadSettings()
   if s.pauseKeycode     then config.pauseKeycode = s.pauseKeycode end
   if s.pauseFlag        then config.pauseFlag = s.pauseFlag end
   if s.doubleTapSec     then config.doubleTapSec = s.doubleTapSec end
+  if s.maxSegmentSec    then config.maxSegmentSec = s.maxSegmentSec end
   if s.restoreClipboard ~= nil then config.restoreClipboard = s.restoreClipboard end
 end
 
@@ -182,14 +185,18 @@ end
 
 ------------------------------------------------------------------------
 -- HUD OVERLAY
+-- La card (pill) è inset di MT/MR dentro il canvas, così il badge ✕ può sporgere
+-- dall'angolo in alto a destra senza allargare la card.
 ------------------------------------------------------------------------
-local W, H = 356, 66
+local PILL_W, PILL_H = 356, 66
+local MT, MR = 11, 12
+local W, H = PILL_W + MR, PILL_H + MT
 
 local function ensureCanvas()
   if overlay then return end
   local sf = hs.screen.mainScreen():frame()
-  local x = sf.x + (sf.w - W) / 2
-  local y = sf.y + sf.h - H - 80
+  local x = sf.x + (sf.w - PILL_W) / 2
+  local y = sf.y + sf.h - 80 - H
   overlay = hs.canvas.new({ x = x, y = y, w = W, h = H })
   overlay:level(hs.canvas.windowLevels.overlay)
   overlay:behavior({ "canJoinAllSpaces", "stationary" })
@@ -207,59 +214,68 @@ end
 local function bgEl()
   return { type = "rectangle", action = "strokeAndFill",
            fillColor = COL.bg, strokeColor = COL.gold, strokeWidth = 1.2,
-           roundedRectRadii = { xRadius = 16, yRadius = 16 } }
+           roundedRectRadii = { xRadius = 16, yRadius = 16 },
+           frame = { x = 0, y = MT, w = PILL_W, h = PILL_H } }
 end
 
--- Modalità registrazione. isPaused cambia il pulsante sinistro (dot<->mic) e pausa<->play.
+-- badge ✕ sporgente dall'angolo in alto a destra (✕ = due linee incrociate, centrata)
+local function pushCloseBadge(els, id)
+  local cx, cy = PILL_W, MT
+  els[#els + 1] = { type = "circle", action = "strokeAndFill", fillColor = COL.bg,
+    strokeColor = COL.gold, strokeWidth = 1.2, center = { x = cx, y = cy }, radius = 10,
+    trackMouseUp = true, id = id }
+  els[#els + 1] = { type = "segments", action = "stroke", strokeColor = COL.gold, strokeWidth = 1.7,
+    closed = false, coordinates = { { x = cx - 3.5, y = cy - 3.5 }, { x = cx + 3.5, y = cy + 3.5 } } }
+  els[#els + 1] = { type = "segments", action = "stroke", strokeColor = COL.gold, strokeWidth = 1.7,
+    closed = false, coordinates = { { x = cx - 3.5, y = cy + 3.5 }, { x = cx + 3.5, y = cy - 3.5 } } }
+end
+
+-- y helper (offset della card)
+local function Y(v) return v + MT end
+
 local function setRecordingElements(isPaused)
   local els, idx = {}, { bars = {} }
   local function add(el) els[#els + 1] = el; return #els end
 
   add(bgEl())
 
-  -- slot sinistro
   if isPaused then
     idx.mic = add({ type = "rectangle", action = "fill", fillColor = COL.gold,
       roundedRectRadii = { xRadius = 9, yRadius = 9 },
-      frame = { x = 12, y = 17, w = 36, h = 32 }, trackMouseUp = true, id = "mic" })
+      frame = { x = 12, y = Y(17), w = 36, h = 32 }, trackMouseUp = true, id = "mic" })
     add({ type = "image", image = IMG.mic, imageScaling = "scaleProportionally",
-      frame = { x = 21, y = 23, w = 18, h = 20 } })
+      frame = { x = 21, y = Y(23), w = 18, h = 20 } })
   else
     idx.dot = add({ type = "circle", action = "fill", fillColor = COL.gold,
-      center = { x = 30, y = 33 }, radius = 7 })
+      center = { x = 30, y = Y(33) }, radius = 7 })
   end
 
   idx.timer = add({ type = "text", text = "0:00", textSize = 21, textColor = COL.white,
-    textFont = "Menlo-Bold", textAlignment = "left", frame = { x = 56, y = 20, w = 52, h = 28 } })
+    textFont = "Menlo-Bold", textAlignment = "left", frame = { x = 56, y = Y(20), w = 52, h = 28 } })
 
   for i = 1, N_BARS do
     idx.bars[i] = add({ type = "rectangle", action = "fill", fillColor = COL.gold,
       roundedRectRadii = { xRadius = 2, yRadius = 2 },
-      frame = { x = 112 + (i - 1) * 9, y = 31, w = 4, h = 4 } })
+      frame = { x = 112 + (i - 1) * 9, y = Y(31), w = 4, h = 4 } })
   end
 
   -- pausa / play
   add({ type = "rectangle", action = "fill", fillColor = COL.gold,
     roundedRectRadii = { xRadius = 9, yRadius = 9 },
-    frame = { x = 226, y = 17, w = 38, h = 32 }, trackMouseUp = true, id = "pause" })
+    frame = { x = 226, y = Y(17), w = 38, h = 32 }, trackMouseUp = true, id = "pause" })
   add({ type = "image", image = isPaused and IMG.play or IMG.pause, imageScaling = "scaleProportionally",
-    frame = { x = 234, y = 23, w = 22, h = 20 } })
+    frame = { x = 234, y = Y(23), w = 22, h = 20 } })
 
   -- stop (ferma e trascrive)
   add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear,
     strokeColor = COL.gold, strokeWidth = 1.4,
     roundedRectRadii = { xRadius = 9, yRadius = 9 },
-    frame = { x = 272, y = 17, w = 38, h = 32 }, trackMouseUp = true, id = "stop" })
+    frame = { x = 272, y = Y(17), w = 38, h = 32 }, trackMouseUp = true, id = "stop" })
   add({ type = "rectangle", action = "fill", fillColor = COL.gold,
     roundedRectRadii = { xRadius = 3, yRadius = 3 },
-    frame = { x = 284, y = 26, w = 14, h = 14 } })
+    frame = { x = 284, y = Y(26), w = 14, h = 14 } })
 
-  -- ✕ annulla (butta l'audio, niente trascrizione) — bolla in alto a destra
-  idx.cancel = add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg,
-    strokeColor = COL.gold, strokeWidth = 1.2, center = { x = W - 16, y = 15 }, radius = 10,
-    trackMouseUp = true, id = "cancel" })
-  add({ type = "text", text = "✕", textSize = 13, textColor = COL.gold,
-    textFont = "Menlo-Bold", textAlignment = "center", frame = { x = W - 25, y = 8, w = 18, h = 16 } })
+  pushCloseBadge(els, "cancel")   -- ✕ annulla (butta l'audio)
 
   overlay:replaceElements(els)
   RECIDX = idx
@@ -269,15 +285,10 @@ end
 local function setProcessingElements(text)
   local els = {}
   els[1] = bgEl()
-  els[2] = { type = "circle", action = "fill", fillColor = COL.gold, center = { x = 30, y = 33 }, radius = 6 }
+  els[2] = { type = "circle", action = "fill", fillColor = COL.gold, center = { x = 30, y = Y(33) }, radius = 6 }
   els[3] = { type = "text", text = text or "…", textSize = 17, textColor = COL.white,
-             textFont = "Menlo-Bold", textAlignment = "left", frame = { x = 48, y = 22, w = W - 96, h = 26 } }
-  -- bolla di chiusura in alto a destra
-  els[4] = { type = "circle", action = "strokeAndFill", fillColor = COL.clear,
-             strokeColor = COL.gold, strokeWidth = 1.2, center = { x = W - 18, y = 18 }, radius = 9,
-             trackMouseUp = true, id = "close" }
-  els[5] = { type = "text", text = "✕", textSize = 12, textColor = COL.gold,
-             textFont = "Menlo-Bold", textAlignment = "center", frame = { x = W - 27, y = 11, w = 18, h = 16 } }
+             textFont = "Menlo-Bold", textAlignment = "left", frame = { x = 48, y = Y(22), w = PILL_W - 84, h = 26 } }
+  pushCloseBadge(els, "close")
   overlay:replaceElements(els)
   mode = "proc"
 end
@@ -299,7 +310,7 @@ local function updateUI()
     local lv = levels[i] or 0
     local h = 4 + lv * 26
     overlay:elementAttribute(bidx, "fillColor", barCol)
-    overlay:elementAttribute(bidx, "frame", { x = 112 + (i - 1) * 9, y = 33 - h / 2, w = 4, h = h })
+    overlay:elementAttribute(bidx, "frame", { x = 112 + (i - 1) * 9, y = Y(33) - h / 2, w = 4, h = h })
   end
 end
 
@@ -313,7 +324,7 @@ end
 
 local function stopUITimer() if uiTimer then uiTimer:stop(); uiTimer = nil end end
 
-local function hideOverlay()
+function hideOverlay()
   stopUITimer()
   if overlay then overlay:hide() end
   mode = nil; RECIDX = nil
@@ -332,28 +343,39 @@ local function pasteText(text)
 end
 
 ------------------------------------------------------------------------
--- TRASCRIZIONE
+-- TRASCRIZIONE (per-segmento, testo unito) + backup su errore
 ------------------------------------------------------------------------
 local function cleanupSegments()
   for _, p in ipairs(segments) do os.remove(p) end
-  os.remove("/tmp/groq_seg_list.txt"); os.remove("/tmp/groq_combined.wav")
   segments = {}; segIndex = 0
 end
 
-local function finishError(msg)
-  busy = false
-  setStatus("✕ " .. msg)
-  hs.timer.doAfter(2.2, hideOverlay)
-  cleanupSegments()
+local function backupSegments()
+  hs.execute("mkdir -p '" .. config.recDir .. "'")
+  local stamp = os.date("%Y%m%d-%H%M%S")
+  local n = 0
+  for i, p in ipairs(segments) do
+    if fileSize(p) > 1000 then
+      local dest = string.format("%s/rec-%s-%d.wav", config.recDir, stamp, i)
+      hs.execute(string.format("cp '%s' '%s'", p, dest))
+      n = n + 1
+    end
+  end
+  return n
 end
 
-local function transcribe(wavPath)
+local function failSaving(msg)
+  busy = false
+  local n = backupSegments()
+  cleanupSegments()
+  setStatus("✕ " .. msg)
+  if n > 0 then hs.alert.show("💾 Audio salvato in\n" .. config.recDir, 6) end
+  hs.timer.doAfter(2.6, hideOverlay)
+end
+
+local function transcribeOne(wavPath, cb)
   local key = readKey()
-  if not key then finishError("Nessuna chiave Groq") return end
-
-  setStatus("☁️  Inviato")
-  hs.timer.doAfter(0.35, function() if busy then setStatus("✍️  Trascrivo…") end end)
-
+  if not key then cb(false, nil, "Nessuna chiave Groq") return end
   local args = { "-s", "-S",
     "https://api.groq.com/openai/v1/audio/transcriptions",
     "-H", "Authorization: Bearer " .. key,
@@ -362,33 +384,31 @@ local function transcribe(wavPath)
     "-F", "response_format=text",
     "-F", "temperature=0" }
   if config.language then table.insert(args, "-F"); table.insert(args, "language=" .. config.language) end
-
   local t = hs.task.new(config.curl, function(code, out, err)
-    if code ~= 0 then finishError("Groq errore " .. tostring(code)) return end
-    local text = trim(out)
-    if text == "" then finishError("Nessun testo") return end
+    if code ~= 0 then cb(false, nil, "Groq errore " .. tostring(code) .. " " .. trim(err))
+    else cb(true, trim(out)) end
+  end, args)
+  t:start()
+end
+
+local function transcribeAll(paths, i, acc)
+  if i > #paths then
+    local text = trim(table.concat(acc, " "))
+    if text == "" then failSaving("Nessun testo") return end
     busy = false
     setStatus("✓  Fatto")
     hs.timer.doAfter(0.30, function() pasteText(text) end)
     hs.timer.doAfter(0.85, hideOverlay)
     cleanupSegments()
-  end, args)
-  t:start()
-end
-
-local function concatThen(cb)
-  local valid = {}
-  for _, p in ipairs(segments) do if fileSize(p) > 1000 then valid[#valid + 1] = p end end
-  if #valid == 0 then cb(nil) return end
-  if #valid == 1 then cb(valid[1]) return end
-  local listPath = "/tmp/groq_seg_list.txt"
-  local f = io.open(listPath, "w")
-  for _, p in ipairs(valid) do f:write("file '" .. p .. "'\n") end
-  f:close()
-  local out = "/tmp/groq_combined.wav"; os.remove(out)
-  local t = hs.task.new(config.ffmpeg, function(code) cb(code == 0 and out or nil) end,
-    { "-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", out })
-  t:start()
+    return
+  end
+  if #paths > 1 then setStatus(string.format("✍️  Trascrivo… (%d/%d)", i, #paths))
+  else setStatus("✍️  Trascrivo…") end
+  transcribeOne(paths[i], function(ok, text, err)
+    if not ok then failSaving(err or "Errore trascrizione") return end
+    acc[i] = text
+    transcribeAll(paths, i + 1, acc)
+  end)
 end
 
 local function finalizeAndTranscribe()
@@ -398,15 +418,16 @@ local function finalizeAndTranscribe()
   setProcessingElements("🎙️  Ricevuto")
   overlay:show()
   hs.timer.doAfter(0.25, function()
-    concatThen(function(path)
-      if not path then finishError("Audio vuoto") return end
-      transcribe(path)
-    end)
+    local valid = {}
+    for _, p in ipairs(segments) do if fileSize(p) > 1000 then valid[#valid + 1] = p end end
+    if #valid == 0 then failSaving("Audio vuoto") return end
+    setStatus("☁️  Inviato")
+    transcribeAll(valid, 1, {})
   end)
 end
 
 ------------------------------------------------------------------------
--- REGISTRAZIONE (segmenti) + waveform reale (RMS su stderr, real-time)
+-- REGISTRAZIONE (segmenti) + waveform reale + auto-taglio a tempo
 ------------------------------------------------------------------------
 local function onStream(_t, _out, err)
   if err and recording and not paused then
@@ -418,13 +439,9 @@ local function onStream(_t, _out, err)
   return true
 end
 
-local function onSegmentFinished()
-  recTask = nil
-  if intent == "pause" then intent = nil
-  elseif intent == "stop" then intent = nil; finalizeAndTranscribe()
-  elseif intent == "cancel" then intent = nil; cleanupSegments() end
-end
+local function stopRotTimer() if rotTimer then rotTimer:stop(); rotTimer = nil end end
 
+local rotate  -- fwd
 local function startSegment()
   local p = segPath(segIndex)
   os.remove(p)
@@ -433,19 +450,39 @@ local function startSegment()
     "-ac", "1", "-ar", "16000",
     "-af", "asetnsamples=1600:p=0,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level",
     p }
-  recTask = hs.task.new(config.ffmpeg, onSegmentFinished, onStream, args)
+  recTask = hs.task.new(config.ffmpeg, function() M._onSegmentFinished() end, onStream, args)
   if not recTask:start() then hs.alert.show("❌ ffmpeg non parte"); recTask = nil; return false end
   segStart = now()
+  stopRotTimer()
+  if config.maxSegmentSec and config.maxSegmentSec > 0 then
+    rotTimer = hs.timer.doAfter(config.maxSegmentSec, function() rotate() end)
+  end
   return true
 end
 
+function M._onSegmentFinished()
+  recTask = nil
+  if intent == "pause" then intent = nil
+  elseif intent == "stop" then intent = nil; finalizeAndTranscribe()
+  elseif intent == "cancel" then intent = nil; cleanupSegments()
+  elseif intent == "rotate" then intent = nil; segIndex = segIndex + 1; startSegment() end
+end
+
 local function stopCurrentSegment(newIntent)
+  stopRotTimer()
   intent = newIntent
   if recTask then
     local pid = recTask:pid()
     if pid and pid > 0 then hs.execute(config.kill .. " -INT " .. pid)
     else recTask:terminate() end
   end
+end
+
+rotate = function()
+  if not recording or paused then return end
+  elapsed = elapsed + (now() - (segStart or now()))
+  segStart = nil
+  stopCurrentSegment("rotate")   -- chiude il pezzo e ne apre un altro (continuità timer)
 end
 
 local function start()
@@ -460,6 +497,7 @@ end
 function M.stop()
   if not recording then return end
   recording = false
+  stopRotTimer()
   if paused then
     finalizeAndTranscribe()
   else
@@ -469,17 +507,13 @@ function M.stop()
 end
 
 function M.cancel()
-  -- Ferma la registrazione e BUTTA l'audio: niente trascrizione, chiude l'HUD.
   if not recording then hideOverlay(); cleanupSegments(); return end
   recording = false
   paused = false
   busy = false
+  stopRotTimer()
   hideOverlay()
-  if recTask then
-    stopCurrentSegment("cancel")   -- ffmpeg killato; onSegmentFinished ripulisce i segmenti
-  else
-    cleanupSegments()
-  end
+  if recTask then stopCurrentSegment("cancel") else cleanupSegments() end
 end
 
 function M.togglePause()
@@ -510,12 +544,8 @@ local watcher = nil
 local function handleDouble(kc, action)
   local t = now()
   local last = taps[kc] or 0
-  if (t - last) < config.doubleTapSec then
-    taps[kc] = 0
-    action()
-  else
-    taps[kc] = t
-  end
+  if (t - last) < config.doubleTapSec then taps[kc] = 0; action()
+  else taps[kc] = t end
 end
 
 local function initHotkeys()

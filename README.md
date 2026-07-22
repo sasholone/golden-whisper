@@ -20,6 +20,7 @@ microphone waveform, and pause / stop buttons.
 - **Fast** — uses `whisper-large-v3-turbo`; a ~20s note transcribes in ~1–2s.
 - **Live HUD** (black / white / gold) — recording timer, a **real** microphone waveform, pause & stop buttons.
 - **Clean pause** — recording is segmented, so pausing doesn't record dead silence.
+- **No length limit / never lose audio** — long recordings are auto‑split (every `maxSegmentSec`, default 8 min) so they stay under Groq's file limit; each chunk is transcribed and the text is joined. If a transcription fails, the audio is saved to `~/.config/groq-dictation/recordings/` instead of being lost.
 - **Mic picker** — while paused, click the 🎙️ button to switch input device (saved to your settings).
 - **Configurable** — language, mic, model and trigger keys live in a plain settings file.
 
@@ -80,6 +81,7 @@ return {
   startStopKeycode = 61, startStopFlag = "alt",    -- Right Option
   pauseKeycode     = 60, pauseFlag     = "shift",  -- Right Shift
   doubleTapSec     = 0.50,                          -- double-tap window
+  maxSegmentSec    = 480,                           -- auto-split every N seconds (stays under Groq's ~13min/25MB limit)
   restoreClipboard = false,                         -- false = transcript stays on the clipboard | true = restore previous clipboard
 }
 ```

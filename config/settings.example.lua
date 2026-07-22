@@ -20,6 +20,7 @@ return {
   pauseKeycode = 60,                      -- 60 = Shift destro
   pauseFlag    = "shift",
 
-  doubleTapSec = 0.50,                    -- finestra del doppio tap (secondi)
+  doubleTapSec  = 0.50,                   -- finestra del doppio tap (secondi)
+  maxSegmentSec = 480,                    -- auto-taglia l'audio ogni N sec (sotto il limite ~13min/25MB di Groq)
   restoreClipboard = false,   -- false = il testo resta in clipboard (consigliato) | true = ripristina quella precedente
 }
