@@ -83,6 +83,7 @@ local function loadSettings()
   if not ok or type(s) ~= "table" then hs.alert.show("⚠️ settings.lua non valido") return end
   if s.language ~= nil then config.language = (s.language == "auto") and nil or s.language end
   if s.micDevice then config.audioDevice = s.micDevice end
+  if s.micName   then config.micName = s.micName end
   if s.model     then config.model = s.model end
   if s.startStopKeycode then config.startStopKeycode = s.startStopKeycode end
   if s.startStopFlag    then config.startStopFlag = s.startStopFlag end
@@ -193,13 +194,34 @@ local function getAudioDevices(cb)
   t:start()
 end
 
+-- Cache dei device (aggiornata all'avvio e a ogni cambio hardware audio) per risolvere
+-- il mic per NOME → indice avfoundation attuale, così un disconnect non lascia un indice morto.
+local deviceCache = {}
+
+local function refreshDevices()
+  getAudioDevices(function(list) deviceCache = list end)
+end
+
+-- ritorna: idx, fellBack(bool), name
+local function resolveMic()
+  if config.micName and #deviceCache > 0 then
+    for _, d in ipairs(deviceCache) do
+      if d.name == config.micName then return d.idx, false, d.name end
+    end
+    return deviceCache[1].idx, true, deviceCache[1].name   -- salvato non presente → fallback
+  end
+  if #deviceCache > 0 then return deviceCache[1].idx, false, deviceCache[1].name end
+  return config.audioDevice or ":0", false, nil
+end
+
 local function openMicChooser()
   getAudioDevices(function(list)
+    deviceCache = list
     local choices = {}
     for _, d in ipairs(list) do
       choices[#choices + 1] = {
         text = d.name,
-        subText = "input " .. d.idx .. (d.idx == config.audioDevice and "   •   attuale" or ""),
+        subText = "input " .. d.idx .. (d.name == config.micName and "   •   attuale" or ""),
         idx = d.idx, name = d.name,
       }
     end
@@ -207,7 +229,9 @@ local function openMicChooser()
     local ch = hs.chooser.new(function(choice)
       if not choice then return end
       config.audioDevice = choice.idx
+      config.micName = choice.name
       persistSetting("micDevice", choice.idx)
+      persistSetting("micName", choice.name)
       hs.alert.show("🎙️  " .. choice.name)
     end)
     ch:placeholderText("Scegli microfono di input")
@@ -521,7 +545,11 @@ end
 local function start()
   recoverOrphans()   -- salva eventuali segmenti di una sessione interrotta prima di ripulire
   cleanupSegments()
+  local dev, fellBack, name = resolveMic()   -- risolve il mic salvato → indice attuale (o fallback)
+  config.audioDevice = dev
+  refreshDevices()                           -- aggiorna la cache per la prossima volta
   elapsed = 0; segStart = nil; paused = false; segIndex = 0
+  if fellBack then hs.alert.show("🎙️ Mic salvato non disponibile → uso “" .. (name or dev) .. "”", 3) end
   resetLevels()
   if not startSegment() then return end
   recording = true
@@ -639,6 +667,9 @@ function M.init()
   loadSettings()
   hs.execute("mkdir -p '" .. config.workDir .. "' '" .. config.recDir .. "'")
   recoverOrphans()   -- recupera audio di un'eventuale sessione interrotta (reload/crash)
+  refreshDevices()   -- popola la cache dei microfoni
+  hs.audiodevice.watcher.setCallback(function() refreshDevices() end)  -- aggiorna sui cambi (es. AirPods on/off)
+  hs.audiodevice.watcher.start()
   initHotkeys()
   if config.autoUpdate ~= false then
     hs.timer.doAfter(45, function() checkUpdate(true) end)

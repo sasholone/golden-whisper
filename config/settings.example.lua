@@ -9,7 +9,10 @@
 
 return {
   language  = "it",                       -- "it" forza italiano | "auto" = riconoscimento automatico
-  micDevice = ":0",                       -- ":0" = MacBook Air Microphone (o scegli dall'HUD)
+  micDevice = ":0",                       -- indice input (fallback); di norma scegli dall'HUD
+  -- micName si salva da solo quando scegli il mic dall'HUD: il mic è risolto per NOME a ogni
+  -- registrazione, così se stacchi il dispositivo salvato (es. AirPods) passa da solo a quello disponibile.
+  -- micName = "AirPods di ...",
   model     = "whisper-large-v3-turbo",   -- alt: "whisper-large-v3" (più accurato, un filo più lento)
 
   -- Trigger 1: START / STOP  (doppio tap)
