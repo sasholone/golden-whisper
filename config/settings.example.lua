@@ -27,4 +27,10 @@ return {
   maxSegmentSec = 480,                    -- auto-taglia l'audio ogni N sec (sotto il limite ~13min/25MB di Groq)
   restoreClipboard = false,               -- false = il testo resta in clipboard (consigliato) | true = ripristina quella precedente
   autoUpdate = true,                      -- controlla GitHub ogni giorno e si aggiorna da solo (mai durante una registrazione)
+
+  -- Aspetto (modificabili anche dal menu Impostazioni: pausa → click sul pulsante a sinistra)
+  sizePreset  = "standard",               -- standard | large (+20%) | minimal (-30%)
+  orientation = "horizontal",             -- horizontal | vertical
+  style       = "gold",                   -- gold | mono (WIP)
+  -- posX / posY = centro della card; si salvano da soli quando trascini l'overlay col mouse
 }

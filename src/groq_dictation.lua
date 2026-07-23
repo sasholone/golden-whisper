@@ -1,11 +1,9 @@
--- groq_dictation.lua
+-- groq_dictation.lua  (Golden Whisper)
 -- Dettatura vocale stile Whisper Flow per macOS.
--- Trigger: doppio tap Option destro = start/stop | doppio tap Shift destro = pausa/riprendi.
+-- START = doppio tap Option dx (o Ctrl dx) | STOP = un tap | PAUSA = un tap Shift dx.
 -- Registra (ffmpeg) -> Groq Whisper -> incolla al cursore (+ resta in clipboard).
--- HUD in basso (black/white/gold): timer, waveform reale del microfono, pausa/stop, badge ✕ (annulla).
--- Robustezza: auto-spezza l'audio ogni maxSegmentSec (limite Groq ~25MB), trascrive ogni pezzo e
--- unisce il testo; se una trascrizione fallisce, salva l'audio in ~/.config/groq-dictation/recordings/.
--- Impostazioni utente in ~/.config/groq-dictation/settings.lua.
+-- HUD trascinabile (black/white/gold), orizzontale o verticale, con sizing e menu impostazioni.
+-- Robustezza: auto-spezza l'audio (limite Groq ~25MB) e trascrive a pezzi; audio mai perso.
 
 local M = {}
 
@@ -16,65 +14,74 @@ local config = {
   keyPath      = os.getenv("HOME") .. "/.config/groq-dictation/api_key",
   settingsPath = os.getenv("HOME") .. "/.config/groq-dictation/settings.lua",
   recDir       = os.getenv("HOME") .. "/.config/groq-dictation/recordings",
-  workDir      = os.getenv("HOME") .. "/.config/groq-dictation/segments",  -- persistente (NON /tmp): sopravvive a reload/crash
+  workDir      = os.getenv("HOME") .. "/.config/groq-dictation/segments",
   audioDevice  = ":0",
   language     = "it",
   model        = "whisper-large-v3-turbo",
   ffmpeg       = "/opt/homebrew/bin/ffmpeg",
   curl         = "/usr/bin/curl",
   kill         = "/bin/kill",
-  startStopKeycode = 61, startStopFlag = "alt",    -- Option destro
-  pauseKeycode     = 60, pauseFlag     = "shift",  -- Shift destro
+  startStopKeycode = 61, startStopFlag = "alt",
+  pauseKeycode     = 60, pauseFlag     = "shift",
   doubleTapSec = 0.50,
-  maxSegmentSec = 480,        -- auto-taglio ogni 8 min (sotto il limite ~13min/25MB di Groq)
-  restoreClipboard = false,   -- false = il testo resta in clipboard | true = ripristina quella precedente
-  autoUpdate   = true,        -- controlla GitHub e si aggiorna da solo (mai durante una registrazione)
-  updateCheckHours = 24,      -- ogni quante ore controllare gli update
+  maxSegmentSec = 480,
+  restoreClipboard = false,
+  autoUpdate   = true,
+  updateCheckHours = 24,
   git          = "/usr/bin/git",
-  repoDir      = os.getenv("HOME") .. "/golden-whisper",   -- clone locale (install.sh scrive il path reale in repo_path)
+  repoDir      = os.getenv("HOME") .. "/golden-whisper",
+  sizePreset   = "standard",     -- standard | large | minimal
+  orientation  = "horizontal",   -- horizontal | vertical
+  style        = "gold",         -- gold | mono (WIP)
+  scale        = 1.0,
+  -- posX / posY (centro della card) impostati dal drag
 }
-
-local N_BARS = 12
 
 ------------------------------------------------------------------------
 -- STATO
 ------------------------------------------------------------------------
-local recording = false
-local paused    = false
-local busy      = false
-local recTask   = nil
-local intent    = nil          -- "pause" | "stop" | "cancel" | "rotate"
-local segments  = {}
-local segIndex  = 0
-local elapsed   = 0
-local segStart  = nil
-local levels    = {}
+local recording, paused, busy = false, false, false
+local recTask, intent = nil, nil
+local segments, segIndex = {}, 0
+local elapsed, segStart = 0, nil
+local levels = {}
 
-local overlay   = nil
-local uiTimer   = nil
-local rotTimer  = nil
-local animTimer = nil
-local finalFrame = nil
-local mode      = nil          -- "rec" | "proc"
-local RECIDX    = nil
-local taps      = {}
+local overlay, uiTimer, rotTimer, animTimer, dragTap = nil, nil, nil, nil, nil
+local finalFrame, mode, RECIDX = nil, nil, nil
+local procTextIdx = nil
+local taps = {}
+
+-- forward decl (funzioni HUD mutuamente referenziate)
+local placeCanvas, mouseCb, startDrag, pushBadge
+local setRecordingElements, setProcessingElements, setStatus, updateUI
+local showAnimated, hideAnimated, showRecordingHUD, stopUITimer
+local openSettings, rebuildHUD
 
 ------------------------------------------------------------------------
--- PALETTE (black / white / gold)
+-- PALETTE
 ------------------------------------------------------------------------
-local COL = {
-  bg       = { red = 0.05, green = 0.05, blue = 0.06, alpha = 0.97 },
-  gold     = { red = 0.83, green = 0.68, blue = 0.36 },
-  goldDim  = { red = 0.48, green = 0.40, blue = 0.23 },
-  white    = { white = 0.97 },
-  clear    = { alpha = 0 },
+local PALETTES = {
+  gold = { bg = { red = 0.05, green = 0.05, blue = 0.06, alpha = 0.97 },
+           accent = { red = 0.83, green = 0.68, blue = 0.36 },
+           accentDim = { red = 0.48, green = 0.40, blue = 0.23 },
+           white = { white = 0.97 }, clear = { alpha = 0 } },
+  mono = { bg = { red = 0.06, green = 0.06, blue = 0.07, alpha = 0.97 },
+           accent = { white = 0.86 }, accentDim = { white = 0.42 },
+           white = { white = 0.98 }, clear = { alpha = 0 } },
 }
+local COL = PALETTES.gold
 
 local IMG = {
   mic   = hs.image.imageFromName("NSTouchBarAudioInputTemplate"),
   pause = hs.image.imageFromName("NSTouchBarPauseTemplate"),
   play  = hs.image.imageFromName("NSTouchBarPlayTemplate"),
 }
+
+local function scaleFor(preset)
+  if preset == "minimal" then return 0.72
+  elseif preset == "large" then return 1.2
+  else return 1.0 end
+end
 
 ------------------------------------------------------------------------
 -- SETTINGS
@@ -96,17 +103,24 @@ local function loadSettings()
   if s.restoreClipboard ~= nil then config.restoreClipboard = s.restoreClipboard end
   if s.autoUpdate ~= nil then config.autoUpdate = s.autoUpdate end
   if s.repoDir then config.repoDir = s.repoDir end
-  -- path del clone scritto da install.sh (ha priorità)
+  if s.sizePreset  then config.sizePreset = s.sizePreset end
+  if s.orientation then config.orientation = s.orientation end
+  if s.style       then config.style = s.style end
+  if s.posX then config.posX = s.posX end
+  if s.posY then config.posY = s.posY end
+  config.scale = scaleFor(config.sizePreset)
+  COL = PALETTES[config.style] or PALETTES.gold
   local rf = io.open(os.getenv("HOME") .. "/.config/groq-dictation/repo_path", "r")
   if rf then local p = rf:read("*a"); rf:close(); p = (p or ""):gsub("%s+$", ""); if p ~= "" then config.repoDir = p end end
 end
 
-local function persistSetting(key, value)
+local function persist(key, value)
   local f = io.open(config.settingsPath, "r"); if not f then return end
   local txt = f:read("*a"); f:close()
-  local pat = key .. "%s*=%s*\"[^\"]*\""
-  if txt:find(pat) then txt = txt:gsub(pat, key .. ' = "' .. value .. '"')
-  else txt = txt:gsub("return%s*{", 'return {\n  ' .. key .. ' = "' .. value .. '",') end
+  local rhs = (type(value) == "number") and tostring(value) or ('"' .. tostring(value) .. '"')
+  local pat = key .. "%s*=%s*[^,\n]+"
+  if txt:find(pat) then txt = txt:gsub(pat, key .. " = " .. rhs, 1)
+  else txt = txt:gsub("return%s*{", "return {\n  " .. key .. " = " .. rhs .. ",", 1) end
   local w = io.open(config.settingsPath, "w"); if w then w:write(txt); w:close() end
 end
 
@@ -149,13 +163,13 @@ local function mapLevel(db)
   return v
 end
 
+local function nBars() return (config.orientation == "vertical") and 9 or 12 end
+
 local function resetLevels()
   levels = {}
-  for _ = 1, N_BARS do levels[#levels + 1] = 0 end
+  for _ = 1, nBars() do levels[#levels + 1] = 0 end
 end
 
--- Recupero anti-perdita: se in workDir ci sono segmenti di una sessione interrotta
--- (reload/crash), li salva (con header riparato) in recordings/ e avvisa. Mai persi in silenzio.
 local function recoverOrphans()
   local out = hs.execute("ls -1 '" .. config.workDir .. "'/groq_seg_*.wav 2>/dev/null")
   local files = {}
@@ -168,7 +182,6 @@ local function recoverOrphans()
     if fileSize(p) > 1000 then
       n = n + 1
       local dest = string.format("%s/recovered-%s-%d.wav", config.recDir, stamp, i)
-      -- remux per riparare l'header di un wav non finalizzato; se fallisce, copia grezza
       hs.execute(string.format("'%s' -y -i '%s' -c copy '%s' 2>/dev/null || cp '%s' '%s'",
         config.ffmpeg, p, dest, p, dest))
     end
@@ -178,7 +191,7 @@ local function recoverOrphans()
 end
 
 ------------------------------------------------------------------------
--- MIC CHOOSER (in pausa)
+-- DEVICE AUDIO
 ------------------------------------------------------------------------
 local function getAudioDevices(cb)
   local t = hs.task.new(config.ffmpeg, function(_c, _o, err)
@@ -196,13 +209,8 @@ local function getAudioDevices(cb)
   t:start()
 end
 
--- Cache dei device (aggiornata all'avvio e a ogni cambio hardware audio) per risolvere
--- il mic per NOME → indice avfoundation attuale, così un disconnect non lascia un indice morto.
 local deviceCache = {}
-
-local function refreshDevices()
-  getAudioDevices(function(list) deviceCache = list end)
-end
+local function refreshDevices() getAudioDevices(function(list) deviceCache = list end) end
 
 -- ritorna: idx, fellBack(bool), name
 local function resolveMic()
@@ -210,172 +218,216 @@ local function resolveMic()
     for _, d in ipairs(deviceCache) do
       if d.name == config.micName then return d.idx, false, d.name end
     end
-    return deviceCache[1].idx, true, deviceCache[1].name   -- salvato non presente → fallback
+    return deviceCache[1].idx, true, deviceCache[1].name
   end
   if #deviceCache > 0 then return deviceCache[1].idx, false, deviceCache[1].name end
   return config.audioDevice or ":0", false, nil
 end
 
-local function openMicChooser()
-  getAudioDevices(function(list)
-    deviceCache = list
-    local choices = {}
-    for _, d in ipairs(list) do
-      choices[#choices + 1] = {
-        text = d.name,
-        subText = "input " .. d.idx .. (d.name == config.micName and "   •   attuale" or ""),
-        idx = d.idx, name = d.name,
-      }
-    end
-    if #choices == 0 then hs.alert.show("Nessun microfono trovato") return end
-    local ch = hs.chooser.new(function(choice)
-      if not choice then return end
-      config.audioDevice = choice.idx
-      config.micName = choice.name
-      persistSetting("micDevice", choice.idx)
-      persistSetting("micName", choice.name)
-      hs.alert.show("🎙️  " .. choice.name)
-    end)
-    ch:placeholderText("Scegli microfono di input")
-    ch:choices(choices)
-    ch:show()
-  end)
+------------------------------------------------------------------------
+-- HUD
+------------------------------------------------------------------------
+mouseCb = function(_c, msg, id)
+  if msg == "mouseDown" and id == "drag" then startDrag() return end
+  if msg ~= "mouseUp" then return end
+  if id == "pause" then M.togglePause()
+  elseif id == "stop" then M.stop()
+  elseif id == "settings" then openSettings()
+  elseif id == "cancel" then M.cancel()
+  elseif id == "close" then hideOverlay() end
 end
 
-------------------------------------------------------------------------
--- HUD OVERLAY
--- La card (pill) è inset di MT/MR dentro il canvas, così il badge ✕ può sporgere
--- dall'angolo in alto a destra senza allargare la card.
-------------------------------------------------------------------------
-local PILL_W, PILL_H = 332, 66   -- ~22px di respiro a destra dello stop, bilanciato col lato sinistro
-local MT, MR = 11, 12
-local W, H = PILL_W + MR, PILL_H + MT
-
-local function ensureCanvas()
-  if overlay then return end
+placeCanvas = function(w, h)
   local sf = hs.screen.mainScreen():frame()
-  local x = sf.x + (sf.w - PILL_W) / 2
-  local y = sf.y + sf.h - 80 - H
-  finalFrame = { x = x, y = y, w = W, h = H }
-  overlay = hs.canvas.new({ x = x, y = y, w = W, h = H })
-  overlay:level(hs.canvas.windowLevels.overlay)
-  overlay:behavior({ "canJoinAllSpaces", "stationary" })
-  overlay:clickActivating(false)
-  overlay:mouseCallback(function(_c, msg, id)
-    if msg ~= "mouseUp" then return end
-    if id == "pause" then M.togglePause()
-    elseif id == "stop" then M.stop()
-    elseif id == "mic" then openMicChooser()
-    elseif id == "cancel" then M.cancel()
-    elseif id == "close" then hideOverlay() end
+  local cx, cy
+  if config.posX and config.posY then cx, cy = config.posX, config.posY
+  else cx = sf.x + sf.w / 2; cy = sf.y + sf.h - 24 - h / 2 end
+  local fx = math.max(sf.x, math.min(cx - w / 2, sf.x + sf.w - w))
+  local fy = math.max(sf.y, math.min(cy - h / 2, sf.y + sf.h - h))
+  finalFrame = { x = math.floor(fx), y = math.floor(fy), w = w, h = h }
+  if not overlay then
+    overlay = hs.canvas.new(finalFrame)
+    overlay:level(hs.canvas.windowLevels.overlay)
+    overlay:behavior({ "canJoinAllSpaces", "stationary" })
+    overlay:clickActivating(false)
+    overlay:mouseCallback(mouseCb)
+  else
+    overlay:frame(finalFrame)
+  end
+end
+
+startDrag = function()
+  if not overlay then return end
+  if dragTap then dragTap:stop(); dragTap = nil end
+  local m0 = hs.mouse.absolutePosition()
+  local f0 = overlay:frame()
+  local off = { dx = m0.x - f0.x, dy = m0.y - f0.y }
+  local moved = false
+  dragTap = hs.eventtap.new({ hs.eventtap.event.types.leftMouseDragged, hs.eventtap.event.types.leftMouseUp }, function(e)
+    if e:getType() == hs.eventtap.event.types.leftMouseUp then
+      dragTap:stop(); dragTap = nil
+      if moved and overlay then
+        local f = overlay:frame()
+        config.posX = f.x + f.w / 2; config.posY = f.y + f.h / 2
+        persist("posX", math.floor(config.posX)); persist("posY", math.floor(config.posY))
+      end
+      return false
+    end
+    moved = true
+    local m = hs.mouse.absolutePosition()
+    local nx, ny = m.x - off.dx, m.y - off.dy
+    if overlay then overlay:topLeft({ x = nx, y = ny }); finalFrame.x = nx; finalFrame.y = ny end
+    return false
   end)
+  dragTap:start()
 end
 
-local function bgEl()
-  return { type = "rectangle", action = "strokeAndFill",
-           fillColor = COL.bg, strokeColor = COL.gold, strokeWidth = 1.2,
-           roundedRectRadii = { xRadius = 16, yRadius = 16 },
-           frame = { x = 0, y = MT, w = PILL_W, h = PILL_H } }
-end
-
--- badge ✕ sporgente dall'angolo in alto a destra (✕ = due linee incrociate, centrata)
-local function pushCloseBadge(els, id)
-  local cx, cy = PILL_W, MT
+-- badge ✕ sporgente dall'angolo (✕ = due linee incrociate, centrata)
+pushBadge = function(els, id, cx, cy, s)
+  local r, a = 10 * s, 3.5 * s
   els[#els + 1] = { type = "circle", action = "strokeAndFill", fillColor = COL.bg,
-    strokeColor = COL.gold, strokeWidth = 1.2, center = { x = cx, y = cy }, radius = 10,
+    strokeColor = COL.accent, strokeWidth = 1.2 * s, center = { x = cx, y = cy }, radius = r,
     trackMouseUp = true, id = id }
-  els[#els + 1] = { type = "segments", action = "stroke", strokeColor = COL.gold, strokeWidth = 1.7,
-    closed = false, coordinates = { { x = cx - 3.5, y = cy - 3.5 }, { x = cx + 3.5, y = cy + 3.5 } } }
-  els[#els + 1] = { type = "segments", action = "stroke", strokeColor = COL.gold, strokeWidth = 1.7,
-    closed = false, coordinates = { { x = cx - 3.5, y = cy + 3.5 }, { x = cx + 3.5, y = cy - 3.5 } } }
+  els[#els + 1] = { type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7 * s,
+    closed = false, coordinates = { { x = cx - a, y = cy - a }, { x = cx + a, y = cy + a } } }
+  els[#els + 1] = { type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7 * s,
+    closed = false, coordinates = { { x = cx - a, y = cy + a }, { x = cx + a, y = cy - a } } }
 end
 
--- y helper (offset della card)
-local function Y(v) return v + MT end
-
-local function setRecordingElements(isPaused)
+setRecordingElements = function(isPaused)
+  local s = config.scale
+  local function sc(v) return v * s end
   local els, idx = {}, { bars = {} }
   local function add(el) els[#els + 1] = el; return #els end
+  local MTp = sc(10)
 
-  add(bgEl())
-
-  if isPaused then
-    idx.mic = add({ type = "rectangle", action = "fill", fillColor = COL.gold,
-      roundedRectRadii = { xRadius = 9, yRadius = 9 },
-      frame = { x = 12, y = Y(17), w = 36, h = 32 }, trackMouseUp = true, id = "mic" })
-    add({ type = "image", image = IMG.mic, imageScaling = "scaleProportionally",
-      frame = { x = 21, y = Y(23), w = 18, h = 20 } })
+  if config.orientation == "vertical" then
+    local pw, ph = 58, 206
+    placeCanvas(sc(pw) + sc(10), sc(ph) + MTp)
+    add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
+      strokeWidth = 1.2 * s, roundedRectRadii = { xRadius = 14 * s, yRadius = 14 * s },
+      frame = { x = 0, y = MTp, w = sc(pw), h = sc(ph) }, trackMouseDown = true, id = "drag" })
+    if isPaused then
+      idx.mic = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
+        roundedRectRadii = { xRadius = 7 * s, yRadius = 7 * s },
+        frame = { x = sc(8), y = MTp + sc(8), w = sc(26), h = sc(24) }, trackMouseUp = true, id = "settings" })
+      add({ type = "image", image = IMG.mic, imageScaling = "scaleProportionally",
+        frame = { x = sc(12), y = MTp + sc(10), w = sc(18), h = sc(20) } })
+    else
+      idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent,
+        center = { x = sc(15), y = MTp + sc(18) }, radius = sc(5) })
+    end
+    idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(13 * s), textColor = COL.white,
+      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = sc(24), y = MTp + sc(9), w = sc(32), h = sc(18) } })
+    local by, pitch = 40, 9
+    for i = 1, 9 do
+      local yb = MTp + sc(by + (i - 1) * pitch)
+      local ei = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
+        roundedRectRadii = { xRadius = 2 * s, yRadius = 2 * s }, frame = { x = sc(14), y = yb, w = sc(5), h = sc(3) } })
+      idx.bars[i] = { idx = ei, x = sc(14), y = yb }
+    end
+    idx.barMeta = { horizontal = false, s = s, barH = sc(3), maxLen = 30 }
+    add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
+      frame = { x = sc(13), y = MTp + sc(140), w = sc(32), h = sc(28) }, trackMouseUp = true, id = "pause" })
+    add({ type = "image", image = isPaused and IMG.play or IMG.pause, imageScaling = "scaleProportionally",
+      frame = { x = sc(20), y = MTp + sc(145), w = sc(18), h = sc(18) } })
+    add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
+      strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
+      frame = { x = sc(13), y = MTp + sc(172), w = sc(32), h = sc(28) }, trackMouseUp = true, id = "stop" })
+    add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
+      frame = { x = sc(22), y = MTp + sc(180), w = sc(14), h = sc(14) } })
+    pushBadge(els, "cancel", sc(pw), MTp, s)
   else
-    idx.dot = add({ type = "circle", action = "fill", fillColor = COL.gold,
-      center = { x = 30, y = Y(33) }, radius = 7 })
+    local pw, ph = 276, 54
+    placeCanvas(sc(pw) + sc(10), sc(ph) + MTp)
+    add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
+      strokeWidth = 1.2 * s, roundedRectRadii = { xRadius = 14 * s, yRadius = 14 * s },
+      frame = { x = 0, y = MTp, w = sc(pw), h = sc(ph) }, trackMouseDown = true, id = "drag" })
+    if isPaused then
+      idx.mic = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
+        roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
+        frame = { x = sc(10), y = MTp + sc(12), w = sc(34), h = sc(30) }, trackMouseUp = true, id = "settings" })
+      add({ type = "image", image = IMG.mic, imageScaling = "scaleProportionally",
+        frame = { x = sc(18), y = MTp + sc(17), w = sc(18), h = sc(20) } })
+    else
+      idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent,
+        center = { x = sc(20), y = MTp + sc(27) }, radius = sc(6) })
+    end
+    idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(19 * s), textColor = COL.white,
+      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = sc(36), y = MTp + sc(15), w = sc(52), h = sc(26) } })
+    local bx, pitch = 92, 8
+    for i = 1, 12 do
+      local xb = sc(bx + (i - 1) * pitch)
+      local ei = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
+        roundedRectRadii = { xRadius = 2 * s, yRadius = 2 * s }, frame = { x = xb, y = MTp + sc(25), w = sc(3), h = sc(4) } })
+      idx.bars[i] = { idx = ei, x = xb }
+    end
+    idx.barMeta = { horizontal = true, s = s, barW = sc(3), maxLen = 22, cy = MTp + sc(27) }
+    add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
+      frame = { x = sc(192), y = MTp + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, id = "pause" })
+    add({ type = "image", image = isPaused and IMG.play or IMG.pause, imageScaling = "scaleProportionally",
+      frame = { x = sc(199), y = MTp + sc(17), w = sc(18), h = sc(20) } })
+    add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
+      strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
+      frame = { x = sc(230), y = MTp + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, id = "stop" })
+    add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
+      frame = { x = sc(240), y = MTp + sc(19), w = sc(12), h = sc(12) } })
+    pushBadge(els, "cancel", sc(pw), MTp, s)
   end
-
-  idx.timer = add({ type = "text", text = "0:00", textSize = 21, textColor = COL.white,
-    textFont = "Menlo-Bold", textAlignment = "left", frame = { x = 56, y = Y(20), w = 52, h = 28 } })
-
-  for i = 1, N_BARS do
-    idx.bars[i] = add({ type = "rectangle", action = "fill", fillColor = COL.gold,
-      roundedRectRadii = { xRadius = 2, yRadius = 2 },
-      frame = { x = 112 + (i - 1) * 9, y = Y(31), w = 4, h = 4 } })
-  end
-
-  -- pausa / play
-  add({ type = "rectangle", action = "fill", fillColor = COL.gold,
-    roundedRectRadii = { xRadius = 9, yRadius = 9 },
-    frame = { x = 226, y = Y(17), w = 38, h = 32 }, trackMouseUp = true, id = "pause" })
-  add({ type = "image", image = isPaused and IMG.play or IMG.pause, imageScaling = "scaleProportionally",
-    frame = { x = 234, y = Y(23), w = 22, h = 20 } })
-
-  -- stop (ferma e trascrive)
-  add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear,
-    strokeColor = COL.gold, strokeWidth = 1.4,
-    roundedRectRadii = { xRadius = 9, yRadius = 9 },
-    frame = { x = 272, y = Y(17), w = 38, h = 32 }, trackMouseUp = true, id = "stop" })
-  add({ type = "rectangle", action = "fill", fillColor = COL.gold,
-    roundedRectRadii = { xRadius = 3, yRadius = 3 },
-    frame = { x = 284, y = Y(26), w = 14, h = 14 } })
-
-  pushCloseBadge(els, "cancel")   -- ✕ annulla (butta l'audio)
 
   overlay:replaceElements(els)
   RECIDX = idx
   mode = "rec"
 end
 
-local function setProcessingElements(text)
+setProcessingElements = function(text)
+  local s = config.scale
+  local function sc(v) return v * s end
+  local MTp = sc(10)
+  local pw, ph = 178, 46
+  placeCanvas(sc(pw) + sc(10), sc(ph) + MTp)
   local els = {}
-  els[1] = bgEl()
-  els[2] = { type = "circle", action = "fill", fillColor = COL.gold, center = { x = 30, y = Y(33) }, radius = 6 }
-  els[3] = { type = "text", text = text or "…", textSize = 17, textColor = COL.white,
-             textFont = "Menlo-Bold", textAlignment = "left", frame = { x = 48, y = Y(22), w = PILL_W - 84, h = 26 } }
-  pushCloseBadge(els, "close")
+  els[#els + 1] = { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
+    strokeWidth = 1.2 * s, roundedRectRadii = { xRadius = 14 * s, yRadius = 14 * s },
+    frame = { x = 0, y = MTp, w = sc(pw), h = sc(ph) }, trackMouseDown = true, id = "drag" }
+  els[#els + 1] = { type = "text", text = text or "…", textSize = math.floor(15 * s), textColor = COL.white,
+    textFont = "Menlo-Bold", textAlignment = "center", frame = { x = sc(8), y = MTp + sc(13), w = sc(pw) - sc(24), h = sc(22) } }
+  procTextIdx = #els
+  pushBadge(els, "close", sc(pw), MTp, s)
   overlay:replaceElements(els)
   mode = "proc"
 end
 
-local function setStatus(text)
-  if overlay and mode == "proc" then overlay:elementAttribute(3, "text", text) end
+setStatus = function(text)
+  if overlay and mode == "proc" and procTextIdx then overlay:elementAttribute(procTextIdx, "text", text) end
 end
 
-local function updateUI()
+updateUI = function()
   if not overlay or mode ~= "rec" or not RECIDX then return end
   overlay:elementAttribute(RECIDX.timer, "text", fmtTime(currentElapsed()))
   if RECIDX.dot then
     local a = 0.45 + 0.55 * math.abs(math.sin(now() * 3.2))
     overlay:elementAttribute(RECIDX.dot, "fillColor",
-      { red = COL.gold.red, green = COL.gold.green, blue = COL.gold.blue, alpha = a })
+      { red = COL.accent.red, green = COL.accent.green, blue = COL.accent.blue, white = COL.accent.white, alpha = a })
   end
-  local barCol = (recording and not paused) and COL.gold or COL.goldDim
-  for i, bidx in ipairs(RECIDX.bars) do
+  local bm = RECIDX.barMeta
+  local barCol = (recording and not paused) and COL.accent or COL.accentDim
+  for i, b in ipairs(RECIDX.bars) do
     local lv = levels[i] or 0
-    local h = 4 + lv * 26
-    overlay:elementAttribute(bidx, "fillColor", barCol)
-    overlay:elementAttribute(bidx, "frame", { x = 112 + (i - 1) * 9, y = Y(33) - h / 2, w = 4, h = h })
+    local fr
+    if bm.horizontal then
+      local h = (4 + lv * bm.maxLen) * bm.s
+      fr = { x = b.x, y = bm.cy - h / 2, w = bm.barW, h = h }
+    else
+      local w = (5 + lv * bm.maxLen) * bm.s
+      fr = { x = b.x, y = b.y, w = w, h = bm.barH }
+    end
+    overlay:elementAttribute(b.idx, "fillColor", barCol)
+    overlay:elementAttribute(b.idx, "frame", fr)
   end
 end
 
--- comparsa: pop-in dal basso + fade-in
-local function showAnimated()
+showAnimated = function()
   if not overlay or not finalFrame then return end
   if animTimer then animTimer:stop(); animTimer = nil end
   local f = finalFrame
@@ -385,22 +437,21 @@ local function showAnimated()
   local steps, i = 9, 0
   animTimer = hs.timer.doEvery(0.016, function()
     i = i + 1
-    local e = 1 - (1 - i / steps) ^ 2                  -- ease-out
+    local e = 1 - (1 - i / steps) ^ 2
     overlay:alpha(e)
     overlay:frame({ x = f.x, y = f.y + 14 * (1 - e), w = f.w, h = f.h })
     if i >= steps then animTimer:stop(); animTimer = nil; overlay:alpha(1); overlay:frame(f) end
   end)
 end
 
--- scomparsa: fade-out + scivola giù
-local function hideAnimated()
+hideAnimated = function()
   if not overlay or not finalFrame then if overlay then overlay:hide() end return end
   if animTimer then animTimer:stop(); animTimer = nil end
   local f = finalFrame
   local steps, i = 8, 0
   animTimer = hs.timer.doEvery(0.016, function()
     i = i + 1
-    local e = (i / steps) ^ 2                           -- ease-in
+    local e = (i / steps) ^ 2
     overlay:alpha(1 - e)
     overlay:frame({ x = f.x, y = f.y + 10 * e, w = f.w, h = f.h })
     if i >= steps then
@@ -410,20 +461,63 @@ local function hideAnimated()
   end)
 end
 
-local function showRecordingHUD()
-  ensureCanvas()
+showRecordingHUD = function()
   setRecordingElements(false)
   showAnimated()
   if uiTimer then uiTimer:stop() end
   uiTimer = hs.timer.new(0.06, updateUI); uiTimer:start()
 end
 
-local function stopUITimer() if uiTimer then uiTimer:stop(); uiTimer = nil end end
+stopUITimer = function() if uiTimer then uiTimer:stop(); uiTimer = nil end end
 
 function hideOverlay()
   stopUITimer()
   mode = nil; RECIDX = nil
   hideAnimated()
+end
+
+rebuildHUD = function()
+  if mode == "rec" then setRecordingElements(paused) end
+end
+
+openSettings = function()
+  getAudioDevices(function(list)
+    deviceCache = list
+    local choices = {}
+    for _, d in ipairs(list) do
+      choices[#choices + 1] = { text = "🎙  " .. d.name,
+        subText = "Microfono" .. (d.name == config.micName and "   •   attuale" or ""),
+        act = "mic", idx = d.idx, name = d.name }
+    end
+    local function row(text, sub, act, val) choices[#choices + 1] = { text = text, subText = sub, act = act, val = val } end
+    row("📐  Dimensione — Standard", config.sizePreset == "standard" and "attuale" or "", "size", "standard")
+    row("📐  Dimensione — Grande",   config.sizePreset == "large"    and "attuale" or "", "size", "large")
+    row("📐  Dimensione — Minimal",  config.sizePreset == "minimal"  and "attuale" or "", "size", "minimal")
+    row("🎨  Stile — Gold",          config.style == "gold" and "attuale" or "", "style", "gold")
+    row("🎨  Stile — Mono (WIP)",    config.style == "mono" and "attuale" or "", "style", "mono")
+    row("🧭  Orientamento — " .. (config.orientation == "vertical" and "passa a Orizzontale" or "passa a Verticale"),
+        "attuale: " .. config.orientation, "orient")
+    row("✋  Sposta la barra", "trascina la card col mouse (anche mentre registri)", "tip")
+
+    local ch = hs.chooser.new(function(c)
+      if not c then return end
+      if c.act == "mic" then
+        config.audioDevice = c.idx; config.micName = c.name
+        persist("micDevice", c.idx); persist("micName", c.name)
+        hs.alert.show("🎙️  " .. c.name)
+      elseif c.act == "size" then
+        config.sizePreset = c.val; config.scale = scaleFor(c.val); persist("sizePreset", c.val); rebuildHUD()
+      elseif c.act == "style" then
+        config.style = c.val; COL = PALETTES[c.val] or PALETTES.gold; persist("style", c.val); rebuildHUD()
+      elseif c.act == "orient" then
+        config.orientation = (config.orientation == "vertical") and "horizontal" or "vertical"
+        persist("orientation", config.orientation); resetLevels(); rebuildHUD()
+      end
+    end)
+    ch:placeholderText("Impostazioni Golden Whisper")
+    ch:choices(choices)
+    ch:show()
+  end)
 end
 
 ------------------------------------------------------------------------
@@ -452,8 +546,7 @@ local function backupSegments()
   local n = 0
   for i, p in ipairs(segments) do
     if fileSize(p) > 1000 then
-      local dest = string.format("%s/rec-%s-%d.wav", config.recDir, stamp, i)
-      hs.execute(string.format("cp '%s' '%s'", p, dest))
+      hs.execute(string.format("cp '%s' '%s/rec-%s-%d.wav'", p, config.recDir, stamp, i))
       n = n + 1
     end
   end
@@ -510,10 +603,9 @@ end
 local function finalizeAndTranscribe()
   busy = true
   stopUITimer()
-  ensureCanvas()
   if animTimer then animTimer:stop(); animTimer = nil end
   setProcessingElements("🎙️  Ricevuto")
-  overlay:alpha(1); overlay:frame(finalFrame); overlay:show()
+  if overlay then overlay:alpha(1); overlay:show() end
   hs.timer.doAfter(0.25, function()
     local valid = {}
     for _, p in ipairs(segments) do if fileSize(p) > 1000 then valid[#valid + 1] = p end end
@@ -538,7 +630,7 @@ end
 
 local function stopRotTimer() if rotTimer then rotTimer:stop(); rotTimer = nil end end
 
-local rotate  -- fwd
+local rotate
 local function startSegment()
   local p = segPath(segIndex)
   os.remove(p)
@@ -579,15 +671,15 @@ rotate = function()
   if not recording or paused then return end
   elapsed = elapsed + (now() - (segStart or now()))
   segStart = nil
-  stopCurrentSegment("rotate")   -- chiude il pezzo e ne apre un altro (continuità timer)
+  stopCurrentSegment("rotate")
 end
 
 local function start()
-  recoverOrphans()   -- salva eventuali segmenti di una sessione interrotta prima di ripulire
+  recoverOrphans()
   cleanupSegments()
-  local dev, fellBack, name = resolveMic()   -- risolve il mic salvato → indice attuale (o fallback)
+  local dev, fellBack, name = resolveMic()
   config.audioDevice = dev
-  refreshDevices()                           -- aggiorna la cache per la prossima volta
+  refreshDevices()
   elapsed = 0; segStart = nil; paused = false; segIndex = 0
   if fellBack then hs.alert.show("🎙️ Mic salvato non disponibile → uso “" .. (name or dev) .. "”", 3) end
   resetLevels()
@@ -635,10 +727,7 @@ function M.togglePause()
 end
 
 ------------------------------------------------------------------------
--- HOTKEY
---   START  = DOPPIO tap del tasto start/stop (Option dx, o Ctrl dx)  → evita partenze accidentali
---   STOP   = UN tap dello stesso tasto mentre registra
---   PAUSA  = UN tap del tasto pausa (Shift dx) mentre registra
+-- HOTKEY: START = doppio tap (Option dx o Ctrl dx) | STOP/PAUSA = un tap
 ------------------------------------------------------------------------
 local watcher = nil
 local function handleDouble(kc, action)
@@ -649,28 +738,24 @@ local function handleDouble(kc, action)
 end
 
 local function initHotkeys()
-  -- tasti start/stop: quello da settings + Ctrl destro come alternativa universale
   local ss = { { config.startStopKeycode, config.startStopFlag } }
   local hasCtrl = false
   for _, k in ipairs(ss) do if k[1] == 62 then hasCtrl = true end end
-  if not hasCtrl then table.insert(ss, { 62, "ctrl" }) end   -- Ctrl destro (tastiere senza right option/cmd)
+  if not hasCtrl then table.insert(ss, { 62, "ctrl" }) end
   local pz = { { config.pauseKeycode, config.pauseFlag } }
 
   watcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(e)
     local kc, fl = e:getKeyCode(), e:getFlags()
     for _, k in ipairs(ss) do
       if kc == k[1] and fl[k[2]] then
-        if recording then
-          if not busy then M.stop() end              -- STOP con un tap
-        else
-          handleDouble(kc, function() if not busy then start() end end)  -- START con doppio tap
-        end
+        if recording then if not busy then M.stop() end
+        else handleDouble(kc, function() if not busy then start() end end) end
         return false
       end
     end
     for _, k in ipairs(pz) do
       if kc == k[1] and fl[k[2]] then
-        if recording and not busy then M.togglePause() end   -- PAUSA con un tap
+        if recording and not busy then M.togglePause() end
         return false
       end
     end
@@ -680,7 +765,7 @@ local function initHotkeys()
 end
 
 ------------------------------------------------------------------------
--- AUTO-UPDATE (controlla GitHub, si aggiorna da solo; mai durante una registrazione)
+-- AUTO-UPDATE
 ------------------------------------------------------------------------
 local deferReload
 deferReload = function()
@@ -717,14 +802,14 @@ local function checkUpdate(silent)
   t:start()
 end
 
-function M.update() checkUpdate(false) end   -- update manuale:  hs -c "require('groq_dictation').update()"
+function M.update() checkUpdate(false) end
 
 function M.init()
   loadSettings()
   hs.execute("mkdir -p '" .. config.workDir .. "' '" .. config.recDir .. "'")
-  recoverOrphans()   -- recupera audio di un'eventuale sessione interrotta (reload/crash)
-  refreshDevices()   -- popola la cache dei microfoni
-  hs.audiodevice.watcher.setCallback(function() refreshDevices() end)  -- aggiorna sui cambi (es. AirPods on/off)
+  recoverOrphans()
+  refreshDevices()
+  hs.audiodevice.watcher.setCallback(function() refreshDevices() end)
   hs.audiodevice.watcher.start()
   initHotkeys()
   if config.autoUpdate ~= false then

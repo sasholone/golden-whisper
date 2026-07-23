@@ -68,8 +68,9 @@ Steps:
 7. Report — plain language
    - Tell me it's ready and how to use it:
      • double-tap Right Option (or Right Ctrl) = START; a single tap of that key = STOP
-     • single tap Right Shift = pause / resume (in pause, click the mic button to switch input)
-     • the ✕ bubble (top-right) cancels and discards a recording
+     • single tap Right Shift = pause / resume (in pause, click the mic button to open settings:
+       microphone, size, orientation, style)
+     • the ✕ bubble (top-right) cancels and discards a recording; drag the bar anywhere to move it
    - Tell me it auto-updates from GitHub daily (I can also update anytime with:
        bash ~/golden-whisper/update.sh   — or ask you to "update Golden Whisper").
    - Tell me to put my cursor somewhere and try it.
