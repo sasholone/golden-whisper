@@ -22,7 +22,8 @@ microphone waveform, and pause / stop buttons, with a ✕ badge to cancel.
 - **Clean pause** — recording is segmented, so pausing doesn't record dead silence.
 - **No length limit / never lose audio** — long recordings are auto‑split (every `maxSegmentSec`, default 8 min) so they stay under Groq's file limit; each chunk is transcribed and the text is joined. If a transcription fails, the audio is saved to `~/.config/groq-dictation/recordings/` instead of being lost.
 - **Draggable** — grab the bar anywhere and move it (even while recording); position is remembered.
-- **Settings menu** — while paused, click the 🎙️ button: pick the microphone, choose a **size** (standard / large / minimal), an **orientation** (horizontal / vertical) and a **style** (gold, more WIP).
+- **Settings menu** — while paused, click the ⚙ gear: pick the microphone, **size** (standard/large/minimal), **orientation** (horizontal/vertical), **style** (Gold, Mono, Gold Light, Mono Light), and fully **rebind the keys** — for Start/Stop and Pause choose the key (right Option/Ctrl/Cmd/Shift) and the gesture (double‑tap / single‑tap / hold).
+- **Polished HUD** — hover feedback on every control and a soft drop shadow; the panel and bar are draggable.
 - **Auto‑update** — checks GitHub daily and updates itself (only ever restarts when you're not recording).
 
 ## Requirements
