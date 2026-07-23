@@ -135,14 +135,14 @@ local function bindLabel(b)
 end
 local function serializeBindings(list)
   local t = {}
-  for _, b in ipairs(list) do t[#t + 1] = b.kc .. ":" .. (b.mod or "key") end
+  for _, b in ipairs(list) do t[#t + 1] = b.kc .. ":" .. (b.mod or "key") .. ":" .. (b.gesture or "double") end
   return table.concat(t, ";")
 end
-local function parseBindings(str)
+local function parseBindings(str, defGest)
   local list = {}
   for pair in tostring(str or ""):gmatch("[^;]+") do
-    local kc, mod = pair:match("(%d+):(%a+)")
-    if kc then list[#list + 1] = { kc = tonumber(kc), mod = mod } end
+    local kc, mod, g = pair:match("(%d+):(%a+):?(%a*)")
+    if kc then list[#list + 1] = { kc = tonumber(kc), mod = mod, gesture = (g ~= "" and g) or defGest or "double" } end
   end
   return list
 end
@@ -158,13 +158,11 @@ local function loadSettings()
   if s.micDevice then config.audioDevice = s.micDevice end
   if s.micName   then config.micName = s.micName end
   if s.model     then config.model = s.model end
-  -- bindings (nuovo formato stringa "kc:mod;kc:mod"); back-compat coi vecchi keycode singoli
-  if s.ssBindings then config.ssBindings = parseBindings(s.ssBindings)
-  elseif s.startStopKeycode then config.ssBindings = { { kc = s.startStopKeycode, mod = s.startStopFlag or KEYCODE_MOD[s.startStopKeycode] or "key" } } end
-  if s.ssGesture then config.ssGesture = s.ssGesture end
-  if s.pauseBindings then config.pauseBindings = parseBindings(s.pauseBindings)
-  elseif s.pauseKeycode then config.pauseBindings = { { kc = s.pauseKeycode, mod = s.pauseFlag or KEYCODE_MOD[s.pauseKeycode] or "key" } } end
-  if s.pauseGesture then config.pauseGesture = s.pauseGesture end
+  -- bindings: "kc:mod:gesture;..." (gesto per-tasto); back-compat coi vecchi formati
+  if s.ssBindings then config.ssBindings = parseBindings(s.ssBindings, s.ssGesture or "double")
+  elseif s.startStopKeycode then config.ssBindings = { { kc = s.startStopKeycode, mod = s.startStopFlag or KEYCODE_MOD[s.startStopKeycode] or "key", gesture = s.ssGesture or "double" } } end
+  if s.pauseBindings then config.pauseBindings = parseBindings(s.pauseBindings, s.pauseGesture or "single")
+  elseif s.pauseKeycode then config.pauseBindings = { { kc = s.pauseKeycode, mod = s.pauseFlag or KEYCODE_MOD[s.pauseKeycode] or "key", gesture = s.pauseGesture or "single" } } end
   if s.doubleTapSec     then config.doubleTapSec = s.doubleTapSec end
   if s.maxSegmentSec    then config.maxSegmentSec = s.maxSegmentSec end
   if s.restoreClipboard ~= nil then config.restoreClipboard = s.restoreClipboard end
@@ -180,8 +178,8 @@ local function loadSettings()
   if s.themeAuto and not s.themeMode then config.themeMode = "auto" end
   if s.posX then config.posX = s.posX end
   if s.posY then config.posY = s.posY end
-  if #config.ssBindings == 0 then config.ssBindings = { { kc = 61, mod = "alt" } } end
-  if #config.pauseBindings == 0 then config.pauseBindings = { { kc = 60, mod = "shift" } } end
+  if #config.ssBindings == 0 then config.ssBindings = { { kc = 61, mod = "alt", gesture = "double" } } end
+  if #config.pauseBindings == 0 then config.pauseBindings = { { kc = 60, mod = "shift", gesture = "single" } } end
   config.scale = scaleFor(config.sizePreset)
   applyTheme()
   local rf = io.open(os.getenv("HOME") .. "/.config/groq-dictation/repo_path", "r")
@@ -361,6 +359,7 @@ startDrag = function() dragCanvas(overlay, true) end
 -- ✕ badge (cancel/close) sporgente dall'angolo
 pushBadge = function(els, id, cx, cy, s, map)
   local r, a = 10 * s, 3.5 * s
+  pushShadow(els, cx - r, cy - r, 2 * r, 2 * r, s, r, 5, 0.03, 2 * s, 1.2 * s)   -- ombrina sotto il badge
   local ci = #els + 1
   els[ci] = { type = "circle", action = "strokeAndFill", fillColor = COL.bg,
     strokeColor = COL.accent, strokeWidth = 1.2 * s, center = { x = cx, y = cy }, radius = r,
@@ -369,7 +368,7 @@ pushBadge = function(els, id, cx, cy, s, map)
     closed = false, coordinates = { { x = cx - a, y = cy - a }, { x = cx + a, y = cy + a } } }
   els[#els + 1] = { type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7 * s,
     closed = false, coordinates = { { x = cx - a, y = cy + a }, { x = cx + a, y = cy - a } } }
-  if map then map[id] = { idx = ci, fill = COL.bg, hoverFill = COL.accentFaint } end
+  if map then map[id] = { idx = ci, fill = COL.bg, hoverFill = mix(COL.bg, COL.accent, 0.16), stroke = COL.accent, hoverStroke = COL.accentHover } end
 end
 
 -- ingranaggio pieno (impostazioni)
@@ -594,7 +593,7 @@ rebuildHUD = function() if mode == "rec" then setRecordingElements(paused) end e
 ------------------------------------------------------------------------
 -- MENU IMPOSTAZIONI (canvas, on-brand, trascinabile, con hover)
 ------------------------------------------------------------------------
-local SPANEL_W = 268
+local SPANEL_W = 300
 local KEYMAP = { opt = { 61, "alt" }, ctrl = { 62, "ctrl" }, cmd = { 54, "cmd" }, shift = { 60, "shift" } }
 
 closeSettings = function() if settingsCanvas then settingsCanvas:delete(); settingsCanvas = nil end end
@@ -628,8 +627,10 @@ settingsMouse = function(_c, msg, id)
   elseif kind == "orient" then config.orientation = val; persist("orientation", val); resetLevels(); rebuildHUD()
   elseif kind == "style" then config.style = val; persist("style", val); applyTheme(); rebuildHUD()
   elseif kind == "theme" then config.themeMode = val; persist("themeMode", val); applyTheme(); rebuildHUD()
-  elseif kind == "ssgest" then config.ssGesture = val; persist("ssGesture", val)
-  elseif kind == "pausegest" then config.pauseGesture = val; persist("pauseGesture", val)
+  elseif kind == "gest" then
+    local which, i, g = val:match("(%a+):(%d+):(%a+)"); i = tonumber(i)
+    local list = (which == "ss") and config.ssBindings or config.pauseBindings
+    if list and list[i] then list[i].gesture = g; saveBindings() end
   elseif kind == "add" then startCapture(val); return
   elseif kind == "del" then
     local which, i = val:match("(%a+):(%d+)"); i = tonumber(i)
@@ -644,6 +645,9 @@ renderSettings = function()
   local W, pad = SPANEL_W + 2 * SP, 16 + SP
   local els, y = {}, 12 + SP
   sHoverMap = {}
+  -- riservo gli slot per ombra + sfondo IN TESTA (indici stabili → l'hover non corrompe gli elementi)
+  local NSHADOW = 14
+  for i = 1, NSHADOW + 1 do els[i] = { type = "rectangle", action = "fill", fillColor = { alpha = 0 }, frame = { x = 0, y = 0, w = 1, h = 1 } } end
   local function add(el) els[#els + 1] = el; return #els end
   local function label(txt)
     add({ type = "text", text = txt, textSize = 10, textColor = COL.accentDim, textFont = "Menlo-Bold",
@@ -665,27 +669,47 @@ renderSettings = function()
     end
     y = y + 40
   end
-  local function bindings(actionKey, list)
+  -- una card per bind: [tasto] a sinistra, [gesto: 2tap/1tap/hold] a destra, [×] elimina
+  local function bindings(actionKey, list, gestures)
+    local IW = W - pad * 2
     for i, b in ipairs(list) do
-      add({ type = "rectangle", action = "fill", fillColor = COL.accentFaint, roundedRectRadii = { xRadius = 7, yRadius = 7 },
-        frame = { x = pad, y = y, w = W - pad * 2, h = 28 } })
-      add({ type = "text", text = bindLabel(b), textSize = 12, textColor = COL.accent, textFont = "Menlo-Bold",
-        textAlignment = "left", frame = { x = pad + 12, y = y + 7, w = W - pad * 2 - 40, h = 16 } })
-      local ci = add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent, strokeWidth = 1.1,
-        center = { x = W - pad - 13, y = y + 14 }, radius = 8, trackMouseUp = true, trackMouseEnterExit = true, id = "del:" .. actionKey .. ":" .. i })
-      sHoverMap["del:" .. actionKey .. ":" .. i] = { idx = ci, fill = COL.bg, hoverFill = COL.accentFaint }
-      add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.4, closed = false,
-        coordinates = { { x = W - pad - 16, y = y + 11 }, { x = W - pad - 10, y = y + 17 } } })
-      add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.4, closed = false,
-        coordinates = { { x = W - pad - 16, y = y + 17 }, { x = W - pad - 10, y = y + 11 } } })
-      y = y + 32
+      add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accentDim, strokeWidth = 1,
+        roundedRectRadii = { xRadius = 9, yRadius = 9 }, frame = { x = pad, y = y, w = IW, h = 36 } })
+      add({ type = "text", text = bindLabel(b), textSize = 13, textColor = COL.accent, textFont = "Menlo-Bold",
+        textAlignment = "left", frame = { x = pad + 12, y = y + 10, w = 56, h = 16 } })
+      -- × elimina (estremo destro)
+      local dcx = pad + IW - 16
+      local ci = add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent, strokeWidth = 1,
+        center = { x = dcx, y = y + 18 }, radius = 8, trackMouseUp = true, trackMouseEnterExit = true, id = "del:" .. actionKey .. ":" .. i })
+      sHoverMap["del:" .. actionKey .. ":" .. i] = { idx = ci, fill = COL.bg, hoverFill = mix(COL.bg, COL.accent, 0.16), stroke = COL.accent, hoverStroke = COL.accentHover }
+      add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.3, closed = false,
+        coordinates = { { x = dcx - 3, y = y + 15 }, { x = dcx + 3, y = y + 21 } } })
+      add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.3, closed = false,
+        coordinates = { { x = dcx - 3, y = y + 21 }, { x = dcx + 3, y = y + 15 } } })
+      -- gesti (centro-destra)
+      local gx, gx2 = pad + 78, pad + IW - 34
+      local n, gap = #gestures, 4
+      local pw2 = (gx2 - gx - (n - 1) * gap) / n
+      for j, opt in ipairs(gestures) do
+        local x = gx + (j - 1) * (pw2 + gap); local curg = (b.gesture == opt.val)
+        local ri = add({ type = "rectangle", action = "strokeAndFill", fillColor = curg and COL.accent or COL.clear,
+          strokeColor = COL.accent, strokeWidth = 1, roundedRectRadii = { xRadius = 6, yRadius = 6 },
+          frame = { x = x, y = y + 5, w = pw2, h = 26 }, trackMouseUp = true, trackMouseEnterExit = true,
+          id = "gest:" .. actionKey .. ":" .. i .. ":" .. opt.val })
+        sHoverMap["gest:" .. actionKey .. ":" .. i .. ":" .. opt.val] = { idx = ri,
+          fill = curg and COL.accent or COL.clear, hoverFill = curg and COL.accentHover or COL.clear,
+          stroke = COL.accent, hoverStroke = COL.accentHover }
+        add({ type = "text", text = opt.label, textSize = 10, textColor = curg and COL.bg or COL.accent,
+          textFont = "Menlo-Bold", textAlignment = "center", frame = { x = x, y = y + 11, w = pw2, h = 13 } })
+      end
+      y = y + 42
     end
     local ai = add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent, strokeWidth = 1,
-      roundedRectRadii = { xRadius = 7, yRadius = 7 }, frame = { x = pad, y = y, w = W - pad * 2, h = 28 },
+      roundedRectRadii = { xRadius = 7, yRadius = 7 }, frame = { x = pad, y = y, w = IW, h = 28 },
       trackMouseUp = true, trackMouseEnterExit = true, id = "add:" .. actionKey })
     sHoverMap["add:" .. actionKey] = { idx = ai, fill = COL.clear, hoverFill = COL.accentFaint }
     add({ type = "text", text = "+  aggiungi tasto", textSize = 12, textColor = COL.accent, textFont = "Menlo-Bold",
-      textAlignment = "center", frame = { x = pad, y = y + 7, w = W - pad * 2, h = 16 } })
+      textAlignment = "center", frame = { x = pad, y = y + 7, w = IW, h = 16 } })
     y = y + 34
   end
 
@@ -728,28 +752,25 @@ renderSettings = function()
     label("TEMA")
     segRow({ { label = "Dark", val = "dark" }, { label = "Light", val = "light" }, { label = "Auto", val = "auto" } }, config.themeMode, "theme")
   else
-    label("AVVIO / STOP — tasti (aggiungine quanti vuoi)")
-    bindings("ss", config.ssBindings)
-    label("AVVIO / STOP — gesto")
-    segRow({ { label = "2 tap", val = "double" }, { label = "1 tap", val = "single" }, { label = "tieni", val = "hold" } }, config.ssGesture, "ssgest")
-    label("PAUSA — tasti")
-    bindings("pause", config.pauseBindings)
-    label("PAUSA — gesto")
-    segRow({ { label = "1 tap", val = "single" }, { label = "2 tap", val = "double" } }, config.pauseGesture, "pausegest")
+    label("AVVIO / STOP")
+    bindings("ss", config.ssBindings, { { label = "2 tap", val = "double" }, { label = "1 tap", val = "single" }, { label = "hold", val = "hold" } })
+    label("PAUSA")
+    bindings("pause", config.pauseBindings, { { label = "1 tap", val = "single" }, { label = "2 tap", val = "double" } })
   end
 
   local H = y + SP + 4
-  local bgstack = {}
-  pushShadow(bgstack, SP, SP, W - 2 * SP, H - 2 * SP, 1, 16, 7, 0.035, 5, 2.4)
-  bgstack[#bgstack + 1] = { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
+  -- riempio gli slot riservati: ombra sfumata + sfondo
+  local head = {}
+  pushShadow(head, SP, SP, W - 2 * SP, H - 2 * SP, 1, 16, NSHADOW, 0.02, 6, 1.1)
+  head[#head + 1] = { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
     strokeWidth = 1.5, roundedRectRadii = { xRadius = 16, yRadius = 16 },
     frame = { x = SP, y = SP, w = W - 2 * SP, h = H - 2 * SP },
     fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.bg, COL.bg2 or COL.bg },
     trackMouseDown = true, id = "s_drag" }
-  for i = #bgstack, 1, -1 do table.insert(els, 1, bgstack[i]) end
+  for i = 1, NSHADOW + 1 do els[i] = head[i] end
   local cbi = add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent, strokeWidth = 1.2,
     center = { x = W - SP - 22, y = SP + 24 }, radius = 11, trackMouseUp = true, trackMouseEnterExit = true, id = "s_close" })
-  sHoverMap["s_close"] = { idx = cbi, fill = COL.bg, hoverFill = COL.accentFaint }
+  sHoverMap["s_close"] = { idx = cbi, fill = COL.bg, hoverFill = mix(COL.bg, COL.accent, 0.16), stroke = COL.accent, hoverStroke = COL.accentHover }
   add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7, closed = false,
     coordinates = { { x = W - SP - 26, y = SP + 20 }, { x = W - SP - 18, y = SP + 28 } } })
   add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7, closed = false,
@@ -945,7 +966,7 @@ startCapture = function(actionKey)
     tap:stop()
     local list = (actionKey == "ss") and config.ssBindings or config.pauseBindings
     local dup = false; for _, b in ipairs(list) do if b.kc == kc then dup = true end end
-    if not dup then list[#list + 1] = { kc = kc, mod = mod } end
+    if not dup then list[#list + 1] = { kc = kc, mod = mod, gesture = (actionKey == "ss" and "double" or "single") } end
     saveBindings(); renderSettings()
     return (mod == "key")
   end)
@@ -969,8 +990,8 @@ local function initHotkeys()
     elseif et == T.keyUp then
       down = false
     else return false end
+    local g = b.gesture or (act == "ss" and "double" or "single")
     if act == "ss" then
-      local g = config.ssGesture
       if g == "hold" then
         if down then if not recording and not busy then start() end elseif recording then M.stop() end
       elseif g == "single" then
@@ -983,7 +1004,7 @@ local function initHotkeys()
       end
     else
       if down then
-        if config.pauseGesture == "double" then handleDouble(kc, function() if recording and not busy then M.togglePause() end end)
+        if g == "double" then handleDouble(kc, function() if recording and not busy then M.togglePause() end end)
         elseif recording and not busy then M.togglePause() end
       end
     end
