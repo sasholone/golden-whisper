@@ -20,10 +20,13 @@ local config = {
   ffmpeg       = "/opt/homebrew/bin/ffmpeg",
   curl         = "/usr/bin/curl",
   kill         = "/bin/kill",
-  startStopKeycode = 61, startStopFlag = "alt",   -- Option dx
-  ssGesture    = "double",                         -- double | single | hold
-  pauseKeycode = 60, pauseFlag = "shift",          -- Shift dx
-  pauseGesture = "single",                         -- single | double
+  ssBindings   = {},           -- lista {kc=, mod=} — più tasti che avviano/fermano (impostabili dal menu)
+  ssGesture    = "double",     -- double | single | hold
+  pauseBindings = {},          -- lista {kc=, mod=}
+  pauseGesture = "single",     -- single | double
+  -- default/back-compat (usati se non ci sono bindings salvati)
+  startStopKeycode = 61, startStopFlag = "alt",
+  pauseKeycode = 60, pauseFlag = "shift",
   doubleTapSec = 0.50,
   maxSegmentSec = 480,
   restoreClipboard = false,
@@ -33,8 +36,8 @@ local config = {
   repoDir      = os.getenv("HOME") .. "/golden-whisper",
   sizePreset   = "standard",   -- standard | large | minimal
   orientation  = "horizontal", -- horizontal | vertical
-  style        = "gold",       -- gold | mono | goldlight | monolight
-  themeAuto    = false,        -- se true segue il tema chiaro/scuro del sistema
+  style        = "gold",       -- famiglia: gold | mono | ocean | violet | emerald | rose
+  themeMode    = "dark",       -- dark | light | auto (auto segue il sistema)
   scale        = 1.0,
 }
 
@@ -57,6 +60,7 @@ local placeCanvas, mouseCb, startDrag, pushBadge, pushGear, pushPause, pushPlay
 local setRecordingElements, setProcessingElements, setStatus, updateUI
 local showAnimated, hideAnimated, showRecordingHUD, stopUITimer
 local openSettings, rebuildHUD, renderSettings, settingsMouse, closeSettings, dragCanvas
+local startCapture, saveBindings
 local settingsCanvas
 local settingsDevices = {}
 local sHoverMap = {}
@@ -65,39 +69,34 @@ local settingsPage = "general"   -- general | keys
 ------------------------------------------------------------------------
 -- PALETTE / STILI
 ------------------------------------------------------------------------
-local PALETTES = {
-  gold = {
-    bg = { red = 0.05, green = 0.05, blue = 0.06, alpha = 0.97 },
-    accent = { red = 0.83, green = 0.68, blue = 0.36 },
-    accentDim = { red = 0.48, green = 0.40, blue = 0.23 },
-    accentHover = { red = 0.94, green = 0.80, blue = 0.52 },
-    accentFaint = { red = 0.83, green = 0.68, blue = 0.36, alpha = 0.20 },
-    fg = { white = 0.97 }, clear = { alpha = 0 },
-  },
-  mono = {
-    bg = { red = 0.06, green = 0.06, blue = 0.07, alpha = 0.97 },
-    accent = { white = 0.86 }, accentDim = { white = 0.42 },
-    accentHover = { white = 1.0 }, accentFaint = { white = 0.86, alpha = 0.18 },
-    fg = { white = 0.98 }, clear = { alpha = 0 },
-  },
-  goldlight = {
-    bg = { red = 0.99, green = 0.98, blue = 0.95, alpha = 0.98 },
-    accent = { red = 0.70, green = 0.53, blue = 0.16 },
-    accentDim = { red = 0.80, green = 0.72, blue = 0.55 },
-    accentHover = { red = 0.82, green = 0.64, blue = 0.26 },
-    accentFaint = { red = 0.70, green = 0.53, blue = 0.16, alpha = 0.16 },
-    fg = { red = 0.16, green = 0.13, blue = 0.08 }, clear = { alpha = 0 },
-  },
-  monolight = {
-    bg = { red = 0.98, green = 0.98, blue = 0.99, alpha = 0.98 },
-    accent = { red = 0.20, green = 0.20, blue = 0.24 },
-    accentDim = { red = 0.62, green = 0.62, blue = 0.66 },
-    accentHover = { red = 0.36, green = 0.36, blue = 0.42 },
-    accentFaint = { red = 0.20, green = 0.20, blue = 0.24, alpha = 0.12 },
-    fg = { red = 0.12, green = 0.12, blue = 0.15 }, clear = { alpha = 0 },
-  },
+local function C(r, g, b, a) return { red = r, green = g, blue = b, alpha = a or 1 } end
+local function lighten(c, t) return { red = c.red + (1 - c.red) * t, green = c.green + (1 - c.green) * t, blue = c.blue + (1 - c.blue) * t, alpha = 1 } end
+local function mix(a, b, t) return { red = a.red * (1 - t) + b.red * t, green = a.green * (1 - t) + b.green * t, blue = a.blue * (1 - t) + b.blue * t, alpha = 1 } end
+local function faint(c) return { red = c.red, green = c.green, blue = c.blue, alpha = 0.20 } end
+local function variant(bg, accent, fg)
+  return { bg = bg, accent = accent, fg = fg, clear = { alpha = 0 },
+    bg2 = lighten(bg, (fg.red or fg.white or 1) > 0.5 and 0.06 or -0.0),   -- gradiente sottile
+    accentDim = mix(accent, bg, 0.45), accentHover = lighten(accent, 0.30), accentFaint = faint(accent) }
+end
+local DARK = C(0.05, 0.05, 0.06, 0.97)
+
+-- Famiglie di stile: ognuna con variante dark e light. Primario = accent.
+local FAMILIES = {
+  gold    = { name = "Gold",    dark = variant(DARK, C(0.83, 0.68, 0.36), C(1, 1, 1)),
+                                 light = variant(C(0.99, 0.98, 0.95, 0.98), C(0.66, 0.50, 0.14), C(0.14, 0.12, 0.08)) },
+  mono    = { name = "Mono",    dark = variant(DARK, C(0.88, 0.88, 0.90), C(1, 1, 1)),
+                                 light = variant(C(0.98, 0.98, 0.99, 0.98), C(0.18, 0.18, 0.22), C(0.10, 0.10, 0.12)) },
+  ocean   = { name = "Ocean",   dark = variant(C(0.04, 0.07, 0.12, 0.97), C(0.36, 0.56, 0.98), C(0.95, 0.97, 1)),
+                                 light = variant(C(0.95, 0.97, 1, 0.98), C(0.15, 0.40, 0.85), C(0.08, 0.12, 0.20)) },
+  violet  = { name = "Violet",  dark = variant(C(0.09, 0.06, 0.14, 0.97), C(0.62, 0.46, 0.96), C(0.97, 0.95, 1)),
+                                 light = variant(C(0.97, 0.95, 1, 0.98), C(0.46, 0.30, 0.85), C(0.14, 0.10, 0.20)) },
+  emerald = { name = "Emerald", dark = variant(C(0.03, 0.10, 0.08, 0.97), C(0.15, 0.80, 0.56), C(0.94, 1, 0.97)),
+                                 light = variant(C(0.94, 1, 0.97, 0.98), C(0.05, 0.60, 0.42), C(0.06, 0.16, 0.12)) },
+  rose    = { name = "Rose",    dark = variant(C(0.12, 0.05, 0.08, 0.97), C(0.98, 0.46, 0.56), C(1, 0.96, 0.97)),
+                                 light = variant(C(1, 0.95, 0.96, 0.98), C(0.85, 0.25, 0.40), C(0.18, 0.08, 0.10)) },
 }
-local COL = PALETTES.gold
+local FAMILY_ORDER = { "gold", "mono", "ocean", "violet", "emerald", "rose" }
+local COL = FAMILIES.gold.dark
 
 local function scaleFor(preset)
   if preset == "minimal" then return 0.72
@@ -111,12 +110,41 @@ local function systemIsDark()
 end
 
 local function applyTheme()
-  local st = config.style
-  if config.themeAuto then
-    local fam = config.style:find("mono") and "mono" or "gold"
-    st = systemIsDark() and fam or (fam .. "light")
+  local fam = FAMILIES[config.style] or FAMILIES.gold
+  local mode = config.themeMode
+  if mode == "auto" then mode = systemIsDark() and "dark" or "light" end
+  if mode ~= "dark" and mode ~= "light" then mode = "dark" end
+  COL = fam[mode]
+end
+
+------------------------------------------------------------------------
+-- TASTI: bindings (qualsiasi tasto, anche multipli)
+------------------------------------------------------------------------
+local KEYCODE_MOD = { [61] = "alt", [58] = "alt", [62] = "ctrl", [59] = "ctrl", [54] = "cmd", [55] = "cmd", [60] = "shift", [56] = "shift", [63] = "fn" }
+local MODSYM = { alt = "⌥", ctrl = "⌃", cmd = "⌘", shift = "⇧", fn = "fn" }
+local SIDE = { [61] = " dx", [58] = " sx", [62] = " dx", [59] = " sx", [54] = " dx", [55] = " sx", [60] = " dx", [56] = " sx" }
+local KC2NAME = {}
+for name, code in pairs(hs.keycodes.map) do
+  if type(code) == "number" and type(name) == "string" and not KC2NAME[code] then KC2NAME[code] = name end
+end
+local function bindLabel(b)
+  if b.mod and MODSYM[b.mod] then return MODSYM[b.mod] .. (SIDE[b.kc] or "") end
+  local n = KC2NAME[b.kc] or ("#" .. b.kc)
+  if #n == 1 then n = n:upper() end
+  return n
+end
+local function serializeBindings(list)
+  local t = {}
+  for _, b in ipairs(list) do t[#t + 1] = b.kc .. ":" .. (b.mod or "key") end
+  return table.concat(t, ";")
+end
+local function parseBindings(str)
+  local list = {}
+  for pair in tostring(str or ""):gmatch("[^;]+") do
+    local kc, mod = pair:match("(%d+):(%a+)")
+    if kc then list[#list + 1] = { kc = tonumber(kc), mod = mod } end
   end
-  COL = PALETTES[st] or PALETTES.gold
+  return list
 end
 
 ------------------------------------------------------------------------
@@ -130,12 +158,13 @@ local function loadSettings()
   if s.micDevice then config.audioDevice = s.micDevice end
   if s.micName   then config.micName = s.micName end
   if s.model     then config.model = s.model end
-  if s.startStopKeycode then config.startStopKeycode = s.startStopKeycode end
-  if s.startStopFlag    then config.startStopFlag = s.startStopFlag end
-  if s.ssGesture        then config.ssGesture = s.ssGesture end
-  if s.pauseKeycode     then config.pauseKeycode = s.pauseKeycode end
-  if s.pauseFlag        then config.pauseFlag = s.pauseFlag end
-  if s.pauseGesture     then config.pauseGesture = s.pauseGesture end
+  -- bindings (nuovo formato stringa "kc:mod;kc:mod"); back-compat coi vecchi keycode singoli
+  if s.ssBindings then config.ssBindings = parseBindings(s.ssBindings)
+  elseif s.startStopKeycode then config.ssBindings = { { kc = s.startStopKeycode, mod = s.startStopFlag or KEYCODE_MOD[s.startStopKeycode] or "key" } } end
+  if s.ssGesture then config.ssGesture = s.ssGesture end
+  if s.pauseBindings then config.pauseBindings = parseBindings(s.pauseBindings)
+  elseif s.pauseKeycode then config.pauseBindings = { { kc = s.pauseKeycode, mod = s.pauseFlag or KEYCODE_MOD[s.pauseKeycode] or "key" } } end
+  if s.pauseGesture then config.pauseGesture = s.pauseGesture end
   if s.doubleTapSec     then config.doubleTapSec = s.doubleTapSec end
   if s.maxSegmentSec    then config.maxSegmentSec = s.maxSegmentSec end
   if s.restoreClipboard ~= nil then config.restoreClipboard = s.restoreClipboard end
@@ -144,9 +173,15 @@ local function loadSettings()
   if s.sizePreset  then config.sizePreset = s.sizePreset end
   if s.orientation then config.orientation = s.orientation end
   if s.style       then config.style = s.style end
-  if s.themeAuto ~= nil then config.themeAuto = s.themeAuto end
+  if s.themeMode   then config.themeMode = s.themeMode end
+  -- migrazione dai vecchi stili/flag
+  if config.style == "goldlight" then config.style = "gold"; if not s.themeMode then config.themeMode = "light" end
+  elseif config.style == "monolight" then config.style = "mono"; if not s.themeMode then config.themeMode = "light" end end
+  if s.themeAuto and not s.themeMode then config.themeMode = "auto" end
   if s.posX then config.posX = s.posX end
   if s.posY then config.posY = s.posY end
+  if #config.ssBindings == 0 then config.ssBindings = { { kc = 61, mod = "alt" } } end
+  if #config.pauseBindings == 0 then config.pauseBindings = { { kc = 60, mod = "shift" } } end
   config.scale = scaleFor(config.sizePreset)
   applyTheme()
   local rf = io.open(os.getenv("HOME") .. "/.config/groq-dictation/repo_path", "r")
@@ -161,6 +196,11 @@ local function persist(key, value)
   if txt:find(pat) then txt = txt:gsub(pat, key .. " = " .. rhs, 1)
   else txt = txt:gsub("return%s*{", "return {\n  " .. key .. " = " .. rhs .. ",", 1) end
   local w = io.open(config.settingsPath, "w"); if w then w:write(txt); w:close() end
+end
+
+saveBindings = function()
+  persist("ssBindings", serializeBindings(config.ssBindings))
+  persist("pauseBindings", serializeBindings(config.pauseBindings))
 end
 
 ------------------------------------------------------------------------
@@ -366,18 +406,31 @@ pushPlay = function(els, cx, cy, s, col)
     coordinates = { { x = cx - r * 0.65, y = cy - r }, { x = cx - r * 0.65, y = cy + r }, { x = cx + r, y = cy } } }
 end
 
+-- drop shadow disegnato a mano (l'attributo shadow del canvas HS non viene renderizzato):
+-- strati concentrici sfumati dietro la card → penumbra morbida.
+local function pushShadow(list, x, y, w, h, s, radius, layers, alpha, off, spread)
+  layers = layers or 6; alpha = alpha or 0.035; off = off or 5 * s; spread = spread or 2 * s
+  for i = 1, layers do
+    local e = i * spread
+    list[#list + 1] = { type = "rectangle", action = "fill",
+      fillColor = { red = 0, green = 0, blue = 0, alpha = alpha },
+      roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
+      frame = { x = x - e, y = y - e + off, w = w + 2 * e, h = h + 2 * e } }
+  end
+end
+
 local function cardBg(s, x, y, w, h)
   return { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
     strokeWidth = 1.2 * s, roundedRectRadii = { xRadius = 14 * s, yRadius = 14 * s },
     frame = { x = x, y = y, w = w, h = h },
-    shadow = { blurRadius = 18 * s, color = { alpha = 0.5 }, offset = { h = 4 * s, w = 0 } },
+    fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.bg, COL.bg2 or COL.bg },
     trackMouseDown = true, id = "drag" }
 end
 
 setRecordingElements = function(isPaused)
   local s = config.scale
   local function sc(v) return v * s end
-  local P = sc(14)   -- margine uniforme attorno alla card (spazio per ombra + badge)
+  local P = sc(40)   -- margine uniforme attorno alla card (spazio per ombra + badge)
   local els, idx = {}, { bars = {} }
   hoverMap = {}
   local function add(el) els[#els + 1] = el; return #els end
@@ -386,6 +439,7 @@ setRecordingElements = function(isPaused)
     local pw, ph = 52, 180
     local cx = P + sc(pw / 2)
     placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
+    pushShadow(els, P, P, sc(pw), sc(ph), s, 14 * s)
     add(cardBg(s, P, P, sc(pw), sc(ph)))
     if isPaused then
       pushGear(els, cx, P + sc(16), sc(7), s, "settings", hoverMap)
@@ -416,6 +470,7 @@ setRecordingElements = function(isPaused)
   else
     local pw, ph = 276, 54
     placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
+    pushShadow(els, P, P, sc(pw), sc(ph), s, 14 * s)
     add(cardBg(s, P, P, sc(pw), sc(ph)))
     if isPaused then
       pushGear(els, P + sc(22), P + sc(27), sc(8), s, "settings", hoverMap)
@@ -453,11 +508,12 @@ end
 setProcessingElements = function(text)
   local s = config.scale
   local function sc(v) return v * s end
-  local P = sc(14)
+  local P = sc(40)
   hoverMap = {}
   local pw, ph = 178, 46
   placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
   local els = {}
+  pushShadow(els, P, P, sc(pw), sc(ph), s, 14 * s)
   els[#els + 1] = cardBg(s, P, P, sc(pw), sc(ph))
   els[#els + 1] = { type = "text", text = text or "…", textSize = math.floor(15 * s), textColor = COL.fg,
     textFont = "Menlo-Bold", textAlignment = "center", frame = { x = P + sc(8), y = P + sc(13), w = sc(pw) - sc(24), h = sc(22) } }
@@ -571,18 +627,22 @@ settingsMouse = function(_c, msg, id)
   elseif kind == "size" then config.sizePreset = val; config.scale = scaleFor(val); persist("sizePreset", val); rebuildHUD()
   elseif kind == "orient" then config.orientation = val; persist("orientation", val); resetLevels(); rebuildHUD()
   elseif kind == "style" then config.style = val; persist("style", val); applyTheme(); rebuildHUD()
-  elseif kind == "themeauto" then config.themeAuto = (val == "on"); persist("themeAuto", config.themeAuto); applyTheme(); rebuildHUD()
-  elseif kind == "sskey" then local k = KEYMAP[val]; if k then config.startStopKeycode = k[1]; config.startStopFlag = k[2]; persist("startStopKeycode", k[1]); persist("startStopFlag", k[2]) end
+  elseif kind == "theme" then config.themeMode = val; persist("themeMode", val); applyTheme(); rebuildHUD()
   elseif kind == "ssgest" then config.ssGesture = val; persist("ssGesture", val)
-  elseif kind == "pausekey" then local k = KEYMAP[val]; if k then config.pauseKeycode = k[1]; config.pauseFlag = k[2]; persist("pauseKeycode", k[1]); persist("pauseFlag", k[2]) end
   elseif kind == "pausegest" then config.pauseGesture = val; persist("pauseGesture", val)
+  elseif kind == "add" then startCapture(val); return
+  elseif kind == "del" then
+    local which, i = val:match("(%a+):(%d+)"); i = tonumber(i)
+    local list = (which == "ss") and config.ssBindings or config.pauseBindings
+    if list and list[i] then table.remove(list, i); saveBindings() end
   end
   renderSettings()
 end
 
 renderSettings = function()
-  local W, pad = SPANEL_W, 16
-  local els, y = {}, 12
+  local SP = 26                       -- margine attorno al pannello (per ombra + bordo non tagliato)
+  local W, pad = SPANEL_W + 2 * SP, 16 + SP
+  local els, y = {}, 12 + SP
   sHoverMap = {}
   local function add(el) els[#els + 1] = el; return #els end
   local function label(txt)
@@ -597,14 +657,37 @@ renderSettings = function()
       local ri = add({ type = "rectangle", action = "strokeAndFill", fillColor = cur and COL.accent or COL.clear,
         strokeColor = COL.accent, strokeWidth = 1, roundedRectRadii = { xRadius = 7, yRadius = 7 },
         frame = { x = x, y = y, w = pwid, h = 30 }, trackMouseUp = true, trackMouseEnterExit = true, id = prefix .. ":" .. opt.val })
-      sHoverMap[prefix .. ":" .. opt.val] = { idx = ri, fill = cur and COL.accent or COL.clear,
-        hoverFill = cur and COL.accentHover or COL.accentFaint }
+      sHoverMap[prefix .. ":" .. opt.val] = { idx = ri,
+        fill = cur and COL.accent or COL.clear, hoverFill = cur and COL.accentHover or COL.clear,
+        stroke = COL.accent, hoverStroke = COL.accentHover }
       add({ type = "text", text = opt.label, textSize = 11, textColor = cur and COL.bg or COL.accent,
         textFont = "Menlo-Bold", textAlignment = "center", frame = { x = x, y = y + 9, w = pwid, h = 16 } })
     end
     y = y + 40
   end
-  local function keyLabel(kc) for name, k in pairs(KEYMAP) do if k[1] == kc then return name end end return "opt" end
+  local function bindings(actionKey, list)
+    for i, b in ipairs(list) do
+      add({ type = "rectangle", action = "fill", fillColor = COL.accentFaint, roundedRectRadii = { xRadius = 7, yRadius = 7 },
+        frame = { x = pad, y = y, w = W - pad * 2, h = 28 } })
+      add({ type = "text", text = bindLabel(b), textSize = 12, textColor = COL.accent, textFont = "Menlo-Bold",
+        textAlignment = "left", frame = { x = pad + 12, y = y + 7, w = W - pad * 2 - 40, h = 16 } })
+      local ci = add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent, strokeWidth = 1.1,
+        center = { x = W - pad - 13, y = y + 14 }, radius = 8, trackMouseUp = true, trackMouseEnterExit = true, id = "del:" .. actionKey .. ":" .. i })
+      sHoverMap["del:" .. actionKey .. ":" .. i] = { idx = ci, fill = COL.bg, hoverFill = COL.accentFaint }
+      add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.4, closed = false,
+        coordinates = { { x = W - pad - 16, y = y + 11 }, { x = W - pad - 10, y = y + 17 } } })
+      add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.4, closed = false,
+        coordinates = { { x = W - pad - 16, y = y + 17 }, { x = W - pad - 10, y = y + 11 } } })
+      y = y + 32
+    end
+    local ai = add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent, strokeWidth = 1,
+      roundedRectRadii = { xRadius = 7, yRadius = 7 }, frame = { x = pad, y = y, w = W - pad * 2, h = 28 },
+      trackMouseUp = true, trackMouseEnterExit = true, id = "add:" .. actionKey })
+    sHoverMap["add:" .. actionKey] = { idx = ai, fill = COL.clear, hoverFill = COL.accentFaint }
+    add({ type = "text", text = "+  aggiungi tasto", textSize = 12, textColor = COL.accent, textFont = "Menlo-Bold",
+      textAlignment = "center", frame = { x = pad, y = y + 7, w = W - pad * 2, h = 16 } })
+    y = y + 34
+  end
 
   add({ type = "text", text = "IMPOSTAZIONI", textSize = 13, textColor = COL.accent, textFont = "Menlo-Bold",
     textAlignment = "left", frame = { x = pad, y = y, w = W - pad * 2 - 22, h = 18 } })
@@ -640,31 +723,37 @@ renderSettings = function()
     segRow({ { label = "Orizzontale", val = "horizontal" }, { label = "Verticale", val = "vertical" } }, config.orientation, "orient")
     label("STILE")
     segRow({ { label = "Gold", val = "gold" }, { label = "Mono", val = "mono" } }, config.style, "style")
-    segRow({ { label = "Gold Light", val = "goldlight" }, { label = "Mono Light", val = "monolight" } }, config.style, "style")
+    segRow({ { label = "Ocean", val = "ocean" }, { label = "Violet", val = "violet" } }, config.style, "style")
+    segRow({ { label = "Emerald", val = "emerald" }, { label = "Rose", val = "rose" } }, config.style, "style")
     label("TEMA")
-    segRow({ { label = "Fisso", val = "off" }, { label = "Auto (sistema)", val = "on" } }, config.themeAuto and "on" or "off", "themeauto")
+    segRow({ { label = "Dark", val = "dark" }, { label = "Light", val = "light" }, { label = "Auto", val = "auto" } }, config.themeMode, "theme")
   else
-    label("AVVIO / STOP — tasto")
-    segRow({ { label = "⌥", val = "opt" }, { label = "⌃", val = "ctrl" }, { label = "⌘", val = "cmd" }, { label = "⇧", val = "shift" } }, keyLabel(config.startStopKeycode), "sskey")
+    label("AVVIO / STOP — tasti (aggiungine quanti vuoi)")
+    bindings("ss", config.ssBindings)
     label("AVVIO / STOP — gesto")
     segRow({ { label = "2 tap", val = "double" }, { label = "1 tap", val = "single" }, { label = "tieni", val = "hold" } }, config.ssGesture, "ssgest")
-    label("PAUSA — tasto")
-    segRow({ { label = "⌥", val = "opt" }, { label = "⌃", val = "ctrl" }, { label = "⌘", val = "cmd" }, { label = "⇧", val = "shift" } }, keyLabel(config.pauseKeycode), "pausekey")
+    label("PAUSA — tasti")
+    bindings("pause", config.pauseBindings)
     label("PAUSA — gesto")
     segRow({ { label = "1 tap", val = "single" }, { label = "2 tap", val = "double" } }, config.pauseGesture, "pausegest")
   end
 
-  local H = y + 8
-  table.insert(els, 1, { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
-    strokeWidth = 1.5, roundedRectRadii = { xRadius = 16, yRadius = 16 }, frame = { x = 0, y = 0, w = W, h = H },
-    trackMouseDown = true, id = "s_drag" })
+  local H = y + SP + 4
+  local bgstack = {}
+  pushShadow(bgstack, SP, SP, W - 2 * SP, H - 2 * SP, 1, 16, 7, 0.035, 5, 2.4)
+  bgstack[#bgstack + 1] = { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
+    strokeWidth = 1.5, roundedRectRadii = { xRadius = 16, yRadius = 16 },
+    frame = { x = SP, y = SP, w = W - 2 * SP, h = H - 2 * SP },
+    fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.bg, COL.bg2 or COL.bg },
+    trackMouseDown = true, id = "s_drag" }
+  for i = #bgstack, 1, -1 do table.insert(els, 1, bgstack[i]) end
   local cbi = add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent, strokeWidth = 1.2,
-    center = { x = W - 22, y = 24 }, radius = 11, trackMouseUp = true, trackMouseEnterExit = true, id = "s_close" })
+    center = { x = W - SP - 22, y = SP + 24 }, radius = 11, trackMouseUp = true, trackMouseEnterExit = true, id = "s_close" })
   sHoverMap["s_close"] = { idx = cbi, fill = COL.bg, hoverFill = COL.accentFaint }
   add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7, closed = false,
-    coordinates = { { x = W - 26, y = 20 }, { x = W - 18, y = 28 } } })
+    coordinates = { { x = W - SP - 26, y = SP + 20 }, { x = W - SP - 18, y = SP + 28 } } })
   add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7, closed = false,
-    coordinates = { { x = W - 26, y = 28 }, { x = W - 18, y = 20 } } })
+    coordinates = { { x = W - SP - 26, y = SP + 28 }, { x = W - SP - 18, y = SP + 20 } } })
 
   local sf = hs.screen.mainScreen():frame()
   local fx = sf.x + (sf.w - W) / 2
@@ -833,15 +922,57 @@ local function handleDouble(kc, action)
   local t = now(); local last = taps[kc] or 0
   if (t - last) < config.doubleTapSec then taps[kc] = 0; action() else taps[kc] = t end
 end
+
+local function matchAction(kc)
+  for _, b in ipairs(config.ssBindings) do if b.kc == kc then return "ss", b end end
+  for _, b in ipairs(config.pauseBindings) do if b.kc == kc then return "pause", b end end
+  return nil
+end
+
+startCapture = function(actionKey)
+  hs.alert.show("Premi il tasto per « " .. (actionKey == "ss" and "Avvio / Stop" or "Pausa") .. " »…", 2)
+  local tap
+  tap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged, hs.eventtap.event.types.keyDown }, function(e)
+    local kc, et = e:getKeyCode(), e:getType()
+    local mod
+    if et == hs.eventtap.event.types.flagsChanged then
+      local fn = KEYCODE_MOD[kc]
+      if not fn or not e:getFlags()[fn] then return false end   -- aspetta la pressione di un modificatore
+      mod = fn
+    else
+      mod = "key"
+    end
+    tap:stop()
+    local list = (actionKey == "ss") and config.ssBindings or config.pauseBindings
+    local dup = false; for _, b in ipairs(list) do if b.kc == kc then dup = true end end
+    if not dup then list[#list + 1] = { kc = kc, mod = mod } end
+    saveBindings(); renderSettings()
+    return (mod == "key")
+  end)
+  tap:start()
+end
+
 local function initHotkeys()
-  watcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(e)
-    local kc, fl = e:getKeyCode(), e:getFlags()
-    if kc == config.startStopKeycode then
-      local down = fl[config.startStopFlag] == true
+  local T = hs.eventtap.event.types
+  watcher = hs.eventtap.new({ T.flagsChanged, T.keyDown, T.keyUp }, function(e)
+    local kc = e:getKeyCode()
+    local act, b = matchAction(kc)
+    if not act then return false end
+    local et = e:getType()
+    local down
+    if et == T.flagsChanged then
+      local fn = KEYCODE_MOD[kc]; if not fn then return false end
+      down = e:getFlags()[fn] == true
+    elseif et == T.keyDown then
+      if e:getProperty(hs.eventtap.event.properties.keyboardEventAutorepeat) == 1 then return b.mod == "key" end
+      down = true
+    elseif et == T.keyUp then
+      down = false
+    else return false end
+    if act == "ss" then
       local g = config.ssGesture
       if g == "hold" then
-        if down then if not recording and not busy then start() end
-        else if recording then M.stop() end end
+        if down then if not recording and not busy then start() end elseif recording then M.stop() end
       elseif g == "single" then
         if down and not busy then if recording then M.stop() else start() end end
       else
@@ -850,17 +981,13 @@ local function initHotkeys()
           else handleDouble(kc, function() if not busy then start() end end) end
         end
       end
-      return false
-    end
-    if kc == config.pauseKeycode then
-      local down = fl[config.pauseFlag] == true
+    else
       if down then
         if config.pauseGesture == "double" then handleDouble(kc, function() if recording and not busy then M.togglePause() end end)
-        else if recording and not busy then M.togglePause() end end
+        elseif recording and not busy then M.togglePause() end
       end
-      return false
     end
-    return false
+    return (b.mod == "key")
   end)
   watcher:start()
 end
@@ -900,7 +1027,8 @@ local function checkUpdate(silent)
 end
 
 function M.update() checkUpdate(false) end
-function M.settings() openSettings() end
+function M.settings(page) if page then settingsPage = page end openSettings() end
+function M.toggle() if not busy then if recording then M.stop() else start() end end end
 
 -- PREVIEW per verifica estetica
 function M._preview(orient, isPaused)
@@ -941,6 +1069,17 @@ function M.init()
   end, "AppleInterfaceThemeChangedNotification")
   M._appearanceWatcher:start()
   initHotkeys()
+  -- icona menu bar: apri impostazioni / avvia-ferma senza passare dalla pausa
+  if not M._menu then M._menu = hs.menubar.new() end
+  if M._menu then
+    M._menu:setTitle("🎙️")
+    M._menu:setTooltip("Golden Whisper")
+    M._menu:setMenu({
+      { title = "Avvia / Ferma dettatura", fn = function() M.toggle() end },
+      { title = "-" },
+      { title = "Impostazioni…", fn = function() openSettings() end },
+    })
+  end
   if config.autoUpdate ~= false then
     hs.timer.doAfter(45, function() checkUpdate(true) end)
     hs.timer.doEvery(config.updateCheckHours * 3600, function() checkUpdate(true) end)
