@@ -298,6 +298,25 @@ pushBadge = function(els, id, cx, cy, s)
     closed = false, coordinates = { { x = cx - a, y = cy + a }, { x = cx + a, y = cy - a } } }
 end
 
+-- ingranaggio (impostazioni) senza sfondo, oro
+local function pushGear(add, cx, cy, r, s, id)
+  add({ type = "rectangle", action = "fill", fillColor = COL.clear,
+    frame = { x = cx - r - 5 * s, y = cy - r - 5 * s, w = (r + 5 * s) * 2, h = (r + 5 * s) * 2 },
+    trackMouseUp = true, id = id })
+  local teeth = 8
+  for i = 0, teeth - 1 do
+    local ang = (i / teeth) * 2 * math.pi
+    local tx = cx + math.cos(ang) * r
+    local ty = cy + math.sin(ang) * r
+    add({ type = "rectangle", action = "fill", fillColor = COL.accent,
+      roundedRectRadii = { xRadius = 1 * s, yRadius = 1 * s },
+      frame = { x = tx - 2 * s, y = ty - 2 * s, w = 4 * s, h = 4 * s } })
+  end
+  add({ type = "circle", action = "stroke", strokeColor = COL.accent, strokeWidth = 2.4 * s,
+    center = { x = cx, y = cy }, radius = r - 1 * s })
+  add({ type = "circle", action = "fill", fillColor = COL.bg, center = { x = cx, y = cy }, radius = r * 0.42 })
+end
+
 setRecordingElements = function(isPaused)
   local s = config.scale
   local function sc(v) return v * s end
@@ -306,18 +325,14 @@ setRecordingElements = function(isPaused)
   local MTp = sc(10)
 
   if config.orientation == "vertical" then
-    local pw, ph = 56, 214
+    local pw, ph = 56, 206
     local cx = sc(pw / 2)
     placeCanvas(sc(pw) + sc(10), sc(ph) + MTp)
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
       strokeWidth = 1.2 * s, roundedRectRadii = { xRadius = 14 * s, yRadius = 14 * s },
       frame = { x = 0, y = MTp, w = sc(pw), h = sc(ph) }, trackMouseDown = true, id = "drag" })
     if isPaused then
-      idx.mic = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
-        roundedRectRadii = { xRadius = 7 * s, yRadius = 7 * s },
-        frame = { x = cx - sc(14), y = MTp + sc(6), w = sc(28), h = sc(24) }, trackMouseUp = true, id = "settings" })
-      add({ type = "image", image = IMG.mic, imageScaling = "scaleProportionally",
-        frame = { x = cx - sc(9), y = MTp + sc(8), w = sc(18), h = sc(20) } })
+      pushGear(add, cx, MTp + sc(17), sc(9), s, "settings")
     else
       idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent,
         center = { x = cx, y = MTp + sc(18) }, radius = sc(5) })
@@ -333,14 +348,14 @@ setRecordingElements = function(isPaused)
     end
     idx.barMeta = { horizontal = false, s = s, barH = sc(3), maxLen = 30 }
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = cx - sc(15), y = MTp + sc(140), w = sc(30), h = sc(28) }, trackMouseUp = true, id = "pause" })
+      frame = { x = cx - sc(15), y = MTp + sc(126), w = sc(30), h = sc(28) }, trackMouseUp = true, id = "pause" })
     add({ type = "image", image = isPaused and IMG.play or IMG.pause, imageScaling = "scaleProportionally",
-      frame = { x = cx - sc(9), y = MTp + sc(145), w = sc(18), h = sc(18) } })
+      frame = { x = cx - sc(9), y = MTp + sc(131), w = sc(18), h = sc(18) } })
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
       strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = cx - sc(15), y = MTp + sc(172), w = sc(30), h = sc(28) }, trackMouseUp = true, id = "stop" })
+      frame = { x = cx - sc(15), y = MTp + sc(162), w = sc(30), h = sc(28) }, trackMouseUp = true, id = "stop" })
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
-      frame = { x = cx - sc(7), y = MTp + sc(179), w = sc(14), h = sc(14) } })
+      frame = { x = cx - sc(7), y = MTp + sc(169), w = sc(14), h = sc(14) } })
     pushBadge(els, "cancel", sc(pw), MTp, s)
   else
     local pw, ph = 276, 54
@@ -349,11 +364,7 @@ setRecordingElements = function(isPaused)
       strokeWidth = 1.2 * s, roundedRectRadii = { xRadius = 14 * s, yRadius = 14 * s },
       frame = { x = 0, y = MTp, w = sc(pw), h = sc(ph) }, trackMouseDown = true, id = "drag" })
     if isPaused then
-      idx.mic = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
-        roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-        frame = { x = sc(8), y = MTp + sc(12), w = sc(30), h = sc(30) }, trackMouseUp = true, id = "settings" })
-      add({ type = "image", image = IMG.mic, imageScaling = "scaleProportionally",
-        frame = { x = sc(14), y = MTp + sc(17), w = sc(18), h = sc(20) } })
+      pushGear(add, sc(22), MTp + sc(27), sc(9), s, "settings")
     else
       idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent,
         center = { x = sc(22), y = MTp + sc(27) }, radius = sc(6) })
