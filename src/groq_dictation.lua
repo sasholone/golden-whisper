@@ -38,6 +38,8 @@ local config = {
   orientation  = "horizontal", -- horizontal | vertical
   style        = "gold",       -- famiglia: gold | mono | ocean | violet | emerald | rose
   themeMode    = "dark",       -- dark | light | auto (auto segue il sistema)
+  shadowOn     = true,         -- ombra della card on/off
+  shadowIntensity = 0.5,       -- 0..1 = quanto lontano si estende l'ombra (0.5 = metà)
   scale        = 1.0,
 }
 
@@ -56,7 +58,7 @@ local procTextIdx = nil
 local taps = {}
 local hoverMap = {}     -- id -> {idx, fill, hoverFill, stroke, hoverStroke}  (overlay)
 
-local placeCanvas, mouseCb, startDrag, pushBadge, pushGear, pushPause, pushPlay
+local placeCanvas, mouseCb, startDrag, pushBadge, pushGear, pushPause, pushPlay, pushShadow
 local setRecordingElements, setProcessingElements, setStatus, updateUI
 local showAnimated, hideAnimated, showRecordingHUD, stopUITimer
 local openSettings, rebuildHUD, renderSettings, settingsMouse, closeSettings, dragCanvas
@@ -65,6 +67,8 @@ local settingsCanvas
 local settingsDevices = {}
 local sHoverMap = {}
 local settingsPage = "general"   -- general | keys
+local startShadowSlider
+local sliderTrackX, sliderTrackW, sliderTrackY, sliderH, sliderKnobIdx, sliderFillIdx, sliderKnobY
 
 ------------------------------------------------------------------------
 -- PALETTE / STILI
@@ -172,6 +176,8 @@ local function loadSettings()
   if s.orientation then config.orientation = s.orientation end
   if s.style       then config.style = s.style end
   if s.themeMode   then config.themeMode = s.themeMode end
+  if s.shadowOn ~= nil then config.shadowOn = s.shadowOn end
+  if s.shadowIntensity then config.shadowIntensity = s.shadowIntensity end
   -- migrazione dai vecchi stili/flag
   if config.style == "goldlight" then config.style = "gold"; if not s.themeMode then config.themeMode = "light" end
   elseif config.style == "monolight" then config.style = "mono"; if not s.themeMode then config.themeMode = "light" end end
@@ -356,6 +362,26 @@ dragCanvas = function(cv, persistPos)
 end
 startDrag = function() dragCanvas(overlay, true) end
 
+startShadowSlider = function()
+  if not settingsCanvas or not sliderTrackW then return end
+  if dragTap then dragTap:stop(); dragTap = nil end
+  local function apply(commit)
+    local f = settingsCanvas:frame()
+    local rel = (hs.mouse.absolutePosition().x - f.x - sliderTrackX) / sliderTrackW
+    if rel < 0 then rel = 0 elseif rel > 1 then rel = 1 end
+    config.shadowIntensity = rel
+    settingsCanvas:elementAttribute(sliderKnobIdx, "center", { x = sliderTrackX + rel * sliderTrackW, y = sliderKnobY })
+    settingsCanvas:elementAttribute(sliderFillIdx, "frame", { x = sliderTrackX, y = sliderTrackY, w = rel * sliderTrackW, h = sliderH })
+    if commit then persist("shadowIntensity", tonumber(string.format("%.2f", rel))); rebuildHUD() end
+  end
+  dragTap = hs.eventtap.new({ hs.eventtap.event.types.leftMouseDragged, hs.eventtap.event.types.leftMouseUp }, function(e)
+    if e:getType() == hs.eventtap.event.types.leftMouseUp then dragTap:stop(); dragTap = nil; apply(true); return false end
+    apply(false); return false
+  end)
+  apply(false)
+  dragTap:start()
+end
+
 -- ✕ badge (cancel/close) sporgente dall'angolo
 pushBadge = function(els, id, cx, cy, s, map)
   local r, a = 10 * s, 3.5 * s
@@ -407,8 +433,11 @@ end
 
 -- drop shadow disegnato a mano (l'attributo shadow del canvas HS non viene renderizzato):
 -- strati concentrici sfumati dietro la card → penumbra morbida.
-local function pushShadow(list, x, y, w, h, s, radius, layers, alpha, off, spread)
-  layers = layers or 6; alpha = alpha or 0.035; off = off or 5 * s; spread = spread or 2 * s
+pushShadow = function(list, x, y, w, h, s, radius, layers, alpha, off, spread)
+  if config.shadowOn == false then return end
+  local k = config.shadowIntensity or 0.5
+  layers = layers or 6; alpha = alpha or 0.035
+  off = (off or 5 * s) * k; spread = (spread or 2 * s) * k
   for i = 1, layers do
     local e = i * spread
     list[#list + 1] = { type = "rectangle", action = "fill",
@@ -612,11 +641,13 @@ settingsMouse = function(_c, msg, id)
     end
     return
   elseif msg == "mouseDown" then
-    if id == "s_drag" then dragCanvas(settingsCanvas, false) end
+    if id == "s_drag" then dragCanvas(settingsCanvas, false)
+    elseif id == "shadowslider" then startShadowSlider() end
     return
   elseif msg ~= "mouseUp" then return end
 
   if id == "s_close" then closeSettings(); return end
+  if id == "shadowtoggle" then config.shadowOn = not config.shadowOn; persist("shadowOn", config.shadowOn); rebuildHUD(); renderSettings(); return end
   local kind, val = id:match("^(%a+):(.+)$")
   if not kind then return end
   if kind == "tab" then settingsPage = val
@@ -751,6 +782,27 @@ renderSettings = function()
     segRow({ { label = "Emerald", val = "emerald" }, { label = "Rose", val = "rose" } }, config.style, "style")
     label("TEMA")
     segRow({ { label = "Dark", val = "dark" }, { label = "Light", val = "light" }, { label = "Auto", val = "auto" } }, config.themeMode, "theme")
+    label("OMBRA")
+    local swW, swH = 44, 24
+    local on = config.shadowOn ~= false
+    add({ type = "rectangle", action = "fill", fillColor = on and COL.accent or COL.accentDim,
+      roundedRectRadii = { xRadius = swH / 2, yRadius = swH / 2 }, frame = { x = pad, y = y, w = swW, h = swH },
+      trackMouseUp = true, id = "shadowtoggle" })
+    add({ type = "circle", action = "fill", fillColor = COL.bg,
+      center = { x = pad + (on and (swW - swH / 2) or (swH / 2)), y = y + swH / 2 }, radius = swH / 2 - 4 })
+    add({ type = "text", text = on and "Ombra attiva" or "Ombra disattivata", textSize = 12, textColor = COL.fg,
+      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = pad + swW + 12, y = y + 5, w = W - pad * 2 - swW - 12, h = 16 } })
+    y = y + 34
+    if on then
+      local tx, tw, ty = pad + 4, W - pad * 2 - 8, y + 8
+      sliderTrackX, sliderTrackW, sliderTrackY, sliderH, sliderKnobY = tx, tw, ty, 6, ty + 3
+      local k = config.shadowIntensity or 0.5
+      add({ type = "rectangle", action = "fill", fillColor = COL.accentDim, roundedRectRadii = { xRadius = 3, yRadius = 3 }, frame = { x = tx, y = ty, w = tw, h = 6 } })
+      sliderFillIdx = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3, yRadius = 3 }, frame = { x = tx, y = ty, w = k * tw, h = 6 } })
+      sliderKnobIdx = add({ type = "circle", action = "strokeAndFill", fillColor = COL.accent, strokeColor = COL.bg, strokeWidth = 2, center = { x = tx + k * tw, y = ty + 3 }, radius = 9 })
+      add({ type = "rectangle", action = "fill", fillColor = COL.clear, frame = { x = tx - 10, y = y, w = tw + 20, h = 24 }, trackMouseDown = true, id = "shadowslider" })
+      y = y + 30
+    end
   else
     label("AVVIO / STOP")
     bindings("ss", config.ssBindings, { { label = "2 tap", val = "double" }, { label = "1 tap", val = "single" }, { label = "hold", val = "hold" } })
@@ -767,7 +819,7 @@ renderSettings = function()
     frame = { x = SP, y = SP, w = W - 2 * SP, h = H - 2 * SP },
     fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.bg, COL.bg2 or COL.bg },
     trackMouseDown = true, id = "s_drag" }
-  for i = 1, NSHADOW + 1 do els[i] = head[i] end
+  for i = 1, NSHADOW + 1 do els[i] = head[i] or { type = "rectangle", action = "fill", fillColor = { alpha = 0 }, frame = { x = 0, y = 0, w = 1, h = 1 } } end
   local cbi = add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent, strokeWidth = 1.2,
     center = { x = W - SP - 22, y = SP + 24 }, radius = 11, trackMouseUp = true, trackMouseEnterExit = true, id = "s_close" })
   sHoverMap["s_close"] = { idx = cbi, fill = COL.bg, hoverFill = mix(COL.bg, COL.accent, 0.16), stroke = COL.accent, hoverStroke = COL.accentHover }
@@ -1096,9 +1148,10 @@ function M.init()
     M._menu:setTitle("🎙️")
     M._menu:setTooltip("Golden Whisper")
     M._menu:setMenu({
-      { title = "Avvia / Ferma dettatura", fn = function() M.toggle() end },
+      { title = "🎙️  Avvia / Ferma dettatura", fn = function() M.toggle() end },
+      { title = "⚙️  Impostazioni…", fn = function() openSettings() end },
       { title = "-" },
-      { title = "Impostazioni…", fn = function() openSettings() end },
+      { title = "🔄  Ricarica", fn = function() hs.reload() end },
     })
   end
   if config.autoUpdate ~= false then
