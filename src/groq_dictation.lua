@@ -298,23 +298,23 @@ pushBadge = function(els, id, cx, cy, s)
     closed = false, coordinates = { { x = cx - a, y = cy + a }, { x = cx + a, y = cy - a } } }
 end
 
--- ingranaggio (impostazioni) senza sfondo, oro
+-- ingranaggio (impostazioni) senza sfondo, oro — disco pieno + denti + piccolo foro (spesso, poco gap)
 local function pushGear(add, cx, cy, r, s, id)
   add({ type = "rectangle", action = "fill", fillColor = COL.clear,
-    frame = { x = cx - r - 5 * s, y = cy - r - 5 * s, w = (r + 5 * s) * 2, h = (r + 5 * s) * 2 },
+    frame = { x = cx - r - 6 * s, y = cy - r - 6 * s, w = (r + 6 * s) * 2, h = (r + 6 * s) * 2 },
     trackMouseUp = true, id = id })
   local teeth = 8
+  local td = 3.4 * s
   for i = 0, teeth - 1 do
     local ang = (i / teeth) * 2 * math.pi
-    local tx = cx + math.cos(ang) * r
-    local ty = cy + math.sin(ang) * r
+    local tx = cx + math.cos(ang) * (r + 1 * s)
+    local ty = cy + math.sin(ang) * (r + 1 * s)
     add({ type = "rectangle", action = "fill", fillColor = COL.accent,
       roundedRectRadii = { xRadius = 1 * s, yRadius = 1 * s },
-      frame = { x = tx - 2 * s, y = ty - 2 * s, w = 4 * s, h = 4 * s } })
+      frame = { x = tx - td / 2, y = ty - td / 2, w = td, h = td } })
   end
-  add({ type = "circle", action = "stroke", strokeColor = COL.accent, strokeWidth = 2.4 * s,
-    center = { x = cx, y = cy }, radius = r - 1 * s })
-  add({ type = "circle", action = "fill", fillColor = COL.bg, center = { x = cx, y = cy }, radius = r * 0.42 })
+  add({ type = "circle", action = "fill", fillColor = COL.accent, center = { x = cx, y = cy }, radius = r })
+  add({ type = "circle", action = "fill", fillColor = COL.bg, center = { x = cx, y = cy }, radius = r * 0.36 })
 end
 
 setRecordingElements = function(isPaused)
@@ -325,37 +325,37 @@ setRecordingElements = function(isPaused)
   local MTp = sc(10)
 
   if config.orientation == "vertical" then
-    local pw, ph = 56, 206
+    local pw, ph = 52, 180
     local cx = sc(pw / 2)
     placeCanvas(sc(pw) + sc(10), sc(ph) + MTp)
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
       strokeWidth = 1.2 * s, roundedRectRadii = { xRadius = 14 * s, yRadius = 14 * s },
       frame = { x = 0, y = MTp, w = sc(pw), h = sc(ph) }, trackMouseDown = true, id = "drag" })
     if isPaused then
-      pushGear(add, cx, MTp + sc(17), sc(9), s, "settings")
+      pushGear(add, cx, MTp + sc(16), sc(7), s, "settings")
     else
       idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent,
-        center = { x = cx, y = MTp + sc(18) }, radius = sc(5) })
+        center = { x = cx, y = MTp + sc(16) }, radius = sc(4.5) })
     end
-    idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(13 * s), textColor = COL.white,
-      textFont = "Menlo-Bold", textAlignment = "center", frame = { x = 0, y = MTp + sc(34), w = sc(pw), h = sc(18) } })
-    local by, pitch = 54, 8
+    idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(12 * s), textColor = COL.white,
+      textFont = "Menlo-Bold", textAlignment = "center", frame = { x = 0, y = MTp + sc(28), w = sc(pw), h = sc(16) } })
+    local by, pitch = 48, 7
     for i = 1, 9 do
       local yb = MTp + sc(by + (i - 1) * pitch)
       local ei = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
         roundedRectRadii = { xRadius = 2 * s, yRadius = 2 * s }, frame = { x = cx - sc(3), y = yb, w = sc(6), h = sc(3) } })
       idx.bars[i] = { idx = ei, cx = cx, y = yb }
     end
-    idx.barMeta = { horizontal = false, s = s, barH = sc(3), maxLen = 30 }
-    add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = cx - sc(15), y = MTp + sc(126), w = sc(30), h = sc(28) }, trackMouseUp = true, id = "pause" })
+    idx.barMeta = { horizontal = false, s = s, barH = sc(3), maxLen = 28 }
+    add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 7 * s, yRadius = 7 * s },
+      frame = { x = cx - sc(12), y = MTp + sc(112), w = sc(24), h = sc(24) }, trackMouseUp = true, id = "pause" })
     add({ type = "image", image = isPaused and IMG.play or IMG.pause, imageScaling = "scaleProportionally",
-      frame = { x = cx - sc(9), y = MTp + sc(131), w = sc(18), h = sc(18) } })
+      frame = { x = cx - sc(7), y = MTp + sc(117), w = sc(14), h = sc(14) } })
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
-      strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = cx - sc(15), y = MTp + sc(162), w = sc(30), h = sc(28) }, trackMouseUp = true, id = "stop" })
+      strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 7 * s, yRadius = 7 * s },
+      frame = { x = cx - sc(12), y = MTp + sc(142), w = sc(24), h = sc(24) }, trackMouseUp = true, id = "stop" })
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
-      frame = { x = cx - sc(7), y = MTp + sc(169), w = sc(14), h = sc(14) } })
+      frame = { x = cx - sc(6), y = MTp + sc(148), w = sc(12), h = sc(12) } })
     pushBadge(els, "cancel", sc(pw), MTp, s)
   else
     local pw, ph = 276, 54
@@ -887,6 +887,39 @@ end
 
 function M.update() checkUpdate(false) end
 function M.settings() openSettings() end   -- apri impostazioni:  hs -c "require('groq_dictation').settings()"
+
+-- PREVIEW per verifica estetica (senza registrare). Ritorna "x,y,w,h" per screencapture.
+function M._preview(orient, isPaused)
+  config.orientation = orient or "vertical"
+  paused = isPaused and true or false
+  setRecordingElements(paused)
+  if RECIDX and RECIDX.timer then overlay:elementAttribute(RECIDX.timer, "text", "0:03") end
+  local demo = { 0.25, 0.55, 0.85, 0.4, 0.95, 0.3, 0.7, 0.5, 0.65, 0.45, 0.8, 0.35 }
+  local bm = RECIDX.barMeta
+  for i, b in ipairs(RECIDX.bars) do
+    local lv = demo[i] or 0.5
+    if bm.horizontal then
+      local h = (4 + lv * bm.maxLen) * bm.s
+      overlay:elementAttribute(b.idx, "frame", { x = b.x, y = bm.cy - h / 2, w = bm.barW, h = h })
+    else
+      local w = (5 + lv * bm.maxLen) * bm.s
+      overlay:elementAttribute(b.idx, "frame", { x = b.cx - w / 2, y = b.y, w = w, h = bm.barH })
+    end
+  end
+  overlay:alpha(1); overlay:show()
+  local f = overlay:frame()
+  return string.format("%d,%d,%d,%d", math.floor(f.x), math.floor(f.y), math.floor(f.w), math.floor(f.h))
+end
+function M._previewEnd() paused = false; recording = false; if overlay then overlay:hide() end; mode = nil; RECIDX = nil end
+function M._snap(path)
+  if not overlay then return "no overlay" end
+  local f = overlay:frame()
+  local pad = 18
+  local img = hs.screen.mainScreen():snapshot(hs.geometry.rect(f.x - pad, f.y - pad, f.w + pad * 2, f.h + pad * 2))
+  if not img then return "snapshot nil" end
+  img:saveToFile(path)
+  return "saved"
+end
 
 function M.init()
   loadSettings()
