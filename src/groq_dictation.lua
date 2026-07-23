@@ -55,7 +55,9 @@ local taps = {}
 local placeCanvas, mouseCb, startDrag, pushBadge
 local setRecordingElements, setProcessingElements, setStatus, updateUI
 local showAnimated, hideAnimated, showRecordingHUD, stopUITimer
-local openSettings, rebuildHUD
+local openSettings, rebuildHUD, renderSettings, settingsMouse, closeSettings
+local settingsCanvas
+local settingsDevices = {}
 
 ------------------------------------------------------------------------
 -- PALETTE
@@ -302,7 +304,8 @@ setRecordingElements = function(isPaused)
   local MTp = sc(10)
 
   if config.orientation == "vertical" then
-    local pw, ph = 58, 206
+    local pw, ph = 64, 210
+    local cx = sc(pw / 2)
     placeCanvas(sc(pw) + sc(10), sc(ph) + MTp)
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
       strokeWidth = 1.2 * s, roundedRectRadii = { xRadius = 14 * s, yRadius = 14 * s },
@@ -310,32 +313,32 @@ setRecordingElements = function(isPaused)
     if isPaused then
       idx.mic = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
         roundedRectRadii = { xRadius = 7 * s, yRadius = 7 * s },
-        frame = { x = sc(8), y = MTp + sc(8), w = sc(26), h = sc(24) }, trackMouseUp = true, id = "settings" })
+        frame = { x = cx - sc(15), y = MTp + sc(8), w = sc(30), h = sc(26) }, trackMouseUp = true, id = "settings" })
       add({ type = "image", image = IMG.mic, imageScaling = "scaleProportionally",
-        frame = { x = sc(12), y = MTp + sc(10), w = sc(18), h = sc(20) } })
+        frame = { x = cx - sc(9), y = MTp + sc(11), w = sc(18), h = sc(20) } })
     else
       idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent,
-        center = { x = sc(15), y = MTp + sc(18) }, radius = sc(5) })
+        center = { x = cx, y = MTp + sc(19) }, radius = sc(5) })
     end
     idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(13 * s), textColor = COL.white,
-      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = sc(24), y = MTp + sc(9), w = sc(32), h = sc(18) } })
-    local by, pitch = 40, 9
+      textFont = "Menlo-Bold", textAlignment = "center", frame = { x = 0, y = MTp + sc(33), w = sc(pw), h = sc(18) } })
+    local by, pitch = 56, 9
     for i = 1, 9 do
       local yb = MTp + sc(by + (i - 1) * pitch)
       local ei = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
-        roundedRectRadii = { xRadius = 2 * s, yRadius = 2 * s }, frame = { x = sc(14), y = yb, w = sc(5), h = sc(3) } })
-      idx.bars[i] = { idx = ei, x = sc(14), y = yb }
+        roundedRectRadii = { xRadius = 2 * s, yRadius = 2 * s }, frame = { x = cx - sc(3), y = yb, w = sc(6), h = sc(3) } })
+      idx.bars[i] = { idx = ei, cx = cx, y = yb }
     end
-    idx.barMeta = { horizontal = false, s = s, barH = sc(3), maxLen = 30 }
+    idx.barMeta = { horizontal = false, s = s, barH = sc(3), maxLen = 34 }
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = sc(13), y = MTp + sc(140), w = sc(32), h = sc(28) }, trackMouseUp = true, id = "pause" })
+      frame = { x = cx - sc(16), y = MTp + sc(144), w = sc(32), h = sc(28) }, trackMouseUp = true, id = "pause" })
     add({ type = "image", image = isPaused and IMG.play or IMG.pause, imageScaling = "scaleProportionally",
-      frame = { x = sc(20), y = MTp + sc(145), w = sc(18), h = sc(18) } })
+      frame = { x = cx - sc(9), y = MTp + sc(149), w = sc(18), h = sc(18) } })
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
       strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = sc(13), y = MTp + sc(172), w = sc(32), h = sc(28) }, trackMouseUp = true, id = "stop" })
+      frame = { x = cx - sc(16), y = MTp + sc(176), w = sc(32), h = sc(28) }, trackMouseUp = true, id = "stop" })
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
-      frame = { x = sc(22), y = MTp + sc(180), w = sc(14), h = sc(14) } })
+      frame = { x = cx - sc(7), y = MTp + sc(183), w = sc(14), h = sc(14) } })
     pushBadge(els, "cancel", sc(pw), MTp, s)
   else
     local pw, ph = 276, 54
@@ -371,7 +374,7 @@ setRecordingElements = function(isPaused)
       strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
       frame = { x = sc(230), y = MTp + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, id = "stop" })
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
-      frame = { x = sc(240), y = MTp + sc(19), w = sc(12), h = sc(12) } })
+      frame = { x = sc(239), y = MTp + sc(20), w = sc(14), h = sc(14) } })
     pushBadge(els, "cancel", sc(pw), MTp, s)
   end
 
@@ -420,7 +423,7 @@ updateUI = function()
       fr = { x = b.x, y = bm.cy - h / 2, w = bm.barW, h = h }
     else
       local w = (5 + lv * bm.maxLen) * bm.s
-      fr = { x = b.x, y = b.y, w = w, h = bm.barH }
+      fr = { x = b.cx - w / 2, y = b.y, w = w, h = bm.barH }
     end
     overlay:elementAttribute(b.idx, "fillColor", barCol)
     overlay:elementAttribute(b.idx, "frame", fr)
@@ -480,43 +483,105 @@ rebuildHUD = function()
   if mode == "rec" then setRecordingElements(paused) end
 end
 
+local SPANEL_W = 260
+
+closeSettings = function()
+  if settingsCanvas then settingsCanvas:delete(); settingsCanvas = nil end
+end
+
+settingsMouse = function(_c, msg, id)
+  if msg ~= "mouseUp" or not id then return end
+  if id == "s_close" then closeSettings(); return end
+  local kind, val = id:match("^(%a+):(.+)$")
+  if not kind then return end
+  if kind == "mic" then
+    local d = settingsDevices[tonumber(val)]
+    if d then config.audioDevice = d.idx; config.micName = d.name
+      persist("micDevice", d.idx); persist("micName", d.name) end
+  elseif kind == "size" then config.sizePreset = val; config.scale = scaleFor(val); persist("sizePreset", val); rebuildHUD()
+  elseif kind == "orient" then config.orientation = val; persist("orientation", val); resetLevels(); rebuildHUD()
+  elseif kind == "style" then config.style = val; COL = PALETTES[val] or PALETTES.gold; persist("style", val); rebuildHUD()
+  end
+  renderSettings()   -- ridisegna con lo stato aggiornato (evidenzia la scelta)
+end
+
+renderSettings = function()
+  local W, pad = SPANEL_W, 16
+  local els, y = {}, 12
+  local function add(el) els[#els + 1] = el; return #els end
+  local function label(txt)
+    add({ type = "text", text = txt, textSize = 10, textColor = COL.accentDim, textFont = "Menlo-Bold",
+      textAlignment = "left", frame = { x = pad, y = y, w = W - pad * 2, h = 14 } })
+    y = y + 18
+  end
+  local function segRow(options, current, prefix)
+    local n = #options; local gap = 6; local tw = W - pad * 2; local pwid = (tw - (n - 1) * gap) / n
+    for i, opt in ipairs(options) do
+      local x = pad + (i - 1) * (pwid + gap); local cur = (opt.val == current)
+      add({ type = "rectangle", action = "strokeAndFill", fillColor = cur and COL.accent or COL.clear,
+        strokeColor = COL.accent, strokeWidth = 1, roundedRectRadii = { xRadius = 7, yRadius = 7 },
+        frame = { x = x, y = y, w = pwid, h = 30 }, trackMouseUp = true, id = prefix .. ":" .. opt.val })
+      add({ type = "text", text = opt.label, textSize = 11, textColor = cur and COL.bg or COL.accent,
+        textFont = "Menlo-Bold", textAlignment = "center", frame = { x = x, y = y + 9, w = pwid, h = 16 } })
+    end
+    y = y + 40
+  end
+
+  -- header
+  add({ type = "text", text = "IMPOSTAZIONI", textSize = 13, textColor = COL.accent, textFont = "Menlo-Bold",
+    textAlignment = "left", frame = { x = pad, y = y, w = W - pad * 2 - 22, h = 18 } })
+  y = y + 30
+
+  label("MICROFONO")
+  for i, d in ipairs(settingsDevices) do
+    local cur = (d.name == config.micName)
+    add({ type = "rectangle", action = "fill", fillColor = cur and COL.accent or COL.clear,
+      roundedRectRadii = { xRadius = 7, yRadius = 7 }, frame = { x = pad, y = y, w = W - pad * 2, h = 30 },
+      trackMouseUp = true, id = "mic:" .. i })
+    add({ type = "text", text = d.name, textSize = 12, textColor = cur and COL.bg or COL.white,
+      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = pad + 10, y = y + 8, w = W - pad * 2 - 16, h = 16 } })
+    y = y + 34
+  end
+  y = y + 6
+
+  label("DIMENSIONE")
+  segRow({ { label = "Minimal", val = "minimal" }, { label = "Standard", val = "standard" }, { label = "Grande", val = "large" } }, config.sizePreset, "size")
+  label("ORIENTAMENTO")
+  segRow({ { label = "Orizzontale", val = "horizontal" }, { label = "Verticale", val = "vertical" } }, config.orientation, "orient")
+  label("STILE")
+  segRow({ { label = "Gold", val = "gold" }, { label = "Mono", val = "mono" } }, config.style, "style")
+
+  add({ type = "text", text = "✋ trascina la barra per spostarla", textSize = 10, textColor = COL.accentDim,
+    textFont = "Menlo", textAlignment = "left", frame = { x = pad, y = y, w = W - pad * 2, h = 14 } })
+  y = y + 26
+
+  local H = y
+  table.insert(els, 1, { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
+    strokeWidth = 1.5, roundedRectRadii = { xRadius = 16, yRadius = 16 }, frame = { x = 0, y = 0, w = W, h = H } })
+  add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent, strokeWidth = 1.2,
+    center = { x = W - 22, y = 24 }, radius = 11, trackMouseUp = true, id = "s_close" })
+  add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7, closed = false,
+    coordinates = { { x = W - 26, y = 20 }, { x = W - 18, y = 28 } } })
+  add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7, closed = false,
+    coordinates = { { x = W - 26, y = 28 }, { x = W - 18, y = 20 } } })
+
+  local sf = hs.screen.mainScreen():frame()
+  local fx = sf.x + (sf.w - W) / 2
+  local fy = sf.y + (sf.h - H) / 2
+  if settingsCanvas then settingsCanvas:delete() end
+  settingsCanvas = hs.canvas.new({ x = fx, y = fy, w = W, h = H })
+  settingsCanvas:level(hs.canvas.windowLevels.overlay)
+  settingsCanvas:behavior({ "canJoinAllSpaces" })
+  settingsCanvas:replaceElements(els)
+  settingsCanvas:mouseCallback(settingsMouse)
+  settingsCanvas:show()
+end
+
 openSettings = function()
   getAudioDevices(function(list)
     deviceCache = list
-    local choices = {}
-    for _, d in ipairs(list) do
-      choices[#choices + 1] = { text = "🎙  " .. d.name,
-        subText = "Microfono" .. (d.name == config.micName and "   •   attuale" or ""),
-        act = "mic", idx = d.idx, name = d.name }
-    end
-    local function row(text, sub, act, val) choices[#choices + 1] = { text = text, subText = sub, act = act, val = val } end
-    row("📐  Dimensione — Standard", config.sizePreset == "standard" and "attuale" or "", "size", "standard")
-    row("📐  Dimensione — Grande",   config.sizePreset == "large"    and "attuale" or "", "size", "large")
-    row("📐  Dimensione — Minimal",  config.sizePreset == "minimal"  and "attuale" or "", "size", "minimal")
-    row("🎨  Stile — Gold",          config.style == "gold" and "attuale" or "", "style", "gold")
-    row("🎨  Stile — Mono (WIP)",    config.style == "mono" and "attuale" or "", "style", "mono")
-    row("🧭  Orientamento — " .. (config.orientation == "vertical" and "passa a Orizzontale" or "passa a Verticale"),
-        "attuale: " .. config.orientation, "orient")
-    row("✋  Sposta la barra", "trascina la card col mouse (anche mentre registri)", "tip")
-
-    local ch = hs.chooser.new(function(c)
-      if not c then return end
-      if c.act == "mic" then
-        config.audioDevice = c.idx; config.micName = c.name
-        persist("micDevice", c.idx); persist("micName", c.name)
-        hs.alert.show("🎙️  " .. c.name)
-      elseif c.act == "size" then
-        config.sizePreset = c.val; config.scale = scaleFor(c.val); persist("sizePreset", c.val); rebuildHUD()
-      elseif c.act == "style" then
-        config.style = c.val; COL = PALETTES[c.val] or PALETTES.gold; persist("style", c.val); rebuildHUD()
-      elseif c.act == "orient" then
-        config.orientation = (config.orientation == "vertical") and "horizontal" or "vertical"
-        persist("orientation", config.orientation); resetLevels(); rebuildHUD()
-      end
-    end)
-    ch:placeholderText("Impostazioni Golden Whisper")
-    ch:choices(choices)
-    ch:show()
+    settingsDevices = list
+    renderSettings()
   end)
 end
 
@@ -803,6 +868,7 @@ local function checkUpdate(silent)
 end
 
 function M.update() checkUpdate(false) end
+function M.settings() openSettings() end   -- apri impostazioni:  hs -c "require('groq_dictation').settings()"
 
 function M.init()
   loadSettings()
