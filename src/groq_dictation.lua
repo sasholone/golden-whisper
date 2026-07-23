@@ -34,6 +34,7 @@ local config = {
   sizePreset   = "standard",   -- standard | large | minimal
   orientation  = "horizontal", -- horizontal | vertical
   style        = "gold",       -- gold | mono | goldlight | monolight
+  themeAuto    = false,        -- se true segue il tema chiaro/scuro del sistema
   scale        = 1.0,
 }
 
@@ -59,6 +60,7 @@ local openSettings, rebuildHUD, renderSettings, settingsMouse, closeSettings, dr
 local settingsCanvas
 local settingsDevices = {}
 local sHoverMap = {}
+local settingsPage = "general"   -- general | keys
 
 ------------------------------------------------------------------------
 -- PALETTE / STILI
@@ -103,6 +105,20 @@ local function scaleFor(preset)
   else return 1.0 end
 end
 
+local function systemIsDark()
+  local out = hs.execute("defaults read -g AppleInterfaceStyle 2>/dev/null")
+  return (out or ""):find("Dark") ~= nil
+end
+
+local function applyTheme()
+  local st = config.style
+  if config.themeAuto then
+    local fam = config.style:find("mono") and "mono" or "gold"
+    st = systemIsDark() and fam or (fam .. "light")
+  end
+  COL = PALETTES[st] or PALETTES.gold
+end
+
 ------------------------------------------------------------------------
 -- SETTINGS
 ------------------------------------------------------------------------
@@ -128,10 +144,11 @@ local function loadSettings()
   if s.sizePreset  then config.sizePreset = s.sizePreset end
   if s.orientation then config.orientation = s.orientation end
   if s.style       then config.style = s.style end
+  if s.themeAuto ~= nil then config.themeAuto = s.themeAuto end
   if s.posX then config.posX = s.posX end
   if s.posY then config.posY = s.posY end
   config.scale = scaleFor(config.sizePreset)
-  COL = PALETTES[config.style] or PALETTES.gold
+  applyTheme()
   local rf = io.open(os.getenv("HOME") .. "/.config/groq-dictation/repo_path", "r")
   if rf then local p = rf:read("*a"); rf:close(); p = (p or ""):gsub("%s+$", ""); if p ~= "" then config.repoDir = p end end
 end
@@ -349,83 +366,83 @@ pushPlay = function(els, cx, cy, s, col)
     coordinates = { { x = cx - r * 0.65, y = cy - r }, { x = cx - r * 0.65, y = cy + r }, { x = cx + r, y = cy } } }
 end
 
-local function cardBg(s, w, h)
+local function cardBg(s, x, y, w, h)
   return { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
     strokeWidth = 1.2 * s, roundedRectRadii = { xRadius = 14 * s, yRadius = 14 * s },
-    frame = { x = 0, y = 10 * s, w = w, h = h },
-    shadow = { blurRadius = 16 * s, color = { alpha = 0.55 }, offset = { h = -5 * s, w = 0 } },
+    frame = { x = x, y = y, w = w, h = h },
+    shadow = { blurRadius = 18 * s, color = { alpha = 0.5 }, offset = { h = 4 * s, w = 0 } },
     trackMouseDown = true, id = "drag" }
 end
 
 setRecordingElements = function(isPaused)
   local s = config.scale
   local function sc(v) return v * s end
+  local P = sc(14)   -- margine uniforme attorno alla card (spazio per ombra + badge)
   local els, idx = {}, { bars = {} }
   hoverMap = {}
   local function add(el) els[#els + 1] = el; return #els end
-  local MTp = sc(10)
 
   if config.orientation == "vertical" then
     local pw, ph = 52, 180
-    local cx = sc(pw / 2)
-    placeCanvas(sc(pw) + sc(10), sc(ph) + MTp)
-    add(cardBg(s, sc(pw), sc(ph)))
+    local cx = P + sc(pw / 2)
+    placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
+    add(cardBg(s, P, P, sc(pw), sc(ph)))
     if isPaused then
-      pushGear(els, cx, MTp + sc(16), sc(7), s, "settings", hoverMap)
+      pushGear(els, cx, P + sc(16), sc(7), s, "settings", hoverMap)
     else
-      idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent, center = { x = cx, y = MTp + sc(16) }, radius = sc(4.5) })
+      idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent, center = { x = cx, y = P + sc(16) }, radius = sc(4.5) })
     end
     idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(12 * s), textColor = COL.fg,
-      textFont = "Menlo-Bold", textAlignment = "center", frame = { x = 0, y = MTp + sc(28), w = sc(pw), h = sc(16) } })
+      textFont = "Menlo-Bold", textAlignment = "center", frame = { x = P, y = P + sc(28), w = sc(pw), h = sc(16) } })
     local by, pitch = 48, 7
     for i = 1, 9 do
-      local yb = MTp + sc(by + (i - 1) * pitch)
+      local yb = P + sc(by + (i - 1) * pitch)
       local ei = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 2 * s, yRadius = 2 * s },
         frame = { x = cx - sc(3), y = yb, w = sc(6), h = sc(3) } })
       idx.bars[i] = { idx = ei, cx = cx, y = yb }
     end
     idx.barMeta = { horizontal = false, s = s, barH = sc(3), maxLen = 28 }
     local pbi = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 7 * s, yRadius = 7 * s },
-      frame = { x = cx - sc(12), y = MTp + sc(112), w = sc(24), h = sc(24) }, trackMouseUp = true, trackMouseEnterExit = true, id = "pause" })
+      frame = { x = cx - sc(12), y = P + sc(112), w = sc(24), h = sc(24) }, trackMouseUp = true, trackMouseEnterExit = true, id = "pause" })
     hoverMap["pause"] = { idx = pbi, fill = COL.accent, hoverFill = COL.accentHover }
-    if isPaused then pushPlay(els, cx, MTp + sc(124), s, COL.bg) else pushPause(els, cx, MTp + sc(124), s, COL.bg) end
+    if isPaused then pushPlay(els, cx, P + sc(124), s, COL.bg) else pushPause(els, cx, P + sc(124), s, COL.bg) end
     local sti = add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
       strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 7 * s, yRadius = 7 * s },
-      frame = { x = cx - sc(12), y = MTp + sc(142), w = sc(24), h = sc(24) }, trackMouseUp = true, trackMouseEnterExit = true, id = "stop" })
+      frame = { x = cx - sc(12), y = P + sc(142), w = sc(24), h = sc(24) }, trackMouseUp = true, trackMouseEnterExit = true, id = "stop" })
     hoverMap["stop"] = { idx = sti, fill = COL.clear, hoverFill = COL.accentFaint, stroke = COL.accent, hoverStroke = COL.accentHover }
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
-      frame = { x = cx - sc(6), y = MTp + sc(148), w = sc(12), h = sc(12) } })
-    pushBadge(els, "cancel", sc(pw), MTp, s, hoverMap)
+      frame = { x = cx - sc(6), y = P + sc(148), w = sc(12), h = sc(12) } })
+    pushBadge(els, "cancel", P + sc(pw), P, s, hoverMap)
   else
     local pw, ph = 276, 54
-    placeCanvas(sc(pw) + sc(10), sc(ph) + MTp)
-    add(cardBg(s, sc(pw), sc(ph)))
+    placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
+    add(cardBg(s, P, P, sc(pw), sc(ph)))
     if isPaused then
-      pushGear(els, sc(22), MTp + sc(27), sc(8), s, "settings", hoverMap)
+      pushGear(els, P + sc(22), P + sc(27), sc(8), s, "settings", hoverMap)
     else
-      idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent, center = { x = sc(22), y = MTp + sc(27) }, radius = sc(6) })
+      idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent, center = { x = P + sc(22), y = P + sc(27) }, radius = sc(6) })
     end
     idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(19 * s), textColor = COL.fg,
-      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = sc(46), y = MTp + sc(15), w = sc(48), h = sc(26) } })
+      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = P + sc(46), y = P + sc(15), w = sc(48), h = sc(26) } })
     local bx, pitch = 100, 7
     for i = 1, 12 do
-      local xb = sc(bx + (i - 1) * pitch)
+      local xb = P + sc(bx + (i - 1) * pitch)
       local ei = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 2 * s, yRadius = 2 * s },
-        frame = { x = xb, y = MTp + sc(25), w = sc(3), h = sc(4) } })
+        frame = { x = xb, y = P + sc(25), w = sc(3), h = sc(4) } })
       idx.bars[i] = { idx = ei, x = xb }
     end
-    idx.barMeta = { horizontal = true, s = s, barW = sc(3), maxLen = 22, cy = MTp + sc(27) }
+    idx.barMeta = { horizontal = true, s = s, barW = sc(3), maxLen = 22, cy = P + sc(27) }
     local pbi = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = sc(190), y = MTp + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, trackMouseEnterExit = true, id = "pause" })
+      frame = { x = P + sc(190), y = P + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, trackMouseEnterExit = true, id = "pause" })
     hoverMap["pause"] = { idx = pbi, fill = COL.accent, hoverFill = COL.accentHover }
-    if isPaused then pushPlay(els, sc(206), MTp + sc(27), s, COL.bg) else pushPause(els, sc(206), MTp + sc(27), s, COL.bg) end
+    if isPaused then pushPlay(els, P + sc(206), P + sc(27), s, COL.bg) else pushPause(els, P + sc(206), P + sc(27), s, COL.bg) end
     local sti = add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
       strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = sc(230), y = MTp + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, trackMouseEnterExit = true, id = "stop" })
+      frame = { x = P + sc(230), y = P + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, trackMouseEnterExit = true, id = "stop" })
     hoverMap["stop"] = { idx = sti, fill = COL.clear, hoverFill = COL.accentFaint, stroke = COL.accent, hoverStroke = COL.accentHover }
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
-      frame = { x = sc(239), y = MTp + sc(20), w = sc(14), h = sc(14) } })
-    pushBadge(els, "cancel", sc(pw), MTp, s, hoverMap)
+      frame = { x = P + sc(239), y = P + sc(20), w = sc(14), h = sc(14) } })
+    pushBadge(els, "cancel", P + sc(pw), P, s, hoverMap)
   end
 
   overlay:replaceElements(els)
@@ -436,16 +453,16 @@ end
 setProcessingElements = function(text)
   local s = config.scale
   local function sc(v) return v * s end
+  local P = sc(14)
   hoverMap = {}
-  local MTp = sc(10)
   local pw, ph = 178, 46
-  placeCanvas(sc(pw) + sc(10), sc(ph) + MTp)
+  placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
   local els = {}
-  els[#els + 1] = cardBg(s, sc(pw), sc(ph))
+  els[#els + 1] = cardBg(s, P, P, sc(pw), sc(ph))
   els[#els + 1] = { type = "text", text = text or "…", textSize = math.floor(15 * s), textColor = COL.fg,
-    textFont = "Menlo-Bold", textAlignment = "center", frame = { x = sc(8), y = MTp + sc(13), w = sc(pw) - sc(24), h = sc(22) } }
+    textFont = "Menlo-Bold", textAlignment = "center", frame = { x = P + sc(8), y = P + sc(13), w = sc(pw) - sc(24), h = sc(22) } }
   procTextIdx = #els
-  pushBadge(els, "close", sc(pw), MTp, s, hoverMap)
+  pushBadge(els, "close", P + sc(pw), P, s, hoverMap)
   overlay:replaceElements(els)
   mode = "proc"
 end
@@ -547,12 +564,14 @@ settingsMouse = function(_c, msg, id)
   if id == "s_close" then closeSettings(); return end
   local kind, val = id:match("^(%a+):(.+)$")
   if not kind then return end
-  if kind == "mic" then
+  if kind == "tab" then settingsPage = val
+  elseif kind == "mic" then
     local d = settingsDevices[tonumber(val)]
     if d then config.audioDevice = d.idx; config.micName = d.name; persist("micDevice", d.idx); persist("micName", d.name) end
   elseif kind == "size" then config.sizePreset = val; config.scale = scaleFor(val); persist("sizePreset", val); rebuildHUD()
   elseif kind == "orient" then config.orientation = val; persist("orientation", val); resetLevels(); rebuildHUD()
-  elseif kind == "style" then config.style = val; COL = PALETTES[val] or PALETTES.gold; persist("style", val); rebuildHUD()
+  elseif kind == "style" then config.style = val; persist("style", val); applyTheme(); rebuildHUD()
+  elseif kind == "themeauto" then config.themeAuto = (val == "on"); persist("themeAuto", config.themeAuto); applyTheme(); rebuildHUD()
   elseif kind == "sskey" then local k = KEYMAP[val]; if k then config.startStopKeycode = k[1]; config.startStopFlag = k[2]; persist("startStopKeycode", k[1]); persist("startStopFlag", k[2]) end
   elseif kind == "ssgest" then config.ssGesture = val; persist("ssGesture", val)
   elseif kind == "pausekey" then local k = KEYMAP[val]; if k then config.pauseKeycode = k[1]; config.pauseFlag = k[2]; persist("pauseKeycode", k[1]); persist("pauseFlag", k[2]) end
@@ -591,44 +610,53 @@ renderSettings = function()
     textAlignment = "left", frame = { x = pad, y = y, w = W - pad * 2 - 22, h = 18 } })
   y = y + 30
 
-  label("MICROFONO")
-  for i, d in ipairs(settingsDevices) do
-    local cur = (d.name == config.micName)
-    local ri = add({ type = "rectangle", action = "fill", fillColor = COL.clear,
-      frame = { x = pad, y = y, w = W - pad * 2, h = 30 }, trackMouseUp = true, trackMouseEnterExit = true, id = "mic:" .. i })
-    sHoverMap["mic:" .. i] = { idx = ri, fill = COL.clear, hoverFill = COL.accentFaint }
-    local bx, byy = pad + 2, y + 8
-    add({ type = "rectangle", action = "strokeAndFill", fillColor = cur and COL.accent or COL.clear, strokeColor = COL.accent,
-      strokeWidth = 1.3, roundedRectRadii = { xRadius = 4, yRadius = 4 }, frame = { x = bx, y = byy, w = 14, h = 14 } })
-    if cur then
-      add({ type = "segments", action = "stroke", strokeColor = COL.bg, strokeWidth = 1.8, closed = false,
-        coordinates = { { x = bx + 3, y = byy + 7 }, { x = bx + 6, y = byy + 10 }, { x = bx + 11, y = byy + 4 } } })
+  -- switcher di tab
+  segRow({ { label = "Generale", val = "general" }, { label = "Tasti", val = "keys" } }, settingsPage, "tab")
+  y = y + 4
+
+  if settingsPage == "general" then
+    label("MICROFONO")
+    for i, d in ipairs(settingsDevices) do
+      local cur = (d.name == config.micName)
+      local ri = add({ type = "rectangle", action = "fill", fillColor = COL.clear,
+        frame = { x = pad, y = y, w = W - pad * 2, h = 30 }, trackMouseUp = true, trackMouseEnterExit = true, id = "mic:" .. i })
+      sHoverMap["mic:" .. i] = { idx = ri, fill = COL.clear, hoverFill = COL.accentFaint }
+      local bx, byy = pad + 2, y + 8
+      add({ type = "rectangle", action = "strokeAndFill", fillColor = cur and COL.accent or COL.clear, strokeColor = COL.accent,
+        strokeWidth = 1.3, roundedRectRadii = { xRadius = 4, yRadius = 4 }, frame = { x = bx, y = byy, w = 14, h = 14 } })
+      if cur then
+        add({ type = "segments", action = "stroke", strokeColor = COL.bg, strokeWidth = 1.8, closed = false,
+          coordinates = { { x = bx + 3, y = byy + 7 }, { x = bx + 6, y = byy + 10 }, { x = bx + 11, y = byy + 4 } } })
+      end
+      add({ type = "text", text = d.name, textSize = 12, textColor = cur and COL.accent or COL.fg,
+        textFont = "Menlo-Bold", textAlignment = "left", frame = { x = pad + 24, y = y + 8, w = W - pad * 2 - 24, h = 16 } })
+      y = y + 34
     end
-    add({ type = "text", text = d.name, textSize = 12, textColor = cur and COL.accent or COL.fg,
-      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = pad + 24, y = y + 8, w = W - pad * 2 - 24, h = 16 } })
-    y = y + 34
+    y = y + 6
+
+    label("DIMENSIONE")
+    segRow({ { label = "Minimal", val = "minimal" }, { label = "Standard", val = "standard" }, { label = "Grande", val = "large" } }, config.sizePreset, "size")
+    label("ORIENTAMENTO")
+    segRow({ { label = "Orizzontale", val = "horizontal" }, { label = "Verticale", val = "vertical" } }, config.orientation, "orient")
+    label("STILE")
+    segRow({ { label = "Gold", val = "gold" }, { label = "Mono", val = "mono" } }, config.style, "style")
+    segRow({ { label = "Gold Light", val = "goldlight" }, { label = "Mono Light", val = "monolight" } }, config.style, "style")
+    label("TEMA")
+    segRow({ { label = "Fisso", val = "off" }, { label = "Auto (sistema)", val = "on" } }, config.themeAuto and "on" or "off", "themeauto")
+  else
+    label("AVVIO / STOP — tasto")
+    segRow({ { label = "⌥", val = "opt" }, { label = "⌃", val = "ctrl" }, { label = "⌘", val = "cmd" }, { label = "⇧", val = "shift" } }, keyLabel(config.startStopKeycode), "sskey")
+    label("AVVIO / STOP — gesto")
+    segRow({ { label = "2 tap", val = "double" }, { label = "1 tap", val = "single" }, { label = "tieni", val = "hold" } }, config.ssGesture, "ssgest")
+    label("PAUSA — tasto")
+    segRow({ { label = "⌥", val = "opt" }, { label = "⌃", val = "ctrl" }, { label = "⌘", val = "cmd" }, { label = "⇧", val = "shift" } }, keyLabel(config.pauseKeycode), "pausekey")
+    label("PAUSA — gesto")
+    segRow({ { label = "1 tap", val = "single" }, { label = "2 tap", val = "double" } }, config.pauseGesture, "pausegest")
   end
-  y = y + 6
-
-  label("DIMENSIONE")
-  segRow({ { label = "Minimal", val = "minimal" }, { label = "Standard", val = "standard" }, { label = "Grande", val = "large" } }, config.sizePreset, "size")
-  label("ORIENTAMENTO")
-  segRow({ { label = "Orizzontale", val = "horizontal" }, { label = "Verticale", val = "vertical" } }, config.orientation, "orient")
-  label("STILE")
-  segRow({ { label = "Gold", val = "gold" }, { label = "Mono", val = "mono" }, { label = "Gold L", val = "goldlight" }, { label = "Mono L", val = "monolight" } }, config.style, "style")
-
-  label("TASTO AVVIO / STOP")
-  segRow({ { label = "⌥", val = "opt" }, { label = "⌃", val = "ctrl" }, { label = "⌘", val = "cmd" }, { label = "⇧", val = "shift" } }, keyLabel(config.startStopKeycode), "sskey")
-  segRow({ { label = "2 tap", val = "double" }, { label = "1 tap", val = "single" }, { label = "tieni", val = "hold" } }, config.ssGesture, "ssgest")
-
-  label("TASTO PAUSA")
-  segRow({ { label = "⌥", val = "opt" }, { label = "⌃", val = "ctrl" }, { label = "⌘", val = "cmd" }, { label = "⇧", val = "shift" } }, keyLabel(config.pauseKeycode), "pausekey")
-  segRow({ { label = "1 tap", val = "single" }, { label = "2 tap", val = "double" } }, config.pauseGesture, "pausegest")
 
   local H = y + 8
   table.insert(els, 1, { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
     strokeWidth = 1.5, roundedRectRadii = { xRadius = 16, yRadius = 16 }, frame = { x = 0, y = 0, w = W, h = H },
-    shadow = { blurRadius = 22, color = { alpha = 0.5 }, offset = { h = -6, w = 0 } },
     trackMouseDown = true, id = "s_drag" })
   local cbi = add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent, strokeWidth = 1.2,
     center = { x = W - 22, y = 24 }, radius = 11, trackMouseUp = true, trackMouseEnterExit = true, id = "s_close" })
@@ -907,6 +935,11 @@ function M.init()
   refreshDevices()
   hs.audiodevice.watcher.setCallback(function() refreshDevices() end)
   hs.audiodevice.watcher.start()
+  -- segui il tema di sistema quando themeAuto è attivo
+  M._appearanceWatcher = hs.distributednotifications.new(function()
+    if config.themeAuto then applyTheme(); rebuildHUD() end
+  end, "AppleInterfaceThemeChangedNotification")
+  M._appearanceWatcher:start()
   initHotkeys()
   if config.autoUpdate ~= false then
     hs.timer.doAfter(45, function() checkUpdate(true) end)

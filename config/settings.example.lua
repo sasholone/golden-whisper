@@ -32,5 +32,6 @@ return {
   sizePreset  = "standard",               -- standard | large (+20%) | minimal (-30%)
   orientation = "horizontal",             -- horizontal | vertical
   style       = "gold",                   -- gold | mono | goldlight | monolight
+  themeAuto   = false,                    -- true = segue il tema chiaro/scuro del sistema (usa la famiglia di 'style')
   -- posX / posY = centro della card; si salvano da soli quando trascini l'overlay col mouse
 }
