@@ -258,18 +258,18 @@ placeCanvas = function(w, h)
   end
 end
 
-startDrag = function()
-  if not overlay then return end
+local function dragCanvas(cv, persistPos)
+  if not cv then return end
   if dragTap then dragTap:stop(); dragTap = nil end
   local m0 = hs.mouse.absolutePosition()
-  local f0 = overlay:frame()
+  local f0 = cv:frame()
   local off = { dx = m0.x - f0.x, dy = m0.y - f0.y }
   local moved = false
   dragTap = hs.eventtap.new({ hs.eventtap.event.types.leftMouseDragged, hs.eventtap.event.types.leftMouseUp }, function(e)
     if e:getType() == hs.eventtap.event.types.leftMouseUp then
       dragTap:stop(); dragTap = nil
-      if moved and overlay then
-        local f = overlay:frame()
+      if moved and persistPos and cv then
+        local f = cv:frame()
         config.posX = f.x + f.w / 2; config.posY = f.y + f.h / 2
         persist("posX", math.floor(config.posX)); persist("posY", math.floor(config.posY))
       end
@@ -278,11 +278,13 @@ startDrag = function()
     moved = true
     local m = hs.mouse.absolutePosition()
     local nx, ny = m.x - off.dx, m.y - off.dy
-    if overlay then overlay:topLeft({ x = nx, y = ny }); finalFrame.x = nx; finalFrame.y = ny end
+    cv:topLeft({ x = nx, y = ny })
+    if cv == overlay and finalFrame then finalFrame.x = nx; finalFrame.y = ny end
     return false
   end)
   dragTap:start()
 end
+startDrag = function() dragCanvas(overlay, true) end
 
 -- badge ✕ sporgente dall'angolo (✕ = due linee incrociate, centrata)
 pushBadge = function(els, id, cx, cy, s)
@@ -304,7 +306,7 @@ setRecordingElements = function(isPaused)
   local MTp = sc(10)
 
   if config.orientation == "vertical" then
-    local pw, ph = 64, 210
+    local pw, ph = 56, 214
     local cx = sc(pw / 2)
     placeCanvas(sc(pw) + sc(10), sc(ph) + MTp)
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
@@ -313,32 +315,32 @@ setRecordingElements = function(isPaused)
     if isPaused then
       idx.mic = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
         roundedRectRadii = { xRadius = 7 * s, yRadius = 7 * s },
-        frame = { x = cx - sc(15), y = MTp + sc(8), w = sc(30), h = sc(26) }, trackMouseUp = true, id = "settings" })
+        frame = { x = cx - sc(14), y = MTp + sc(6), w = sc(28), h = sc(24) }, trackMouseUp = true, id = "settings" })
       add({ type = "image", image = IMG.mic, imageScaling = "scaleProportionally",
-        frame = { x = cx - sc(9), y = MTp + sc(11), w = sc(18), h = sc(20) } })
+        frame = { x = cx - sc(9), y = MTp + sc(8), w = sc(18), h = sc(20) } })
     else
       idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent,
-        center = { x = cx, y = MTp + sc(19) }, radius = sc(5) })
+        center = { x = cx, y = MTp + sc(18) }, radius = sc(5) })
     end
     idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(13 * s), textColor = COL.white,
-      textFont = "Menlo-Bold", textAlignment = "center", frame = { x = 0, y = MTp + sc(33), w = sc(pw), h = sc(18) } })
-    local by, pitch = 56, 9
+      textFont = "Menlo-Bold", textAlignment = "center", frame = { x = 0, y = MTp + sc(34), w = sc(pw), h = sc(18) } })
+    local by, pitch = 54, 8
     for i = 1, 9 do
       local yb = MTp + sc(by + (i - 1) * pitch)
       local ei = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
         roundedRectRadii = { xRadius = 2 * s, yRadius = 2 * s }, frame = { x = cx - sc(3), y = yb, w = sc(6), h = sc(3) } })
       idx.bars[i] = { idx = ei, cx = cx, y = yb }
     end
-    idx.barMeta = { horizontal = false, s = s, barH = sc(3), maxLen = 34 }
+    idx.barMeta = { horizontal = false, s = s, barH = sc(3), maxLen = 30 }
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = cx - sc(16), y = MTp + sc(144), w = sc(32), h = sc(28) }, trackMouseUp = true, id = "pause" })
+      frame = { x = cx - sc(15), y = MTp + sc(140), w = sc(30), h = sc(28) }, trackMouseUp = true, id = "pause" })
     add({ type = "image", image = isPaused and IMG.play or IMG.pause, imageScaling = "scaleProportionally",
-      frame = { x = cx - sc(9), y = MTp + sc(149), w = sc(18), h = sc(18) } })
+      frame = { x = cx - sc(9), y = MTp + sc(145), w = sc(18), h = sc(18) } })
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
       strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = cx - sc(16), y = MTp + sc(176), w = sc(32), h = sc(28) }, trackMouseUp = true, id = "stop" })
+      frame = { x = cx - sc(15), y = MTp + sc(172), w = sc(30), h = sc(28) }, trackMouseUp = true, id = "stop" })
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
-      frame = { x = cx - sc(7), y = MTp + sc(183), w = sc(14), h = sc(14) } })
+      frame = { x = cx - sc(7), y = MTp + sc(179), w = sc(14), h = sc(14) } })
     pushBadge(els, "cancel", sc(pw), MTp, s)
   else
     local pw, ph = 276, 54
@@ -349,16 +351,16 @@ setRecordingElements = function(isPaused)
     if isPaused then
       idx.mic = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
         roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-        frame = { x = sc(10), y = MTp + sc(12), w = sc(34), h = sc(30) }, trackMouseUp = true, id = "settings" })
+        frame = { x = sc(8), y = MTp + sc(12), w = sc(30), h = sc(30) }, trackMouseUp = true, id = "settings" })
       add({ type = "image", image = IMG.mic, imageScaling = "scaleProportionally",
-        frame = { x = sc(18), y = MTp + sc(17), w = sc(18), h = sc(20) } })
+        frame = { x = sc(14), y = MTp + sc(17), w = sc(18), h = sc(20) } })
     else
       idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent,
-        center = { x = sc(20), y = MTp + sc(27) }, radius = sc(6) })
+        center = { x = sc(22), y = MTp + sc(27) }, radius = sc(6) })
     end
     idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(19 * s), textColor = COL.white,
-      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = sc(36), y = MTp + sc(15), w = sc(52), h = sc(26) } })
-    local bx, pitch = 92, 8
+      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = sc(46), y = MTp + sc(15), w = sc(48), h = sc(26) } })
+    local bx, pitch = 100, 7
     for i = 1, 12 do
       local xb = sc(bx + (i - 1) * pitch)
       local ei = add({ type = "rectangle", action = "fill", fillColor = COL.accent,
@@ -367,9 +369,9 @@ setRecordingElements = function(isPaused)
     end
     idx.barMeta = { horizontal = true, s = s, barW = sc(3), maxLen = 22, cy = MTp + sc(27) }
     add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = sc(192), y = MTp + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, id = "pause" })
+      frame = { x = sc(190), y = MTp + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, id = "pause" })
     add({ type = "image", image = isPaused and IMG.play or IMG.pause, imageScaling = "scaleProportionally",
-      frame = { x = sc(199), y = MTp + sc(17), w = sc(18), h = sc(20) } })
+      frame = { x = sc(197), y = MTp + sc(17), w = sc(18), h = sc(20) } })
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
       strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
       frame = { x = sc(230), y = MTp + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, id = "stop" })
@@ -490,6 +492,7 @@ closeSettings = function()
 end
 
 settingsMouse = function(_c, msg, id)
+  if msg == "mouseDown" and id == "s_drag" then dragCanvas(settingsCanvas, false); return end
   if msg ~= "mouseUp" or not id then return end
   if id == "s_close" then closeSettings(); return end
   local kind, val = id:match("^(%a+):(.+)$")
@@ -535,11 +538,18 @@ renderSettings = function()
   label("MICROFONO")
   for i, d in ipairs(settingsDevices) do
     local cur = (d.name == config.micName)
-    add({ type = "rectangle", action = "fill", fillColor = cur and COL.accent or COL.clear,
-      roundedRectRadii = { xRadius = 7, yRadius = 7 }, frame = { x = pad, y = y, w = W - pad * 2, h = 30 },
-      trackMouseUp = true, id = "mic:" .. i })
-    add({ type = "text", text = d.name, textSize = 12, textColor = cur and COL.bg or COL.white,
-      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = pad + 10, y = y + 8, w = W - pad * 2 - 16, h = 16 } })
+    add({ type = "rectangle", action = "fill", fillColor = COL.clear,
+      frame = { x = pad, y = y, w = W - pad * 2, h = 30 }, trackMouseUp = true, id = "mic:" .. i })
+    local bx, byy = pad + 2, y + 8
+    add({ type = "rectangle", action = "strokeAndFill", fillColor = cur and COL.accent or COL.clear,
+      strokeColor = COL.accent, strokeWidth = 1.3, roundedRectRadii = { xRadius = 4, yRadius = 4 },
+      frame = { x = bx, y = byy, w = 14, h = 14 } })
+    if cur then
+      add({ type = "segments", action = "stroke", strokeColor = COL.bg, strokeWidth = 1.8, closed = false,
+        coordinates = { { x = bx + 3, y = byy + 7 }, { x = bx + 6, y = byy + 10 }, { x = bx + 11, y = byy + 4 } } })
+    end
+    add({ type = "text", text = d.name, textSize = 12, textColor = cur and COL.accent or COL.white,
+      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = pad + 24, y = y + 8, w = W - pad * 2 - 24, h = 16 } })
     y = y + 34
   end
   y = y + 6
@@ -551,13 +561,10 @@ renderSettings = function()
   label("STILE")
   segRow({ { label = "Gold", val = "gold" }, { label = "Mono", val = "mono" } }, config.style, "style")
 
-  add({ type = "text", text = "✋ trascina la barra per spostarla", textSize = 10, textColor = COL.accentDim,
-    textFont = "Menlo", textAlignment = "left", frame = { x = pad, y = y, w = W - pad * 2, h = 14 } })
-  y = y + 26
-
-  local H = y
+  local H = y + 8
   table.insert(els, 1, { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
-    strokeWidth = 1.5, roundedRectRadii = { xRadius = 16, yRadius = 16 }, frame = { x = 0, y = 0, w = W, h = H } })
+    strokeWidth = 1.5, roundedRectRadii = { xRadius = 16, yRadius = 16 }, frame = { x = 0, y = 0, w = W, h = H },
+    trackMouseDown = true, id = "s_drag" })
   add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent, strokeWidth = 1.2,
     center = { x = W - 22, y = 24 }, radius = 11, trackMouseUp = true, id = "s_close" })
   add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7, closed = false,
