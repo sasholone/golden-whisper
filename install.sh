@@ -93,9 +93,10 @@ echo "   1. Apri Hammerspoon → concedi ACCESSIBILITÀ (serve per incollare al 
 echo "   2. Al primo utilizzo concedi il MICROFONO"
 echo
 say "USO:"
-echo "   • doppio tap Option destro  → start / stop"
-echo "   • doppio tap Shift destro   → pausa / riprendi (in pausa scegli il mic dall'HUD)"
-echo "   • ✕ in alto a destra        → annulla e scarta la registrazione"
+echo "   • doppio tap Option destro (o Ctrl destro) → START"
+echo "   • un tap dello stesso tasto                 → STOP"
+echo "   • un tap Shift destro                       → pausa / riprendi (in pausa scegli il mic dall'HUD)"
+echo "   • ✕ in alto a destra                        → annulla e scarta la registrazione"
 echo "   Metti il cursore dove vuoi il testo, detta, e viene incollato lì."
 echo
 say "Golden Whisper si auto-aggiorna da GitHub (update manuale: bash $SCRIPT_DIR/update.sh)"

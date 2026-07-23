@@ -14,7 +14,7 @@ microphone waveform, and pause / stop buttons, with a ✕ badge to cancel.
 
 ## Features
 
-- **Global hotkeys** — double‑tap **Right Option** to start/stop, double‑tap **Right Shift** to pause/resume.
+- **Global hotkeys** — **double‑tap Right Option** (or **Right Ctrl**) to start; a **single tap** of that key to stop; a **single Right Shift** tap to pause/resume.
 - **Paste at cursor + clipboard** — the transcription lands wherever you're typing **and** stays on the clipboard, so you never lose it.
 - **Cancel anytime** — a ✕ in the top‑right of the HUD stops recording and **discards** it (no transcription).
 - **Fast** — uses `whisper-large-v3-turbo`; a ~20s note transcribes in ~1–2s.
@@ -68,11 +68,16 @@ Put your cursor where you want the text, then:
 
 | Action | Shortcut |
 | --- | --- |
-| Start / stop recording | double‑tap **Right Option** (⌥) |
-| Pause / resume | double‑tap **Right Shift** (⇧) |
+| Start recording | **double‑tap Right Option** (⌥) — or **Right Ctrl** |
+| Stop recording | **single tap** the same key |
+| Pause / resume | **single tap Right Shift** (⇧) |
 | Switch microphone | pause, then click the 🎙️ button in the HUD |
 | Stop & transcribe | click the ■ button |
 | Cancel & discard | click the ✕ bubble (top‑right) |
+
+Start needs a double‑tap (so you never trigger it by accident while typing); once recording, a single tap
+is enough to stop or pause. **Right Ctrl** works as an alternative start/stop key for keyboards without a
+usable right Option/Cmd.
 
 After you stop, the HUD shows the pipeline — **Received → Sent → Transcribing → Done** — and the text is pasted.
 

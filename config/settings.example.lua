@@ -15,11 +15,11 @@ return {
   -- micName = "AirPods di ...",
   model     = "whisper-large-v3-turbo",   -- alt: "whisper-large-v3" (più accurato, un filo più lento)
 
-  -- Trigger 1: START / STOP  (doppio tap)
+  -- Trigger START/STOP: START = DOPPIO tap | STOP = UN tap. (Ctrl destro è sempre valido come alternativa.)
   startStopKeycode = 61,                  -- 61=Option dx | 62=Ctrl dx | 54=Cmd dx | 60=Shift dx
   startStopFlag    = "alt",               -- deve combaciare: alt / ctrl / cmd / shift
 
-  -- Trigger 2: PAUSA / RIPRENDI  (doppio tap)
+  -- Trigger PAUSA/RIPRENDI: UN tap
   pauseKeycode = 60,                      -- 60 = Shift destro
   pauseFlag    = "shift",
 

@@ -53,6 +53,8 @@ local levels    = {}
 local overlay   = nil
 local uiTimer   = nil
 local rotTimer  = nil
+local animTimer = nil
+local finalFrame = nil
 local mode      = nil          -- "rec" | "proc"
 local RECIDX    = nil
 local taps      = {}
@@ -254,6 +256,7 @@ local function ensureCanvas()
   local sf = hs.screen.mainScreen():frame()
   local x = sf.x + (sf.w - PILL_W) / 2
   local y = sf.y + sf.h - 80 - H
+  finalFrame = { x = x, y = y, w = W, h = H }
   overlay = hs.canvas.new({ x = x, y = y, w = W, h = H })
   overlay:level(hs.canvas.windowLevels.overlay)
   overlay:behavior({ "canJoinAllSpaces", "stationary" })
@@ -371,10 +374,46 @@ local function updateUI()
   end
 end
 
+-- comparsa: pop-in dal basso + fade-in
+local function showAnimated()
+  if not overlay or not finalFrame then return end
+  if animTimer then animTimer:stop(); animTimer = nil end
+  local f = finalFrame
+  overlay:alpha(0)
+  overlay:frame({ x = f.x, y = f.y + 14, w = f.w, h = f.h })
+  overlay:show()
+  local steps, i = 9, 0
+  animTimer = hs.timer.doEvery(0.016, function()
+    i = i + 1
+    local e = 1 - (1 - i / steps) ^ 2                  -- ease-out
+    overlay:alpha(e)
+    overlay:frame({ x = f.x, y = f.y + 14 * (1 - e), w = f.w, h = f.h })
+    if i >= steps then animTimer:stop(); animTimer = nil; overlay:alpha(1); overlay:frame(f) end
+  end)
+end
+
+-- scomparsa: fade-out + scivola giù
+local function hideAnimated()
+  if not overlay or not finalFrame then if overlay then overlay:hide() end return end
+  if animTimer then animTimer:stop(); animTimer = nil end
+  local f = finalFrame
+  local steps, i = 8, 0
+  animTimer = hs.timer.doEvery(0.016, function()
+    i = i + 1
+    local e = (i / steps) ^ 2                           -- ease-in
+    overlay:alpha(1 - e)
+    overlay:frame({ x = f.x, y = f.y + 10 * e, w = f.w, h = f.h })
+    if i >= steps then
+      animTimer:stop(); animTimer = nil
+      overlay:hide(); overlay:alpha(1); overlay:frame(f)
+    end
+  end)
+end
+
 local function showRecordingHUD()
   ensureCanvas()
   setRecordingElements(false)
-  overlay:show()
+  showAnimated()
   if uiTimer then uiTimer:stop() end
   uiTimer = hs.timer.new(0.06, updateUI); uiTimer:start()
 end
@@ -383,8 +422,8 @@ local function stopUITimer() if uiTimer then uiTimer:stop(); uiTimer = nil end e
 
 function hideOverlay()
   stopUITimer()
-  if overlay then overlay:hide() end
   mode = nil; RECIDX = nil
+  hideAnimated()
 end
 
 ------------------------------------------------------------------------
@@ -472,8 +511,9 @@ local function finalizeAndTranscribe()
   busy = true
   stopUITimer()
   ensureCanvas()
+  if animTimer then animTimer:stop(); animTimer = nil end
   setProcessingElements("🎙️  Ricevuto")
-  overlay:show()
+  overlay:alpha(1); overlay:frame(finalFrame); overlay:show()
   hs.timer.doAfter(0.25, function()
     local valid = {}
     for _, p in ipairs(segments) do if fileSize(p) > 1000 then valid[#valid + 1] = p end end
@@ -594,13 +634,11 @@ function M.togglePause()
   end
 end
 
-local function toggle()
-  if busy then return end
-  if recording then M.stop() else start() end
-end
-
 ------------------------------------------------------------------------
--- HOTKEY: doppio tap (Option dx = start/stop, Shift dx = pausa)
+-- HOTKEY
+--   START  = DOPPIO tap del tasto start/stop (Option dx, o Ctrl dx)  → evita partenze accidentali
+--   STOP   = UN tap dello stesso tasto mentre registra
+--   PAUSA  = UN tap del tasto pausa (Shift dx) mentre registra
 ------------------------------------------------------------------------
 local watcher = nil
 local function handleDouble(kc, action)
@@ -611,12 +649,30 @@ local function handleDouble(kc, action)
 end
 
 local function initHotkeys()
+  -- tasti start/stop: quello da settings + Ctrl destro come alternativa universale
+  local ss = { { config.startStopKeycode, config.startStopFlag } }
+  local hasCtrl = false
+  for _, k in ipairs(ss) do if k[1] == 62 then hasCtrl = true end end
+  if not hasCtrl then table.insert(ss, { 62, "ctrl" }) end   -- Ctrl destro (tastiere senza right option/cmd)
+  local pz = { { config.pauseKeycode, config.pauseFlag } }
+
   watcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(e)
     local kc, fl = e:getKeyCode(), e:getFlags()
-    if kc == config.startStopKeycode and fl[config.startStopFlag] then
-      handleDouble(kc, toggle)
-    elseif kc == config.pauseKeycode and fl[config.pauseFlag] then
-      handleDouble(kc, function() if not busy then M.togglePause() end end)
+    for _, k in ipairs(ss) do
+      if kc == k[1] and fl[k[2]] then
+        if recording then
+          if not busy then M.stop() end              -- STOP con un tap
+        else
+          handleDouble(kc, function() if not busy then start() end end)  -- START con doppio tap
+        end
+        return false
+      end
+    end
+    for _, k in ipairs(pz) do
+      if kc == k[1] and fl[k[2]] then
+        if recording and not busy then M.togglePause() end   -- PAUSA con un tap
+        return false
+      end
     end
     return false
   end)
