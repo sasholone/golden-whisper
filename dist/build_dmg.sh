@@ -20,7 +20,12 @@ ok()  { printf "\033[1;32m✓\033[0m %s\n" "$1"; }
 die() { printf "\033[1;31m✕\033[0m %s\n" "$1" >&2; exit 1; }
 
 # --- pre-check ---
-[ -d "$HS_APP" ]              || die "Hammerspoon non trovato in /Applications"
+[ -d "$HS_APP" ] || die "Hammerspoon non trovato in /Applications"
+# ffmpeg mancanti → prepara in automatico (dylibbundler + evermeet)
+if [ ! -x "$FFMPEG_ARM64/ffmpeg" ] || [ ! -x "$FFMPEG_X86" ]; then
+  say "ffmpeg non pronti: li preparo…"
+  bash "$DIST/prepare_ffmpeg.sh"
+fi
 [ -x "$FFMPEG_ARM64/ffmpeg" ] || die "ffmpeg arm64 bundle mancante ($FFMPEG_ARM64)"
 [ -x "$FFMPEG_X86" ]          || die "ffmpeg x86_64 mancante ($FFMPEG_X86)"
 
