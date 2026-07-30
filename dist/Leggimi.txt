@@ -1,0 +1,29 @@
+🎙️  GOLDEN WHISPER — dettatura vocale per Mac
+================================================
+
+COME SI INSTALLA (2 minuti):
+
+1) Fai clic DESTRO (o Ctrl+clic) su "Installa Golden Whisper.command"
+   e scegli "Apri".
+   ⚠️  Importante: la PRIMA volta usa il clic destro → Apri, NON il doppio
+       clic. macOS mostra un avviso ("sviluppatore non identificato"):
+       clicca comunque "Apri". È normale — l'app non è firmata a pagamento.
+
+2) Si apre una finestra Terminale che fa tutto da sola. Ti chiederà solo:
+   - di incollare una chiave Groq (GRATIS, ti apre lui la pagina)
+   - di dare 2 permessi macOS (Accessibilità + Microfono)
+
+3) Fine. In alto nella barra dei menu compare l'icona 🎙️.
+
+
+COME SI USA:
+  • doppio tap Option destro  → inizia a parlare
+  • un tap Option destro       → stop, il testo viene incollato dove hai il cursore
+  • icona 🎙️ in alto           → menu e impostazioni
+
+
+AGGIORNAMENTI:
+  L'app si aggiorna DA SOLA (controlla online ogni giorno). Non devi fare nulla.
+
+
+Problemi? Scrivi a Sasha.

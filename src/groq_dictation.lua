@@ -172,6 +172,7 @@ local function loadSettings()
   if s.restoreClipboard ~= nil then config.restoreClipboard = s.restoreClipboard end
   if s.autoUpdate ~= nil then config.autoUpdate = s.autoUpdate end
   if s.repoDir then config.repoDir = s.repoDir end
+  if s.ffmpeg then config.ffmpeg = s.ffmpeg; config.ffmpegExplicit = true end
   if s.sizePreset  then config.sizePreset = s.sizePreset end
   if s.orientation then config.orientation = s.orientation end
   if s.style       then config.style = s.style end
@@ -326,7 +327,7 @@ placeCanvas = function(w, h)
   if not overlay then
     overlay = hs.canvas.new(finalFrame)
     overlay:level(hs.canvas.windowLevels.overlay)
-    overlay:behavior({ "canJoinAllSpaces", "stationary" })
+    overlay:behavior({ "canJoinAllSpaces", "stationary", "fullScreenAuxiliary" })
     overlay:clickActivating(false)
     overlay:mouseCallback(mouseCb)
   else
@@ -834,7 +835,7 @@ renderSettings = function()
   if settingsCanvas then settingsCanvas:delete() end
   settingsCanvas = hs.canvas.new({ x = fx, y = fy, w = W, h = H })
   settingsCanvas:level(hs.canvas.windowLevels.overlay)
-  settingsCanvas:behavior({ "canJoinAllSpaces" })
+  settingsCanvas:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
   settingsCanvas:replaceElements(els)
   settingsCanvas:mouseCallback(settingsMouse)
   settingsCanvas:show()
@@ -1073,29 +1074,45 @@ deferReload = function()
   if recording or busy then hs.timer.doAfter(30, deferReload); return end
   hs.reload()
 end
-local function applyUpdate(dir)
-  local t = hs.task.new(config.git, function(code)
-    if code ~= 0 then hs.alert.show("Golden Whisper: update fallito (git pull)") return end
-    hs.execute(string.format("cp '%s/src/groq_dictation.lua' '%s/.hammerspoon/groq_dictation.lua'", dir, os.getenv("HOME")))
-    hs.alert.show("⬆️ Golden Whisper aggiornato — riavvio appena sei fermo", 4)
+-- Auto-update SENZA git: scarica direttamente da GitHub (raw). Funziona anche
+-- sui Mac del team che hanno solo il DMG installato (nessun clone, nessun git).
+local RAW_BASE     = "https://raw.githubusercontent.com/sasholone/golden-whisper/main"
+local VERSION_FILE = os.getenv("HOME") .. "/.config/groq-dictation/version"
+
+local function localVersion()
+  local f = io.open(VERSION_FILE, "r"); if not f then return "" end
+  local v = f:read("*a") or ""; f:close(); return trim(v)
+end
+local function writeLocalVersion(v)
+  local f = io.open(VERSION_FILE, "w"); if f then f:write(v); f:close() end
+end
+
+local function applyUpdate(newVer)
+  local dest = os.getenv("HOME") .. "/.hammerspoon/groq_dictation.lua"
+  local tmp  = dest .. ".new"
+  local t = hs.task.new(config.curl, function(code)
+    -- scarica su file temporaneo, poi sostituisci solo se il download è valido
+    if code ~= 0 or fileSize(tmp) < 1000 then
+      os.remove(tmp); hs.alert.show("Golden Whisper: download update fallito"); return
+    end
+    os.rename(tmp, dest)
+    writeLocalVersion(newVer)
+    hs.alert.show("⬆️ Golden Whisper aggiornato (" .. newVer .. ") — riavvio appena sei fermo", 4)
     deferReload()
-  end, { "-C", dir, "pull", "--ff-only", "--quiet" })
+  end, { "-fsSL", RAW_BASE .. "/src/groq_dictation.lua", "-o", tmp })
   t:start()
 end
 local function checkUpdate(silent)
-  local dir = config.repoDir
-  if not dir or fileSize(dir .. "/.git/HEAD") == 0 then
-    if not silent then hs.alert.show("Update: " .. tostring(dir) .. " non è un clone git") end
-    return
-  end
-  local t = hs.task.new(config.git, function(code)
-    if code ~= 0 then if not silent then hs.alert.show("Update: fetch fallito") end return end
-    local loc = trim(hs.execute(config.git .. " -C '" .. dir .. "' rev-parse HEAD 2>/dev/null"))
-    local rem = trim(hs.execute(config.git .. " -C '" .. dir .. "' rev-parse '@{u}' 2>/dev/null"))
-    if loc ~= "" and rem ~= "" and loc ~= rem then
-      if config.autoUpdate then applyUpdate(dir) else hs.alert.show("⬆️ Update disponibile — lancia update.sh", 5) end
-    elseif not silent then hs.alert.show("Golden Whisper è aggiornato ✓", 2) end
-  end, { "-C", dir, "fetch", "--quiet" })
+  local t = hs.task.new(config.curl, function(code, out)
+    if code ~= 0 then if not silent then hs.alert.show("Update: controllo fallito (rete?)") end return end
+    local rem = trim(out or "")
+    if rem == "" then if not silent then hs.alert.show("Update: versione remota vuota") end return end
+    local loc = localVersion()
+    if loc ~= rem then
+      if config.autoUpdate then applyUpdate(rem)
+      else hs.alert.show("⬆️ Golden Whisper: update disponibile (" .. rem .. ")", 5) end
+    elseif not silent then hs.alert.show("Golden Whisper è aggiornato ✓ (" .. loc .. ")", 2) end
+  end, { "-fsSL", RAW_BASE .. "/VERSION" })
   t:start()
 end
 
@@ -1131,6 +1148,16 @@ end
 
 function M.init()
   loadSettings()
+  -- risolvi il path di ffmpeg: prima quello impacchettato dall'installer (DMG), poi Homebrew/PATH
+  if not config.ffmpegExplicit then
+    local cands = {
+      os.getenv("HOME") .. "/.config/groq-dictation/bin/ffmpeg",
+      "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg",
+    }
+    for _, p in ipairs(cands) do
+      if hs.fs.attributes(p, "mode") then config.ffmpeg = p; break end
+    end
+  end
   hs.execute("mkdir -p '" .. config.workDir .. "' '" .. config.recDir .. "'")
   recoverOrphans()
   refreshDevices()

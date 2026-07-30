@@ -4,3 +4,6 @@ config/settings.lua
 
 # macOS
 .DS_Store
+
+# build/scratch
+_scratch/
