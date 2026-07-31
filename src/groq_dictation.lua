@@ -32,6 +32,8 @@ local config = {
   restoreClipboard = false,
   autoUpdate   = true,
   updateCheckHours = 24,
+  autoTranscribeRecovered = true,  -- audio salvato per errore/interruzione → ritrascritto in automatico
+  recoveredRetryDone = {},         -- runtime: evita ritentativi in loop sugli stessi file
   git          = "/usr/bin/git",
   repoDir      = os.getenv("HOME") .. "/golden-whisper",
   sizePreset   = "standard",   -- standard | large | minimal
@@ -171,6 +173,7 @@ local function loadSettings()
   if s.maxSegmentSec    then config.maxSegmentSec = s.maxSegmentSec end
   if s.restoreClipboard ~= nil then config.restoreClipboard = s.restoreClipboard end
   if s.autoUpdate ~= nil then config.autoUpdate = s.autoUpdate end
+  if s.autoTranscribeRecovered ~= nil then config.autoTranscribeRecovered = s.autoTranscribeRecovered end
   if s.repoDir then config.repoDir = s.repoDir end
   if s.ffmpeg then config.ffmpeg = s.ffmpeg; config.ffmpegExplicit = true end
   if s.sizePreset  then config.sizePreset = s.sizePreset end
@@ -244,19 +247,20 @@ local function recoverOrphans()
   local out = hs.execute("ls -1 '" .. config.workDir .. "'/groq_seg_*.wav 2>/dev/null")
   local files = {}
   for l in (out or ""):gmatch("[^\n]+") do files[#files + 1] = l end
-  if #files == 0 then return end
+  if #files == 0 then return {} end
   hs.execute("mkdir -p '" .. config.recDir .. "'")
   local stamp = os.date("%Y%m%d-%H%M%S")
-  local n = 0
+  local recovered = {}
   for i, p in ipairs(files) do
     if fileSize(p) > 1000 then
-      n = n + 1
       local dest = string.format("%s/recovered-%s-%d.wav", config.recDir, stamp, i)
       hs.execute(string.format("'%s' -y -i '%s' -c copy '%s' 2>/dev/null || cp '%s' '%s'", config.ffmpeg, p, dest, p, dest))
+      recovered[#recovered + 1] = dest
     end
     os.remove(p)
   end
-  if n > 0 then hs.alert.show("💾 Recuperato audio da una sessione interrotta:\n" .. config.recDir, 8) end
+  if #recovered > 0 then hs.alert.show("💾 Recuperato audio da una sessione interrotta:\n" .. config.recDir, 8) end
+  return recovered
 end
 
 ------------------------------------------------------------------------
@@ -861,19 +865,29 @@ end
 -- TRASCRIZIONE
 ------------------------------------------------------------------------
 local function cleanupSegments() for _, p in ipairs(segments) do os.remove(p) end; segments = {}; segIndex = 0 end
+local transcribeBackup  -- forward: ritrascrive audio salvato di riserva (definita dopo transcribeOne)
 local function backupSegments()
   hs.execute("mkdir -p '" .. config.recDir .. "'")
-  local stamp = os.date("%Y%m%d-%H%M%S"); local n = 0
+  local stamp = os.date("%Y%m%d-%H%M%S"); local saved = {}
   for i, p in ipairs(segments) do
-    if fileSize(p) > 1000 then hs.execute(string.format("cp '%s' '%s/rec-%s-%d.wav'", p, config.recDir, stamp, i)); n = n + 1 end
+    if fileSize(p) > 1000 then
+      local dest = string.format("%s/rec-%s-%d.wav", config.recDir, stamp, i)
+      hs.execute(string.format("cp '%s' '%s'", p, dest)); saved[#saved + 1] = dest
+    end
   end
-  return n
+  return saved
 end
 local function failSaving(msg)
   busy = false
-  local n = backupSegments(); cleanupSegments()
+  local saved = backupSegments(); cleanupSegments()
   setStatus("✕ " .. msg)
-  if n > 0 then hs.alert.show("💾 Audio salvato in\n" .. config.recDir, 6) end
+  if #saved > 0 then
+    hs.alert.show("💾 Audio salvato in\n" .. config.recDir, 6)
+    -- la trascrizione è fallita (spesso un intoppo di rete): ritenta in automatico sull'audio salvato
+    if config.autoTranscribeRecovered ~= false then
+      hs.timer.doAfter(2.0, function() transcribeBackup(saved, "salvato") end)
+    end
+  end
   hs.timer.doAfter(2.6, hideOverlay)
 end
 local function transcribeOne(wavPath, cb)
@@ -903,6 +917,34 @@ local function transcribeAll(paths, i, acc)
     acc[i] = text; transcribeAll(paths, i + 1, acc)
   end)
 end
+-- Ritrascrive in background un batch di audio salvato/recuperato (no HUD, no auto-paste).
+-- Esito: testo in clipboard + salvato accanto all'audio (.txt) + avviso. Idempotente per batch.
+transcribeBackup = function(paths, label)
+  if not paths or #paths == 0 then return end
+  local key = paths[1] .. "|" .. #paths
+  if config.recoveredRetryDone[key] then return end   -- niente loop sugli stessi file
+  config.recoveredRetryDone[key] = true
+  -- non disturbare una registrazione in corso: rimanda
+  if recording or busy then hs.timer.doAfter(20, function() config.recoveredRetryDone[key] = nil; transcribeBackup(paths, label) end); return end
+  local acc = {}
+  local function step(i)
+    if i > #paths then
+      local text = trim(table.concat(acc, " "))
+      if text == "" then hs.alert.show("⚠️ Audio " .. (label or "recuperato") .. ": trascrizione non riuscita (resta il file audio)", 6); return end
+      hs.pasteboard.setContents(text)
+      local sidecar = paths[1]:gsub("%-%d+%.wav$", ".txt"):gsub("%.wav$", ".txt")
+      local f = io.open(sidecar, "w"); if f then f:write(text); f:close() end
+      hs.alert.show("📝 Audio " .. (label or "recuperato") .. " trascritto → copiato in clipboard\n(salvato anche in " .. config.recDir .. ")", 8)
+      return
+    end
+    transcribeOne(paths[i], function(ok, t)
+      acc[i] = ok and t or ""
+      step(i + 1)
+    end)
+  end
+  step(1)
+end
+
 local function finalizeAndTranscribe()
   busy = true; stopUITimer()
   if animTimer then animTimer:stop(); animTimer = nil end
@@ -1117,6 +1159,25 @@ local function checkUpdate(silent)
 end
 
 function M.update() checkUpdate(false) end
+-- Ritrascrive a mano l'audio salvato/recuperato che non ha ancora un testo (.txt) accanto.
+function M.transcribeRecovered()
+  local out = hs.execute("ls -1t '" .. config.recDir .. "'/*.wav 2>/dev/null")
+  local groups, order = {}, {}
+  for l in (out or ""):gmatch("[^\n]+") do
+    local base = l:gsub("%-%d+%.wav$", ""):gsub("%.wav$", "")
+    if not groups[base] then groups[base] = {}; order[#order + 1] = base end
+    table.insert(groups[base], l)
+  end
+  local n = 0
+  for _, base in ipairs(order) do
+    if not hs.fs.attributes(base .. ".txt") then
+      table.sort(groups[base])                                   -- seg -1, -2… in ordine
+      config.recoveredRetryDone[groups[base][1] .. "|" .. #groups[base]] = nil
+      transcribeBackup(groups[base], "recuperato"); n = n + 1
+    end
+  end
+  hs.alert.show(n == 0 and "Nessun audio da ritrascrivere (già fatti)" or ("📝 Ritrascrivo " .. n .. " audio salvati…"), 3)
+end
 function M.settings(page) if page then settingsPage = page end openSettings() end
 function M.toggle() if not busy then if recording then M.stop() else start() end end end
 
@@ -1159,7 +1220,11 @@ function M.init()
     end
   end
   hs.execute("mkdir -p '" .. config.workDir .. "' '" .. config.recDir .. "'")
-  recoverOrphans()
+  local recovered = recoverOrphans()
+  -- audio di una sessione interrotta → ritrascrivi in automatico (clipboard + .txt), senza disturbare
+  if config.autoTranscribeRecovered ~= false and recovered and #recovered > 0 then
+    hs.timer.doAfter(2.0, function() transcribeBackup(recovered, "recuperato") end)
+  end
   refreshDevices()
   hs.audiodevice.watcher.setCallback(function() refreshDevices() end)
   hs.audiodevice.watcher.start()
@@ -1176,6 +1241,7 @@ function M.init()
     M._menu:setTooltip("Golden Whisper")
     M._menu:setMenu({
       { title = "🎙️  Avvia / Ferma dettatura", fn = function() M.toggle() end },
+      { title = "📝  Trascrivi audio recuperato", fn = function() M.transcribeRecovered() end },
       { title = "⚙️  Impostazioni…", fn = function() openSettings() end },
       { title = "-" },
       { title = "🔄  Ricarica", fn = function() hs.reload() end },
