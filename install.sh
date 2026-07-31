@@ -34,6 +34,12 @@ mkdir -p "$HS_DIR" "$CFG_DIR"
 cp "$SCRIPT_DIR/src/groq_dictation.lua" "$HS_DIR/groq_dictation.lua"
 ok "Modulo copiato in $HS_DIR/groq_dictation.lua"
 
+# 3b. Seed della versione installata (l'auto-update confronta questo file con GitHub)
+if [ -f "$SCRIPT_DIR/VERSION" ]; then
+  cp "$SCRIPT_DIR/VERSION" "$CFG_DIR/version"
+  ok "Versione $(tr -d '[:space:]' < "$CFG_DIR/version") registrata"
+fi
+
 # 4. init.lua (append idempotente, non tocca la tua config esistente)
 INIT="$HS_DIR/init.lua"
 touch "$INIT"
