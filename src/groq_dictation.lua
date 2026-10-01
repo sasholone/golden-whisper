@@ -325,8 +325,9 @@ local function mapLevel(db)
   if not db then return 0 end
   -- il parlato sta tra ~-45 dB (piano) e ~-15 dB (forte): finestra stretta così le barre
   -- distinguono piano/normale/forte; curva morbida per non saturare subito
-  local v = ((db + 50) / 36) ^ 1.15
+  local v = (db + 50) / 36
   if v < 0 then v = 0 elseif v > 1 then v = 1 end
+  v = v ^ 1.15   -- potenza DOPO il clamp: base negativa darebbe NaN e bloccherebbe il timer
   return v
 end
 local function nBars() return (config.orientation == "vertical") and 9 or 12 end
