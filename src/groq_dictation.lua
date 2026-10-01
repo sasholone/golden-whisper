@@ -47,6 +47,19 @@ local config = {
   shadowOn     = true,         -- ombra della card on/off
   shadowIntensity = 0.5,       -- 0..1 = quanto lontano si estende l'ombra (0.5 = metà)
   scale        = 1.0,
+  -- ---- LOOK (tab "Tema"): tutti retrocompatibili, il default = aspetto originale ----
+  glassOpacity = nil,          -- 0.5..1 opacità del vetro (nil/0 = default del tema, ~0.95)
+  cornerStyle  = "round",      -- round | medium | square
+  animOn       = true,         -- animazioni/transizioni on/off
+  animSpeed    = "normal",     -- calm | normal | lively
+  waveStyle    = "bars",       -- bars | thin | dots | line
+  waveColor    = nil,          -- accent | gradient (nil/auto = gradiente solo sugli stili multi-colore)
+  micPulse     = 0.5,          -- 0..1 intensità anelli/pulsazione del mic (0.5 = originale)
+  glowOn       = false,        -- alone accento attorno alle card
+  uiFont       = "sf",         -- sf | rounded | mono (testo UI)
+  timerFont    = "mono",       -- mono | sf | rounded
+  density      = "normal",     -- compact | normal | wide
+  idleOpacity  = 1.0,          -- 0.3..1 opacità dell'HUD quando il mouse non è sopra
 }
 
 ------------------------------------------------------------------------
@@ -84,34 +97,74 @@ end
 local settingsCanvas
 local settingsDevices = {}
 local sHoverMap = {}
-local settingsPage = "general"   -- general | keys
+local settingsPage = "general"   -- general | keys | theme
 local openHistory, closeHistory, renderHistoryPanel, historyMouse
 local historyCanvas
 local hHoverMap = {}
-local startShadowSlider
-local sliderTrackX, sliderTrackW, sliderTrackY, sliderH, sliderKnobIdx, sliderFillIdx, sliderKnobY
+
+------------------------------------------------------------------------
+-- NUMERI SICURI. Lezione del bug NaN: una potenza con base negativa dava NaN, un errore nel
+-- tick UI bloccava timer+onda+pulsazione. Regola: clamp prima di ^ / sqrt / log, e nessun
+-- NaN/inf verso hs.canvas (finite()).
+------------------------------------------------------------------------
+local function finite(v, d)
+  if type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then return d or 0 end
+  return v
+end
+local function clampN(v, lo, hi)
+  v = finite(v, lo)
+  if v < lo then return lo elseif v > hi then return hi end
+  return v
+end
+local function spow(b, e)               -- potenza sicura: base < 0 → 0
+  b = finite(b, 0); if b < 0 then b = 0 end
+  return finite(b ^ e, 0)
+end
 
 ------------------------------------------------------------------------
 -- PALETTE / STILI  ("clear glass": rampe tonali per famiglia, dark + light)
 -- Ogni tema ha: sfondo a due toni (top/bot), testo a 3 livelli, accento a 3 toni
 -- (hi/base/lo per i gradienti), bordo + hairline, superfici (riga/hover/track),
 -- stati (warn/ok). Tutto derivato da ~9 esadecimali per tema.
+-- Gli stili "funky" hanno in più g = 3-4 colori: il gradiente multi-stop (onda, anelli,
+-- pulsanti, interruttori, campioni, bordo).
 ------------------------------------------------------------------------
 local function hex(h, a)
   h = h:gsub("#", "")
   return { red = tonumber(h:sub(1, 2), 16) / 255, green = tonumber(h:sub(3, 4), 16) / 255,
            blue = tonumber(h:sub(5, 6), 16) / 255, alpha = a or 1 }
 end
-local function withA(c, a) return { red = c.red, green = c.green, blue = c.blue, alpha = a } end
+local function withA(c, a) return { red = c.red, green = c.green, blue = c.blue, alpha = finite(a, 1) } end
 local function mix(a, b, t)
+  t = finite(t, 0)
   local aa, ba = a.alpha or 1, b.alpha or 1
   return { red = a.red + (b.red - a.red) * t, green = a.green + (b.green - a.green) * t,
            blue = a.blue + (b.blue - a.blue) * t, alpha = aa + (ba - aa) * t }
 end
-local function lighten(c, t) return mix(c, { red = 1, green = 1, blue = 1, alpha = c.alpha or 1 }, t) end
 local CLEAR = { red = 0, green = 0, blue = 0, alpha = 0 }
 
--- d = { top, bot, fg, fg2, acc, hi, lo, on, ink }  (esadecimali)
+-- colore lungo il gradiente del tema, t in 0..1
+local function gradAt(T, t)
+  local g = T.grad; local n = #g
+  if n == 1 then return g[1] end
+  t = clampN(t, 0, 1)
+  local p = t * (n - 1)
+  local i = math.floor(p)
+  if i >= n - 1 then return g[n] end
+  return mix(g[i + 1], g[i + 2], p - i)
+end
+-- lista colori del gradiente (per fillGradientColors), opzionalmente con alpha
+local function gradA(T, a)
+  if a == nil then return T.grad end
+  local out = {}
+  for i, c in ipairs(T.grad) do out[i] = withA(c, a) end
+  return out
+end
+
+local FAMILIES
+do   -- (blocco: limite di 200 variabili locali del chunk)
+local function lighten(c, t) return mix(c, { red = 1, green = 1, blue = 1, alpha = c.alpha or 1 }, t) end
+-- d = { top, bot, fg, fg2, acc, hi, lo, on, ink, g }  (esadecimali)
 local function theme(d, isDark)
   local T = { dark = isDark, clear = CLEAR }
   local solid = hex(d.bot)
@@ -124,6 +177,14 @@ local function theme(d, isDark)
   T.accent  = hex(d.acc)                               -- accento base
   T.accentHi= hex(d.hi)                                -- gradiente: cima
   T.accentLo= hex(d.lo)                                -- gradiente: fondo
+  -- gradiente multi-stop (2 colori per le famiglie classiche, 3-4 per quelle funky)
+  local gl = {}
+  for _, h in ipairs(d.g or { d.hi, d.lo }) do gl[#gl + 1] = hex(h) end
+  T.grad    = gl
+  T.multi   = (#gl > 2)
+  T.accent2 = gl[2]
+  T.accent3 = gl[3] or gl[#gl]
+  T.accent4 = gl[4] or gl[#gl]
   T.accentInk = hex(d.ink or d.acc)                    -- accento usato COME TESTO (contrasto su sfondo)
   T.accentText= hex(d.on)                              -- testo SU riempimento accento
   T.accentHover = lighten(T.accent, 0.28)
@@ -148,7 +209,7 @@ end
 local function family(name, dark, light) return { name = name, dark = theme(dark, true), light = theme(light, false) } end
 
 -- Famiglie. Dark gold = carattere originale (nero caldo + oro); light gold = champagne + oro caldo.
-local FAMILIES = {
+FAMILIES = {
   gold = family("Gold",
     { top = "#1B1914", bot = "#0A0907", fg = "#F7F2E6", fg2 = "#B8AD94", acc = "#D6AF5E", hi = "#EBCB85", lo = "#B48B3B", on = "#1A1304" },
     { top = "#FFFCF3", bot = "#F4E8CE", fg = "#2A2012", fg2 = "#6E5D3D", acc = "#B3822A", hi = "#CB9C3A", lo = "#966A1B", on = "#FFFBEF", ink = "#8A5F12" }),
@@ -167,8 +228,67 @@ local FAMILIES = {
   rose = family("Rose",
     { top = "#2B111B", bot = "#13050A", fg = "#FFEFF3", fg2 = "#C9A1AB", acc = "#FF7B94", hi = "#FFA5B7", lo = "#E65170", on = "#2E0612" },
     { top = "#FFFAFB", bot = "#FAE2E7", fg = "#2E0F17", fg2 = "#7A4C57", acc = "#D62F52", hi = "#EF4E70", lo = "#B31F3F", on = "#FFFFFF", ink = "#BF2548" }),
+
+  -- ---- stili "funky": accento che sfuma tra 3-4 colori (g) ----
+  sunset = family("Sunset",
+    { top = "#2A1424", bot = "#12060F", fg = "#FFF0EA", fg2 = "#D2A5A8", acc = "#FF7A59", hi = "#FFB259", lo = "#E8466E", on = "#2B0A10",
+      g = { "#FFB259", "#FF6A5A", "#E8466E", "#B45CFF" } },
+    { top = "#FFF8F3", bot = "#FFE3D6", fg = "#3A1620", fg2 = "#865560", acc = "#E2552F", hi = "#F07A3C", lo = "#C8325E", on = "#FFFFFF", ink = "#B8381F",
+      g = { "#F58A3C", "#E8553A", "#E8446E", "#9B4DE0" } }),
+  aurora = family("Aurora",
+    { top = "#0E1F2B", bot = "#050E16", fg = "#E8FFF8", fg2 = "#8FB8B8", acc = "#3DF0B4", hi = "#7BFFD2", lo = "#22B8C8", on = "#031A18",
+      g = { "#3DF0B4", "#38C8F0", "#7B6CFF", "#C65CFF" } },
+    { top = "#F5FFFC", bot = "#D8F2EE", fg = "#0B2A2E", fg2 = "#43706F", acc = "#0B9E86", hi = "#14B8A0", lo = "#0A7C9A", on = "#FFFFFF", ink = "#077A68",
+      g = { "#10B890", "#1A9CD0", "#5E55E0", "#A845D8" } }),
+  neon = family("Neon",
+    { top = "#12102A", bot = "#07061A", fg = "#F2F0FF", fg2 = "#A09CD0", acc = "#00F0FF", hi = "#66F7FF", lo = "#00B8D8", on = "#04101A",
+      g = { "#00F0FF", "#8A5CFF", "#FF2EA6" } },
+    { top = "#FBFAFF", bot = "#E4E0FF", fg = "#15123A", fg2 = "#5A5690", acc = "#0AA0C8", hi = "#22BCE0", lo = "#087CA8", on = "#FFFFFF", ink = "#067DA0",
+      g = { "#08A8D0", "#6A44E0", "#E0208E" } }),
+  candy = family("Candy",
+    { top = "#2A1430", bot = "#140818", fg = "#FFEFFC", fg2 = "#D0A0CC", acc = "#FF8AD8", hi = "#FFB3E8", lo = "#E85CBF", on = "#35052F",
+      g = { "#FF8AD8", "#B38CFF", "#7CD6FF", "#9CF2C8" } },
+    { top = "#FFF8FD", bot = "#FFE4F4", fg = "#3A1038", fg2 = "#8A5688", acc = "#E040A8", hi = "#F268C4", lo = "#C0288E", on = "#FFFFFF", ink = "#C0288E",
+      g = { "#EE5CBE", "#9A6CF0", "#3CB6F0", "#2CCB90" } }),
+  lava = family("Lava",
+    { top = "#2A0F08", bot = "#120503", fg = "#FFF1E6", fg2 = "#CFA38C", acc = "#FF6A1F", hi = "#FFA040", lo = "#E03A12", on = "#2A0C02",
+      g = { "#FFD23F", "#FF7A1F", "#E8321A", "#B0102A" } },
+    { top = "#FFF9F4", bot = "#FFDDC8", fg = "#3A1408", fg2 = "#8A5438", acc = "#E04A0F", hi = "#F26A24", lo = "#C0300A", on = "#FFFFFF", ink = "#B63A08",
+      g = { "#F5A623", "#E8591A", "#CC2A14", "#8E1030" } }),
+  ice = family("Ice",
+    { top = "#0E2030", bot = "#050F18", fg = "#EAF8FF", fg2 = "#8FB4C8", acc = "#8FE8FF", hi = "#C0F4FF", lo = "#52C4F0", on = "#03121C",
+      g = { "#E0FBFF", "#8FE8FF", "#6AA8FF" } },
+    { top = "#FAFEFF", bot = "#DDF0FA", fg = "#0B2433", fg2 = "#476C84", acc = "#1E9CD0", hi = "#3BB4E8", lo = "#1678AA", on = "#FFFFFF", ink = "#127AA8",
+      g = { "#4CC4F0", "#2A8CE0", "#5A6CE8" } }),
+  forest = family("Forest",
+    { top = "#14231A", bot = "#070E09", fg = "#EEF8E8", fg2 = "#9AB596", acc = "#8BD35A", hi = "#B5EC84", lo = "#5AA83A", on = "#0B1C05",
+      g = { "#D6E86A", "#8BD35A", "#3FB27A" } },
+    { top = "#F9FDF5", bot = "#E0EFD6", fg = "#12260F", fg2 = "#4F6B49", acc = "#4C9A2A", hi = "#62B23A", lo = "#397A1E", on = "#FFFFFF", ink = "#3A7A1F",
+      g = { "#9CC82A", "#4C9A2A", "#1E8C6A" } }),
+  synthwave = family("Synthwave",
+    { top = "#1E0F3A", bot = "#0B0620", fg = "#FFEBFF", fg2 = "#B79AD8", acc = "#FF4FD8", hi = "#FF8AE8", lo = "#C426B8", on = "#200838",
+      g = { "#FFD84D", "#FF4FA3", "#B04DFF", "#4D7DFF" } },
+    { top = "#FFF8FF", bot = "#EBDDFB", fg = "#2A0F4A", fg2 = "#7048A0", acc = "#D81FB0", hi = "#EE44C6", lo = "#AE1590", on = "#FFFFFF", ink = "#B01590",
+      g = { "#F5A400", "#E0308E", "#8E3FE0", "#3F66E0" } }),
+  contrast = family("Contrast",
+    { top = "#101010", bot = "#000000", fg = "#FFFFFF", fg2 = "#D0D0D0", acc = "#FFE600", hi = "#FFF066", lo = "#E6C800", on = "#000000",
+      g = { "#FFF066", "#FFE600", "#FF8A00" } },
+    { top = "#FFFFFF", bot = "#F0F0F0", fg = "#000000", fg2 = "#303030", acc = "#1038E8", hi = "#3A5CF5", lo = "#0A28B8", on = "#FFFFFF", ink = "#0A28B8",
+      g = { "#3A5CF5", "#1038E8", "#7A1FE0" } }),
+  lagoon = family("Lagoon",
+    { top = "#082A30", bot = "#031317", fg = "#E8FFFB", fg2 = "#86B8B4", acc = "#2EE6D0", hi = "#7CF5E6", lo = "#12B8A8", on = "#02201E",
+      g = { "#2EE6D0", "#3CB8FF", "#FF8A7A" } },
+    { top = "#F4FFFD", bot = "#D2F4EE", fg = "#08302E", fg2 = "#3F7470", acc = "#0A9C90", hi = "#14B8AA", lo = "#087C74", on = "#FFFFFF", ink = "#07786E",
+      g = { "#10B8A8", "#2A9CE0", "#F2685A" } }),
+  citrus = family("Citrus",
+    { top = "#262410", bot = "#101004", fg = "#FFFBE0", fg2 = "#C8C07A", acc = "#F5E626", hi = "#FAF068", lo = "#D8C400", on = "#1E1C00",
+      g = { "#F5F02A", "#B8E82A", "#FFA826" } },
+    { top = "#FFFEF2", bot = "#F5F0C8", fg = "#2A2800", fg2 = "#7A7220", acc = "#C9B400", hi = "#DCC81A", lo = "#A89500", on = "#1E1A00", ink = "#7A6E00",
+      g = { "#D8C400", "#8CC020", "#E88A10" } }),
 }
-local FAMILY_ORDER = { "gold", "mono", "ocean", "violet", "emerald", "rose" }
+end
+local FAMILY_ORDER = { "gold", "mono", "ocean", "violet", "emerald", "rose",
+  "sunset", "aurora", "neon", "candy", "lava", "ice", "forest", "synthwave", "contrast", "lagoon", "citrus" }
 local COL = FAMILIES.gold.dark
 
 local function scaleFor(preset)
@@ -189,9 +309,36 @@ local function resolveMode()
   return m
 end
 
+------------------------------------------------------------------------
+-- LOOK: tutto ciò che è aspetto e non funzione (tab "Tema" delle impostazioni).
+-- Ogni valore ha un default = comportamento originale; chiavi salvate in settings.lua.
+------------------------------------------------------------------------
+local RADIUS_MUL = { round = 1, medium = 0.55, square = 0.16 }
+local SPEED_MUL  = { calm = 1.7, normal = 1, lively = 0.65 }
+-- densità: larghezza extra pillola, passo onda, gap/passo verticali, scala degli spazi nei pannelli
+local DENS = {
+  compact = { w = -20, pitch = 5.2, vp = 4.8, vg = 17, vs = 29, gap = 0.72 },
+  normal  = { w = 0,   pitch = 6.2, vp = 5.6, vg = 21, vs = 31, gap = 1 },
+  wide    = { w = 26,  pitch = 8.2, vp = 6.6, vg = 25, vs = 34, gap = 1.22 },
+}
+local function R(v) return math.max(1.5, v * (RADIUS_MUL[config.cornerStyle] or 1)) end
+local function dens() return DENS[config.density] or DENS.normal end
+local function animOn() return config.animOn ~= false end
+local function gapK() return dens().gap end
+
 local function applyTheme()
   local fam = FAMILIES[config.style] or FAMILIES.gold
-  COL = fam[resolveMode()]
+  local base = fam[resolveMode()]
+  COL = base
+  if type(config.glassOpacity) == "number" then
+    -- opacità del vetro personalizzata: copia del tema con alpha dei due toni sovrascritto
+    local c = {}
+    for k, v in pairs(base) do c[k] = v end
+    local g = clampN(config.glassOpacity, 0.5, 1)
+    c.bg  = withA(base.bg, g)
+    c.bg2 = withA(base.bg2, math.min(1, g + 0.02))
+    COL = c
+  end
 end
 
 ------------------------------------------------------------------------
@@ -251,8 +398,24 @@ local function loadSettings()
   if s.orientation then config.orientation = s.orientation end
   if s.style       then config.style = s.style end
   if s.themeMode   then config.themeMode = s.themeMode end
-  if s.shadowOn ~= nil then config.shadowOn = s.shadowOn end
-  if s.shadowIntensity then config.shadowIntensity = s.shadowIntensity end
+  -- bool salvati come stringa ("true"/"false", vecchio persist) → veri booleani
+  local function bool(v) if v == "true" then return true elseif v == "false" then return false end return v end
+  local function num(v) return tonumber(v) end
+  if s.shadowOn ~= nil then config.shadowOn = bool(s.shadowOn) end
+  if s.shadowIntensity then config.shadowIntensity = clampN(num(s.shadowIntensity) or 0.5, 0, 1) end
+  -- look (tab Tema)
+  if num(s.glassOpacity) then config.glassOpacity = num(s.glassOpacity) end
+  if s.cornerStyle and RADIUS_MUL[s.cornerStyle] then config.cornerStyle = s.cornerStyle end
+  if s.animOn ~= nil then config.animOn = bool(s.animOn) end
+  if s.animSpeed and SPEED_MUL[s.animSpeed] then config.animSpeed = s.animSpeed end
+  if s.waveStyle then config.waveStyle = s.waveStyle end
+  if s.waveColor then config.waveColor = s.waveColor end
+  if num(s.micPulse) then config.micPulse = clampN(num(s.micPulse), 0, 1) end
+  if s.glowOn ~= nil then config.glowOn = bool(s.glowOn) end
+  if s.uiFont then config.uiFont = s.uiFont end
+  if s.timerFont then config.timerFont = s.timerFont end
+  if s.density and DENS[s.density] then config.density = s.density end
+  if num(s.idleOpacity) then config.idleOpacity = clampN(num(s.idleOpacity), 0.3, 1) end
   -- migrazione dai vecchi stili/flag
   if config.style == "goldlight" then config.style = "gold"; if not s.themeMode then config.themeMode = "light" end
   elseif config.style == "monolight" then config.style = "mono"; if not s.themeMode then config.themeMode = "light" end end
@@ -267,13 +430,18 @@ local function loadSettings()
   if rf then local p = rf:read("*a"); rf:close(); p = (p or ""):gsub("%s+$", ""); if p ~= "" then config.repoDir = p end end
 end
 
+-- Scrive una chiave in settings.lua. Numeri e booleani restano tali (prima i bool finivano
+-- tra virgolette: "false" era una stringa e contava come vero), il resto è stringa.
 local function persist(key, value)
   local f = io.open(config.settingsPath, "r"); if not f then return end
   local txt = f:read("*a"); f:close()
-  local rhs = (type(value) == "number") and tostring(value) or ('"' .. tostring(value) .. '"')
-  local pat = key .. "%s*=%s*[^,\n]+"
-  if txt:find(pat) then txt = txt:gsub(pat, key .. " = " .. rhs, 1)
-  else txt = txt:gsub("return%s*{", "return {\n  " .. key .. " = " .. rhs .. ",", 1) end
+  local rhs
+  if type(value) == "number" then rhs = tostring(finite(value, 0))
+  elseif type(value) == "boolean" then rhs = value and "true" or "false"
+  else rhs = '"' .. (tostring(value):gsub('[\\"\n]', "")) .. '"' end
+  local pat = "%f[%w_]" .. key .. "%s*=%s*[^,\n]+"
+  if txt:find(pat) then txt = txt:gsub(pat, function() return key .. " = " .. rhs end, 1)
+  else txt = txt:gsub("return%s*{", function() return "return {\n  " .. key .. " = " .. rhs .. "," end, 1) end
   local w = io.open(config.settingsPath, "w"); if w then w:write(txt); w:close() end
 end
 
@@ -325,10 +493,9 @@ local function mapLevel(db)
   if not db then return 0 end
   -- il parlato sta tra ~-45 dB (piano) e ~-15 dB (forte): finestra stretta così le barre
   -- distinguono piano/normale/forte; curva morbida per non saturare subito
-  local v = (db + 50) / 36
+  local v = (finite(db, -90) + 50) / 36
   if v < 0 then v = 0 elseif v > 1 then v = 1 end
-  v = v ^ 1.15   -- potenza DOPO il clamp: base negativa darebbe NaN e bloccherebbe il timer
-  return v
+  return spow(v, 1.15)   -- potenza DOPO il clamp: base negativa darebbe NaN e bloccherebbe il timer
 end
 local function nBars() return (config.orientation == "vertical") and 9 or 12 end
 local function resetLevels() levels = {}; for _ = 1, nBars() do levels[#levels + 1] = 0 end end
@@ -398,7 +565,7 @@ end
 -- e si ferma da solo quando la lista è vuota (nessun timer a HUD nascosto).
 ------------------------------------------------------------------------
 local Anim = { list = {}, timer = nil }
-local function clamp01(t) if t < 0 then return 0 elseif t > 1 then return 1 end return t end
+local function clamp01(t) t = finite(t, 0); if t < 0 then return 0 elseif t > 1 then return 1 end return t end
 local EASE = {
   linear = function(t) return t end,
   out    = function(t) return 1 - (1 - t) ^ 3 end,                  -- ease-out cubico
@@ -412,8 +579,9 @@ function Anim.tick()
   local t = nowT()
   local finished = {}
   for k, a in pairs(Anim.list) do
-    local p = clamp01((t - a.t0) / a.dur)
-    pcall(a.fn, a.ease(p), p)
+    local p = clamp01(finite((t - a.t0) / a.dur, 1))
+    local okE, ev = pcall(a.ease, p)
+    pcall(a.fn, okE and finite(ev, p) or p, p)
     if p >= 1 then finished[#finished + 1] = k end
   end
   for _, k in ipairs(finished) do
@@ -422,8 +590,14 @@ function Anim.tick()
   end
   if next(Anim.list) == nil and Anim.timer then Anim.timer:stop(); Anim.timer = nil end
 end
--- group+key identificano l'animazione: una nuova con stessa chiave sostituisce la vecchia
-function Anim.run(group, key, dur, ease, fn, done)
+-- group+key identificano l'animazione: una nuova con stessa chiave sostituisce la vecchia.
+-- La durata segue velocità/animazioni on-off del tema (raw = true: tempi fissi, es. scrollbar).
+function Anim.run(group, key, dur, ease, fn, done, raw)
+  if not raw then
+    if config.animOn == false then dur = 0.001
+    else dur = dur * (SPEED_MUL[config.animSpeed] or 1) end
+  end
+  dur = math.max(0.001, finite(dur, 0.2))
   Anim.list[group .. "|" .. key] = { t0 = nowT(), dur = dur, group = group, fn = fn, done = done,
     ease = (type(ease) == "function") and ease or EASE[ease or "out"] or EASE.out }
   if not Anim.timer then Anim.timer = hs.timer.doEvery(1 / 60, Anim.tick) end
@@ -452,30 +626,62 @@ local function hoverTo(cv, map, group, id, entering)
   end)
 end
 
--- Font di sistema (SF) con fallback sicuri. Risolti una volta sola.
-local FONT = nil
-local function fonts()
-  if FONT then return FONT end
-  -- prende il primo font che esiste E ha davvero il peso richiesto (se il nome di sistema
-  -- ricade silenziosamente sul regular, lo scarta e passa al fallback)
-  local function pick(c, want)
-    for _, n in ipairs(c) do
-      local ok, info = pcall(hs.styledtext.fontInfo, n)
-      if ok and type(info) == "table" and info.fontName then
-        if not want then return n end
-        local fname = tostring(info.fontName):lower()
-        for _, w in ipairs(want) do if fname:find(w, 1, true) then return n end end
-      end
+local fonts
+do
+-- Font di sistema con fallback sicuri. Tre famiglie per il testo UI (sf / rounded / mono) e
+-- tre per il timer; ogni set è risolto una volta sola e messo in cache.
+local FONTCACHE = {}
+-- prende il primo font che esiste E ha davvero il peso richiesto (se il nome di sistema
+-- ricade silenziosamente sul regular, lo scarta e passa al fallback)
+local function pickFont(c, want)
+  for _, n in ipairs(c) do
+    local ok, info = pcall(hs.styledtext.fontInfo, n)
+    if ok and type(info) == "table" and info.fontName then
+      if not want then return n end
+      local fname = tostring(info.fontName):lower()
+      for _, w in ipairs(want) do if fname:find(w, 1, true) then return n end end
     end
-    return c[#c]
   end
-  FONT = {
-    reg  = pick({ ".AppleSystemUIFont", "HelveticaNeue" }),
-    semi = pick({ ".AppleSystemUIFontDemi", ".AppleSystemUIFontMedium", "HelveticaNeue-Medium" }, { "semibold", "demi", "medium" }),
-    bold = pick({ ".AppleSystemUIFontBold", "HelveticaNeue-Bold" }, { "bold", "heavy", "black" }),
-    mono = pick({ "SFMono-Semibold", "Menlo-Bold" }, { "mono", "menlo" }),
-  }
-  return FONT
+  return c[#c]
+end
+local FONT_FAMILY = {
+  sf = function() return {
+    reg  = pickFont({ ".AppleSystemUIFont", "HelveticaNeue" }),
+    semi = pickFont({ ".AppleSystemUIFontDemi", ".AppleSystemUIFontMedium", "HelveticaNeue-Medium" }, { "semibold", "demi", "medium" }),
+    bold = pickFont({ ".AppleSystemUIFontBold", "HelveticaNeue-Bold" }, { "bold", "heavy", "black" }),
+  } end,
+  rounded = function() return {
+    reg  = pickFont({ ".AppleSystemUIFontRounded", ".AppleSystemUIFont", "HelveticaNeue" }),
+    semi = pickFont({ ".AppleSystemUIFontRounded-Semibold", ".AppleSystemUIFontRounded-Medium", "ArialRoundedMTBold", ".AppleSystemUIFontDemi", "HelveticaNeue-Medium" },
+      { "semibold", "demi", "medium", "rounded" }),
+    bold = pickFont({ ".AppleSystemUIFontRounded-Bold", "ArialRoundedMTBold", ".AppleSystemUIFontBold", "HelveticaNeue-Bold" }, { "bold", "heavy", "black", "rounded" }),
+  } end,
+  mono = function() return {
+    reg  = pickFont({ ".AppleSystemUIFontMonospaced-Regular", "Menlo-Regular", "Courier" }, { "mono", "menlo", "courier" }),
+    semi = pickFont({ ".AppleSystemUIFontMonospaced-Bold", "Menlo-Bold", "Courier-Bold" }, { "mono", "menlo", "courier" }),
+    bold = pickFont({ ".AppleSystemUIFontMonospaced-Bold", "Menlo-Bold", "Courier-Bold" }, { "mono", "menlo", "courier" }),
+  } end,
+}
+local function fontFamilyOf(kind)
+  kind = FONT_FAMILY[kind] and kind or "sf"
+  if not FONTCACHE[kind] then FONTCACHE[kind] = FONT_FAMILY[kind]() end
+  return FONTCACHE[kind]
+end
+-- mono "vero" (etichette dei tasti, timer in modalità mono): invariato rispetto all'originale
+local MONO_FIXED = nil
+fonts = function()
+  local ck = tostring(config.uiFont) .. "|" .. tostring(config.timerFont)
+  if FONTCACHE[ck] then return FONTCACHE[ck] end
+  if not MONO_FIXED then MONO_FIXED = pickFont({ "SFMono-Semibold", "Menlo-Bold" }, { "mono", "menlo" }) end
+  local ui = fontFamilyOf(config.uiFont)
+  local tkind = config.timerFont
+  local tfont = MONO_FIXED
+  if tkind == "sf" then tfont = fontFamilyOf("sf").bold
+  elseif tkind == "rounded" then tfont = fontFamilyOf("rounded").bold end
+  local F = { reg = ui.reg, semi = ui.semi, bold = ui.bold, mono = MONO_FIXED, timer = tfont }
+  FONTCACHE[ck] = F
+  return F
+end
 end
 
 ------------------------------------------------------------------------
@@ -588,17 +794,62 @@ function ICON.orientV(els, cx, cy, sz, col)
   els[#els + 1] = { type = "circle", action = "fill", fillColor = col, center = { x = cx, y = cy - 3.4 * u }, radius = 1.4 * u }
 end
 
+function ICON.palette(els, cx, cy, sz, col)
+  local u = sz / 16
+  els[#els + 1] = { type = "circle", action = "stroke", strokeColor = col, strokeWidth = 1.4 * u, center = { x = cx, y = cy }, radius = 6.9 * u }
+  for _, p in ipairs({ { -3.1, -2.6 }, { 0.4, -3.9 }, { 3.5, -1.6 }, { -3.6, 1.6 } }) do
+    els[#els + 1] = { type = "circle", action = "fill", fillColor = col, center = { x = cx + p[1] * u, y = cy + p[2] * u }, radius = 1.15 * u }
+  end
+  els[#els + 1] = { type = "circle", action = "fill", fillColor = col, center = { x = cx + 2.2 * u, y = cy + 4 * u }, radius = 1.7 * u }
+end
+function ICON.sparkle(els, cx, cy, sz, col)
+  local u = sz / 16
+  local pts, R0, r0 = {}, 7.2 * u, 2.1 * u
+  for i = 0, 7 do
+    local a = math.rad(i * 45 - 90)
+    local rad = (i % 2 == 0) and R0 or r0
+    pts[#pts + 1] = { x = cx + rad * math.cos(a), y = cy + rad * math.sin(a) }
+  end
+  els[#els + 1] = { type = "segments", action = "strokeAndFill", fillColor = col, strokeColor = col, strokeWidth = 1.1 * u,
+    strokeJoinStyle = "round", closed = true, coordinates = pts }
+end
+function ICON.reset(els, cx, cy, sz, col)
+  local u = sz / 16
+  seg(els, arcPts(cx, cy, 5.6 * u, -40, 220, 22), col, 1.5 * u)
+  local a = math.rad(220)
+  local ex, ey = cx + 5.6 * u * math.cos(a), cy + 5.6 * u * math.sin(a)
+  local dx, dy = -math.sin(a), math.cos(a)            -- tangente nel verso di percorrenza
+  local px, py = -dy, dx
+  local tx, ty = ex + dx * 1.2 * u, ey + dy * 1.2 * u
+  seg(els, { { x = tx - dx * 3.2 * u + px * 2.6 * u, y = ty - dy * 3.2 * u + py * 2.6 * u }, { x = tx, y = ty },
+    { x = tx - dx * 3.2 * u - px * 2.6 * u, y = ty - dy * 3.2 * u - py * 2.6 * u } }, col, 1.5 * u)
+end
+
 ------------------------------------------------------------------------
 -- VETRO: ombre multi-strato + corpo traslucido + riflesso + bordo luminoso
 -- (hs.canvas non ha blur dello sfondo: la profondità è simulata)
+-- Alone accento (glowOn): 8 strati tinti con l'accento (sfumano tra i colori del tema).
 ------------------------------------------------------------------------
-local NSH = 12       -- elementi d'ombra riservati (8 ambient + 4 contatto)
-local NCARD = NSH + 4 -- ombre + corpo + riflesso + highlight + bordo
+local NCARD = 25          -- slot riservati: 8 alone + 8 ambient + 4 contatto + corpo/riflesso/highlight/filo gradiente/bordo
 
-pushShadow = function(list, x, y, w, h, s, radius, mul)
-  if config.shadowOn == false then return end
-  local k = config.shadowIntensity or 0.5
+pushShadow = function(list, x, y, w, h, s, radius, mul, noGlow)
+  local glow = (config.glowOn == true) and not noGlow
+  local shadow = (config.shadowOn ~= false)
+  if not glow and not shadow then return end
+  s = finite(s, 1)
+  local k = clampN(config.shadowIntensity or 0.5, 0, 1)
   local m = (mul or 1) * (COL.shadowK or 1)
+  if glow then
+    local ga = (COL.dark and 0.05 or 0.055) * (mul or 1)
+    for i = 1, 8 do
+      local e = i * 2.4 * s
+      local c = COL.multi and gradAt(COL, (i - 1) / 7) or COL.accent
+      list[#list + 1] = { type = "rectangle", action = "fill", fillColor = withA(c, ga),
+        roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
+        frame = { x = x - e, y = y - e, w = w + 2 * e, h = h + 2 * e } }
+    end
+  end
+  if not shadow then return end
   for i = 1, 8 do                       -- ambient: ampia e morbida
     local e = i * 2.6 * s * k
     list[#list + 1] = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = 0.021 * m },
@@ -618,6 +869,7 @@ end
 pushGlass = function(list, x, y, w, h, r, o)
   o = o or {}
   local s = o.s or 1
+  r = math.max(1, math.min(r, h / 2, w / 2))
   if o.shadow ~= false then pushShadow(list, x, y, w, h, s, r, o.shadowMul) end
   local body = #list + 1
   list[body] = { type = "rectangle", action = "fill", fillColor = COL.bg,
@@ -626,7 +878,7 @@ pushGlass = function(list, x, y, w, h, r, o)
     trackMouseDown = o.id and true or nil, id = o.id }
   -- riflesso: metà superiore, curva con gli angoli
   local sh = o.sheenH or h * 0.5
-  local rr = math.min(r - 1, sh)
+  local rr = math.max(1, math.min(r - 1, sh))
   local sp = { { x = x + 1, y = y + sh } }
   for _, p in ipairs(arcPts(x + 1 + rr, y + 1 + rr, rr, 180, 270, 10)) do sp[#sp + 1] = p end
   for _, p in ipairs(arcPts(x + w - 1 - rr, y + 1 + rr, rr, 270, 360, 10)) do sp[#sp + 1] = p end
@@ -635,9 +887,16 @@ pushGlass = function(list, x, y, w, h, r, o)
     closed = true, coordinates = sp }
   -- highlight 1px lungo il bordo alto (luce che entra dall'alto)
   local hl = {}
-  for _, p in ipairs(arcPts(x + r, y + r, r - 0.8, 212, 270, 8)) do hl[#hl + 1] = p end
-  for _, p in ipairs(arcPts(x + w - r, y + r, r - 0.8, 270, 328, 8)) do hl[#hl + 1] = p end
+  for _, p in ipairs(arcPts(x + r, y + r, math.max(0.5, r - 0.8), 212, 270, 8)) do hl[#hl + 1] = p end
+  for _, p in ipairs(arcPts(x + w - r, y + r, math.max(0.5, r - 0.8), 270, 328, 8)) do hl[#hl + 1] = p end
   seg(list, hl, COL.hi, 1)
+  -- filo di gradiente lungo il bordo basso (solo stili multi-colore)
+  if COL.multi then
+    local inset = math.min(r * 0.95, w * 0.3)
+    list[#list + 1] = { type = "rectangle", action = "fill", fillColor = COL.accent,
+      roundedRectRadii = { xRadius = 1, yRadius = 1 }, frame = { x = x + inset, y = y + h - 2.6, w = math.max(4, w - 2 * inset), h = 1.8 },
+      fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = gradA(COL, 0.85) }
+  end
   -- bordo
   local border = #list + 1
   list[border] = { type = "rectangle", action = "stroke", strokeColor = o.border or COL.border, strokeWidth = o.bw or 1,
@@ -664,17 +923,46 @@ local function hitCircle(els, map, id, cx, cy, r, o)
   map[id] = { idx = idx, fill = o.fill, hoverFill = o.hoverFill, stroke = o.stroke, hoverStroke = o.hoverStroke }
   return idx
 end
+-- forma "tonda" che segue l'angolo scelto: cerchio se tondo, quadrato arrotondato altrimenti
+local function btnRadius(r) return math.max(2, r * (RADIUS_MUL[config.cornerStyle] or 1)) end
+local function isRoundStyle() return (RADIUS_MUL[config.cornerStyle] or 1) >= 0.99 end
+-- hit-layer interattivo (map) oppure forma statica (map == nil: anteprima)
+local function hitShape(els, map, id, cx, cy, r, o)
+  if not map then
+    local el
+    if isRoundStyle() then
+      el = { type = "circle", action = o.stroke and "strokeAndFill" or "fill", fillColor = o.fill, strokeColor = o.stroke,
+        strokeWidth = o.sw or 1, center = { x = cx, y = cy }, radius = r }
+    else
+      el = { type = "rectangle", action = o.stroke and "strokeAndFill" or "fill", fillColor = o.fill, strokeColor = o.stroke,
+        strokeWidth = o.sw or 1, roundedRectRadii = { xRadius = btnRadius(r), yRadius = btnRadius(r) },
+        frame = { x = cx - r, y = cy - r, w = 2 * r, h = 2 * r } }
+    end
+    els[#els + 1] = el
+    return #els
+  end
+  if isRoundStyle() then return hitCircle(els, map, id, cx, cy, r, o) end
+  return hitRect(els, map, id, cx - r, cy - r, 2 * r, 2 * r, btnRadius(r), o)
+end
 
 -- bottone tondo. kind: "primary" (gradiente accento) | "ghost" (vetro con bordo)
--- icon(els, cx, cy) disegna il glifo sopra.
+-- icon(els, cx, cy) disegna il glifo sopra. map == nil → solo disegno (anteprima).
 local function circleButton(els, map, id, cx, cy, r, kind, icon, s)
   s = s or 1
   if kind == "primary" then
-    els[#els + 1] = { type = "circle", action = "fill", fillColor = COL.accent, center = { x = cx, y = cy }, radius = r,
-      fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.accentHi, COL.accentLo } }
-    hitCircle(els, map, id, cx, cy, r, { fill = withA(COL.fgWhite, 0), hoverFill = withA(COL.fgWhite, 0.22) })
+    local el
+    if isRoundStyle() then
+      el = { type = "circle", action = "fill", fillColor = COL.accent, center = { x = cx, y = cy }, radius = r,
+        fillGradient = "linear", fillGradientAngle = COL.multi and 45 or 90, fillGradientColors = COL.grad }
+    else
+      el = { type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = btnRadius(r), yRadius = btnRadius(r) },
+        frame = { x = cx - r, y = cy - r, w = 2 * r, h = 2 * r },
+        fillGradient = "linear", fillGradientAngle = COL.multi and 45 or 90, fillGradientColors = COL.grad }
+    end
+    els[#els + 1] = el
+    hitShape(els, map, id, cx, cy, r, { fill = withA(COL.fgWhite, 0), hoverFill = withA(COL.fgWhite, 0.22) })
   else
-    hitCircle(els, map, id, cx, cy, r, { fill = COL.rowBg, hoverFill = COL.accentSoft,
+    hitShape(els, map, id, cx, cy, r, { fill = COL.rowBg, hoverFill = COL.accentSoft,
       stroke = COL.borderSoft, hoverStroke = COL.border, sw = 1 * s })
   end
   if icon then icon(els, cx, cy) end
@@ -833,32 +1121,58 @@ end
 
 ------------------------------------------------------------------------
 -- HUD registrazione: pillola di vetro, badge mic con anelli pulsanti, timer, onda, pausa/stop
+-- buildRecCard disegna la card in (ox, oy): la usano sia l'HUD vero sia l'anteprima viva
+-- del tab Tema (map == nil → solo disegno, niente aree cliccabili).
 ------------------------------------------------------------------------
-setRecordingElements = function(isPaused)
-  local s = config.scale
+-- sfumatura del gradiente tema con alpha che scende da a0 ad a1
+local function gradFade(T, a0, a1)
+  local out, n = {}, #T.grad
+  for i, c in ipairs(T.grad) do out[i] = withA(c, a0 + (a1 - a0) * ((n > 1) and (i - 1) / (n - 1) or 0)) end
+  return out
+end
+
+-- dimensioni (non scalate) della pillola, in base a orientamento e densità
+local function recDims(vertical)
+  local D = dens()
+  if vertical then return 56, 82 + 8 * D.vp + 3.2 + D.vg + D.vs + 22 end
+  return 296 + D.w, 56
+end
+
+local function waveStyleOf()
+  local w = config.waveStyle
+  if w == "thin" or w == "dots" or w == "line" then return w end
+  return "bars"
+end
+local function waveGradientOn()
+  if config.waveColor == "gradient" then return true end
+  if config.waveColor == "accent" then return false end
+  return COL.multi == true          -- default: gradiente solo sugli stili multi-colore
+end
+
+local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   local function sc(v) return v * s end
-  local P = sc(40)   -- margine attorno alla card (ombra + badge)
-  local els = {}
-  local idx = { bars = {}, disp = {}, last = nil, settled = false, warnPrev = false }
+  local D = dens()
   local function add(el) els[#els + 1] = el; return #els end
-  hoverMap = {}
-  Anim.cancel("hudhv"); Anim.cancel("hudtip")
-  local vertical = (config.orientation == "vertical")
-  local pw, ph = vertical and 56 or 296, vertical and 204 or 56
-  placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
-  idx.border = pushGlass(els, P, P, sc(pw), sc(ph), sc(28), { s = s, id = "drag" })
+  local idx = { bars = {}, disp = {}, last = nil, settled = false, warnPrev = false, vertical = vertical, s = s }
+  local n = vertical and 9 or 12
+  local pw, ph = recDims(vertical)
+  idx.pw, idx.ph = pw, ph
+  idx.border, idx.body = pushGlass(els, ox, oy, sc(pw), sc(ph), R(28 * s), { s = s, id = map and "drag" or nil })
 
   -- badge mic (registrazione) oppure ingranaggio (in pausa: impostazioni/scelta mic)
-  local bcx = P + sc(vertical and 28 or 31)
-  local bcy = P + sc(vertical and 30 or 28)
+  local bcx = ox + sc(vertical and 28 or 31)
+  local bcy = oy + sc(vertical and 30 or 28)
   local br = sc(vertical and 16 or 17)
   idx.br = br
-  idx.vertical = vertical
   if isPaused then
-    circleButton(els, hoverMap, "settings", bcx, bcy, br, "ghost", function(e, cx, cy)
+    circleButton(els, map, "settings", bcx, bcy, br, "ghost", function(e, cx, cy)
       ICON.gear(e, cx, cy, sc(17), COL.accentInk)
     end, s)
   else
+    if config.glowOn == true then       -- alone morbido attorno al badge
+      add({ type = "circle", action = "fill", fillColor = withA(COL.accent, 0.09), center = { x = bcx, y = bcy }, radius = br * 1.8 })
+      add({ type = "circle", action = "fill", fillColor = withA(COL.accent, 0.11), center = { x = bcx, y = bcy }, radius = br * 1.38 })
+    end
     local ring = { type = "circle", action = "stroke", strokeColor = withA(COL.accent, 0), strokeWidth = sc(1.4),
       center = { x = bcx, y = bcy }, radius = br }
     idx.ring1 = add(ring)
@@ -866,58 +1180,77 @@ setRecordingElements = function(isPaused)
     idx.ring2 = add(ring2)
     idx.badge = add({ type = "circle", action = "strokeAndFill", fillColor = COL.accentSoft,
       strokeColor = withA(COL.accent, 0.55), strokeWidth = sc(1), center = { x = bcx, y = bcy }, radius = br,
-      fillGradient = "linear", fillGradientAngle = 90,
-      fillGradientColors = { withA(COL.accentHi, 0.34), withA(COL.accentLo, 0.12) } })
+      fillGradient = "linear", fillGradientAngle = COL.multi and 45 or 90,
+      fillGradientColors = gradFade(COL, 0.34, 0.14) })
     ICON.mic(els, bcx, bcy, sc(16), COL.accentInk)
   end
 
-  -- timer + onda
-  local bm
+  -- timer
   if vertical then
     idx.timerSize = sc(12)
-    idx.timerFrames = { { x = P, y = P + sc(55), w = sc(56), h = sc(18) }, { x = P, y = P + sc(57), w = sc(56), h = sc(18) } }
-    idx.timer = txt(els, "0:00", P, P + sc(55), sc(56), sc(18), sc(12), COL.fg, { font = "mono", align = "center", lb = "clip" })
-    for i = 1, 9 do
-      local yb = P + sc(82 + (i - 1) * 5.6)
-      local ei = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, 0.5),
-        roundedRectRadii = { xRadius = sc(1.6), yRadius = sc(1.6) }, frame = { x = bcx - sc(2.5), y = yb, w = sc(5), h = sc(3.2) } })
-      idx.bars[i] = { idx = ei, cx = bcx, y = yb }
-    end
-    bm = { horizontal = false, s = s, barH = sc(3.2), maxLen = 30 }
+    idx.timerFrames = { { x = ox, y = oy + sc(55), w = sc(56), h = sc(18) }, { x = ox, y = oy + sc(57), w = sc(56), h = sc(18) } }
+    idx.timer = txt(els, "0:00", ox, oy + sc(55), sc(56), sc(18), sc(12), COL.fg, { font = "timer", align = "center", lb = "clip" })
   else
     idx.timerSize = sc(17)
-    idx.timerFrames = { { x = P + sc(57), y = P + sc(17), w = sc(60), h = sc(24) }, { x = P + sc(57), y = P + sc(21), w = sc(60), h = sc(24) } }
-    idx.timer = txt(els, "0:00", P + sc(57), P + sc(17), sc(60), sc(24), sc(17), COL.fg, { font = "mono", lb = "clip" })
-    for i = 1, 12 do
-      local xb = P + sc(120 + (i - 1) * 6.2)
-      local ei = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, 0.5),
-        roundedRectRadii = { xRadius = sc(1.6), yRadius = sc(1.6) }, frame = { x = xb, y = P + sc(26), w = sc(3.2), h = sc(4) } })
-      idx.bars[i] = { idx = ei, x = xb }
-    end
-    bm = { horizontal = true, s = s, barW = sc(3.2), maxLen = 28, cy = P + sc(28) }
+    idx.timerFrames = { { x = ox + sc(57), y = oy + sc(17), w = sc(60), h = sc(24) }, { x = ox + sc(57), y = oy + sc(21), w = sc(60), h = sc(24) } }
+    idx.timer = txt(els, "0:00", ox + sc(57), oy + sc(17), sc(60), sc(24), sc(17), COL.fg, { font = "timer", lb = "clip" })
   end
-  idx.barMeta = bm
+
+  -- onda: barre / sottili / punti / linea
+  local wstyle = waveStyleOf()
+  local pitch = vertical and D.vp or D.pitch
+  idx.wstyle, idx.wgrad = wstyle, waveGradientOn()
+  local thick = (wstyle == "thin") and 1.7 or 3.2
+  local dotMax = pitch * 0.52
+  for i = 1, n do
+    local px, py
+    if vertical then px = bcx; py = oy + sc(82 + (i - 1) * D.vp + 1.6)
+    else px = ox + sc(120 + (i - 1) * D.pitch + 1.6); py = oy + sc(28) end
+    local b = { px = px, py = py, col = gradAt(COL, (i - 1) / math.max(1, n - 1)) }
+    if wstyle == "dots" then
+      b.idx = add({ type = "circle", action = "fill", fillColor = withA(COL.accent, 0.5), center = { x = px, y = py }, radius = sc(dotMax * 0.38) })
+    elseif wstyle ~= "line" then
+      local fr
+      if vertical then fr = { x = px - sc(2.5), y = py - sc(thick / 2), w = sc(5), h = sc(thick) }
+      else fr = { x = px - sc(thick / 2), y = py - sc(2), w = sc(thick), h = sc(4) } end
+      b.idx = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, 0.5),
+        roundedRectRadii = { xRadius = sc(thick / 2), yRadius = sc(thick / 2) }, frame = fr })
+    end
+    idx.bars[i] = b
+  end
+  if wstyle == "line" then
+    idx.segs = {}
+    for i = 1, n - 1 do
+      local a, b = idx.bars[i], idx.bars[i + 1]
+      idx.segs[i] = add({ type = "segments", action = "stroke", strokeColor = withA(COL.accent, 0.5), strokeWidth = sc(1.9),
+        strokeCapStyle = "round", strokeJoinStyle = "round", coordinates = { { x = a.px, y = a.py }, { x = b.px, y = b.py } } })
+    end
+  end
+  idx.barMeta = { horizontal = not vertical, s = s, thick = thick, maxLen = vertical and 30 or 28, dotMax = dotMax }
 
   -- pausa (primario) + stop (vetro)
   local pcx, pcy, scx, scy, brad
-  if vertical then pcx, pcy, scx, scy, brad = bcx, P + sc(151), bcx, P + sc(182), sc(13)
-  else pcx, pcy, scx, scy, brad = P + sc(224), P + sc(28), P + sc(260), P + sc(28), sc(15) end
-  circleButton(els, hoverMap, "pause", pcx, pcy, brad, "primary", function(e, cx, cy)
+  if vertical then
+    pcx = bcx; pcy = oy + sc(82 + 8 * D.vp + 3.2 + D.vg); scx = bcx; scy = pcy + sc(D.vs); brad = sc(13)
+  else
+    pcx, pcy, scx, scy, brad = ox + sc(pw - 72), oy + sc(28), ox + sc(pw - 36), oy + sc(28), sc(15)
+  end
+  circleButton(els, map, "pause", pcx, pcy, brad, "primary", function(e, cx, cy)
     (isPaused and ICON.play or ICON.pause)(e, cx, cy, brad * 1.1, COL.accentText)
   end, s)
-  circleButton(els, hoverMap, "stop", scx, scy, brad, "ghost", function(e, cx, cy)
+  circleButton(els, map, "stop", scx, scy, brad, "ghost", function(e, cx, cy)
     ICON.stop(e, cx, cy, brad * 1.1, COL.accentInk)
   end, s)
 
   -- annulla: piccolo badge di vetro sul bordo alto-destro
-  local kx, ky, kr = P + sc(pw) - sc(8), P + sc(8), sc(9.5)
-  pushShadow(els, kx - kr, ky - kr, 2 * kr, 2 * kr, s, kr, 0.35)
-  hitCircle(els, hoverMap, "cancel", kx, ky, kr, { fill = COL.solid, hoverFill = mix(COL.solid, COL.warn, 0.25),
+  local kx, ky, kr = ox + sc(pw) - sc(8), oy + sc(8), sc(9.5)
+  pushShadow(els, kx - kr, ky - kr, 2 * kr, 2 * kr, s, kr, 0.35, true)
+  hitShape(els, map, "cancel", kx, ky, kr, { fill = COL.solid, hoverFill = mix(COL.solid, COL.warn, 0.25),
     stroke = COL.border, hoverStroke = COL.warn, sw = 1 })
   ICON.close(els, kx, ky, sc(11), COL.fg2, 1.8)
 
   -- tooltip sintetici sopra la card (solo orizzontale: in verticale non c'è spazio ai lati)
-  if not vertical then
+  if withTips and not vertical then
     idx.tipBg = add({ type = "rectangle", action = "strokeAndFill", fillColor = withA(COL.solid, 0), strokeColor = withA(COL.border, 0),
       strokeWidth = 1, roundedRectRadii = { xRadius = sc(8), yRadius = sc(8) }, frame = { x = 0, y = 0, w = 1, h = 1 } })
     idx.tipText = txt(els, "", 0, 0, 1, 1, sc(11), withA(COL.fg, 0), { font = "semi", align = "center", lb = "clip" })
@@ -927,10 +1260,21 @@ setRecordingElements = function(isPaused)
       cancel = { cx = kx - sc(14), label = "Annulla" },
       settings = { cx = bcx, label = "Impostazioni" },
     }
-    idx.tipTop = P - sc(30)
-    idx.s = s
+    idx.tipTop = oy - sc(30)
   end
+  return idx
+end
 
+setRecordingElements = function(isPaused)
+  local s = config.scale
+  local P = 40 * s   -- margine attorno alla card (ombra + badge)
+  local els = {}
+  hoverMap = {}
+  Anim.cancel("hudhv"); Anim.cancel("hudtip")
+  local vertical = (config.orientation == "vertical")
+  local pw, ph = recDims(vertical)
+  placeCanvas(pw * s + 2 * P, ph * s + 2 * P)
+  local idx = buildRecCard(els, P, P, s, vertical, isPaused, hoverMap, true)
   overlay:replaceElements(els)
   RECIDX = idx
   PROC = nil
@@ -950,12 +1294,13 @@ setProcessingElements = function(text)
   placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
   local els = {}
   local function add(el) els[#els + 1] = el; return #els end
-  pushGlass(els, P, P, sc(pw), sc(ph), sc(26), { s = s, id = "drag" })
+  pushGlass(els, P, P, sc(pw), sc(ph), R(sc(26)), { s = s, id = "drag" })
   local cx, cy = P + sc(28), P + sc(26)
-  local pr = { dots = {}, state = "busy" }
+  local pr = { dots = {}, state = "busy", cols = {} }
   for i = 1, 10 do
     local a = (i - 1) / 10 * 2 * math.pi - math.pi / 2
-    pr.dots[i] = add({ type = "circle", action = "fill", fillColor = withA(COL.accent, 0.2),
+    pr.cols[i] = (COL.multi and waveGradientOn()) and gradAt(COL, (i - 1) / 9) or COL.accent
+    pr.dots[i] = add({ type = "circle", action = "fill", fillColor = withA(pr.cols[i], 0.2),
       center = { x = cx + math.cos(a) * sc(9), y = cy + math.sin(a) * sc(9) }, radius = sc(1.9) })
   end
   pr.okC = add({ type = "circle", action = "fill", fillColor = withA(COL.ok, 0), center = { x = cx, y = cy }, radius = sc(12) })
@@ -964,8 +1309,8 @@ setProcessingElements = function(text)
   ICON.close(els, cx, cy, sc(17), withA(COL.warn, 0), 2.1); pr.errX1 = #els - 1; pr.errX2 = #els
   pr.text = txt(els, cleanStatus(text or "…"), P + sc(54), P + sc(16), sc(pw) - sc(54) - sc(22), sc(22), sc(14), COL.fg, { font = "semi" })
   local kx, ky, kr = P + sc(pw) - sc(8), P + sc(8), sc(9.5)
-  pushShadow(els, kx - kr, ky - kr, 2 * kr, 2 * kr, s, kr, 0.35)
-  hitCircle(els, hoverMap, "close", kx, ky, kr, { fill = COL.solid, hoverFill = mix(COL.solid, COL.accent, 0.22),
+  pushShadow(els, kx - kr, ky - kr, 2 * kr, 2 * kr, s, kr, 0.35, true)
+  hitShape(els, hoverMap, "close", kx, ky, kr, { fill = COL.solid, hoverFill = mix(COL.solid, COL.accent, 0.22),
     stroke = COL.border, hoverStroke = COL.accent, sw = 1 })
   ICON.close(els, kx, ky, sc(11), COL.fg2, 1.8)
   overlay:replaceElements(els)
@@ -975,12 +1320,15 @@ setProcessingElements = function(text)
   -- lo spinner gira solo finché l'HUD è in "proc" (il timer si ferma con stopUITimer)
   if uiTimer then uiTimer:stop() end
   uiTimer = hs.timer.new(1 / 30, function()
-    if not PROC or mode ~= "proc" or not overlay or PROC.state ~= "busy" then return end
-    local head = (hs.timer.secondsSinceEpoch() * 1.15) % 1
-    for i, d in ipairs(PROC.dots) do
-      local delta = (head - (i - 1) / 10) % 1
-      overlay:elementAttribute(d, "fillColor", withA(COL.accent, 0.14 + 0.86 * (1 - delta) ^ 2.2))
-    end
+    local ok, err = pcall(function()
+      if not PROC or mode ~= "proc" or not overlay or PROC.state ~= "busy" then return end
+      local head = (hs.timer.secondsSinceEpoch() * 1.15) % 1
+      for i, d in ipairs(PROC.dots) do
+        local delta = (head - (i - 1) / 10) % 1
+        overlay:elementAttribute(d, "fillColor", withA(PROC.cols[i] or COL.accent, 0.14 + 0.86 * spow(1 - delta, 2.2)))
+      end
+    end)
+    if not ok then print("[GW] spinner: " .. tostring(err)) end
   end)
   uiTimer:start()
 end
@@ -1013,68 +1361,145 @@ end
 
 ------------------------------------------------------------------------
 -- Aggiornamento continuo (solo durante la registrazione): onda fluida, anelli, avviso
+-- hudVisuals è condivisa con l'anteprima viva del tab Tema. Ogni blocco è in pcall:
+-- un errore in un pezzo (es. anelli) non ferma timer e onda.
 ------------------------------------------------------------------------
+local guarded
+do
+  local lastUIErr = nil
+  guarded = function(tag, f)
+    local ok, err = pcall(f)
+    if not ok then
+      local m = tag .. ": " .. tostring(err)
+      if m ~= lastUIErr then lastUIErr = m; print("[GW] " .. m) end
+    end
+    return ok
+  end
+end
+
+local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
+  -- timer + avviso
+  guarded("timer", function()
+    if text ~= I.lastText then cv:elementAttribute(I.timer, "text", text); I.lastText = text end
+    if warn ~= I.warnPrev then
+      I.warnPrev = warn
+      cv:elementAttribute(I.timer, "textSize", warn and (I.timerSize * (I.vertical and 0.8 or 0.66)) or I.timerSize)
+      cv:elementAttribute(I.timer, "frame", I.timerFrames[warn and 2 or 1])
+      cv:elementAttribute(I.timer, "textColor", warn and COL.warn or COL.fg)
+      if I.badge then cv:elementAttribute(I.badge, "strokeColor", warn and withA(COL.warn, 0.75) or withA(COL.accent, 0.55)) end
+      if warn then if onWarn then onWarn() end else cv:elementAttribute(I.border, "strokeColor", COL.border) end
+    end
+    if warn then cv:elementAttribute(I.border, "strokeColor", mix(COL.border, COL.warn, 0.55 + 0.45 * math.sin(finite(t * 7, 0)))) end
+  end)
+
+  -- anelli pulsanti dietro al mic (intensità regolabile; spenti se le animazioni sono off)
+  guarded("rings", function()
+    if not I.ring1 then return end
+    local pk = clampN(config.micPulse == nil and 0.5 or config.micPulse, 0, 1) * 2
+    if not animOn() then pk = 0 end
+    if warn then pk = math.max(pk, 1) end
+    local grow = math.min(0.95, 0.55 * pk)
+    local cols = { warn and COL.warn or COL.accent, warn and COL.warn or (COL.multi and COL.accent2 or COL.accent) }
+    local speed = warn and 1.9 or 0.85
+    for k, ri in ipairs({ I.ring1, I.ring2 }) do
+      local ph = (t * speed + (k - 1) * 0.5) % 1
+      local e = 1 - (1 - ph) * (1 - ph)
+      cv:elementAttribute(ri, "radius", finite(I.br * (1 + grow * e), I.br))
+      cv:elementAttribute(ri, "strokeColor", withA(cols[k], active and 0.55 * math.min(1, pk) * spow(1 - ph, 1.6) or 0))
+    end
+    cv:elementAttribute(I.badge, "radius", finite(I.br * (1 + (active and 0.035 * pk * math.sin(t * 2 * math.pi * 0.85) or 0)), I.br))
+  end)
+
+  -- onda: i livelli arrivano a 10Hz, qui sono lisciati (attacco rapido, rilascio lento)
+  local maxDelta = 0
+  guarded("wave", function()
+    local bm = I.barMeta
+    local n = #I.bars
+    local styleDots, styleLine = (I.wstyle == "dots"), (I.wstyle == "line")
+    local pts = {}
+    local cols = {}
+    for i, b in ipairs(I.bars) do
+      local target = 0
+      if active and not warn then target = finite((src and src[i]) or 0, 0) end
+      local cur = finite(I.disp[i], 0)
+      local rate = (target > cur) and 22 or 6
+      cur = finite(cur + (target - cur) * (1 - math.exp(-rate * dt)), 0)
+      I.disp[i] = cur
+      maxDelta = math.max(maxDelta, math.abs(target - cur))
+      local lv = clampN(cur, 0, 1)
+      if active and not warn then lv = math.max(lv, 0.06 + 0.05 * math.sin(finite(t * 2.4 + i * 0.8, 0))) end   -- respiro a riposo
+      -- colore: accento oppure gradiente del tema lungo l'onda
+      local c
+      if warn then c = COL.warn
+      elseif I.wgrad then c = active and b.col or mix(b.col, COL.solid, 0.5)
+      else c = active and COL.accent or COL.accentDim end
+      local fade = 0.5 + 0.5 * i / n
+      local a = active and ((0.42 + 0.58 * math.min(1, lv * 1.4)) * fade) or 0.8
+      local col = withA(c, a)
+      if styleLine then
+        local off = ((i % 2 == 0) and 1 or -1) * lv * bm.maxLen * 0.5 * bm.s
+        pts[i] = bm.horizontal and { x = b.px, y = b.py + off } or { x = b.px + off, y = b.py }
+        cols[i] = col
+      elseif styleDots then
+        local r = (bm.dotMax * 0.38 + lv * bm.dotMax * 0.62) * bm.s
+        cv:elementAttribute(b.idx, "radius", finite(r, 1))
+        cv:elementAttribute(b.idx, "fillColor", col)
+      else
+        if bm.horizontal then
+          local h = (4 + lv * bm.maxLen) * bm.s
+          cv:elementAttribute(b.idx, "frame", { x = b.px - bm.thick * bm.s / 2, y = b.py - h / 2, w = bm.thick * bm.s, h = finite(h, 4) })
+        else
+          local w = (5 + lv * bm.maxLen) * bm.s
+          cv:elementAttribute(b.idx, "frame", { x = b.px - w / 2, y = b.py - bm.thick * bm.s / 2, w = finite(w, 5), h = bm.thick * bm.s })
+        end
+        cv:elementAttribute(b.idx, "fillColor", col)
+      end
+    end
+    if styleLine and I.segs then
+      for i = 1, n - 1 do
+        local p1, p2 = pts[i], pts[i + 1]
+        if p1 and p2 then
+          cv:elementAttribute(I.segs[i], "coordinates", { { x = finite(p1.x, 0), y = finite(p1.y, 0) }, { x = finite(p2.x, 0), y = finite(p2.y, 0) } })
+          cv:elementAttribute(I.segs[i], "strokeColor", cols[i])
+        end
+      end
+    end
+  end)
+  return maxDelta
+end
+
+-- opacità dell'HUD a riposo: attenuato quando il mouse non è sopra la card (1 = sempre pieno)
+local HUDA = 1
+local function hudRestAlpha(dt)
+  if animBusy or not overlay then return end
+  local rest = clampN(config.idleOpacity == nil and 1 or config.idleOpacity, 0.3, 1)
+  if rest >= 0.999 and HUDA >= 0.999 then return end
+  local target = 1
+  if rest < 0.999 and not micWarned and not dragTap then
+    local f = overlay:frame(); local m = hs.mouse.absolutePosition()
+    local P = 40 * config.scale
+    local over = m.x >= f.x + P and m.x <= f.x + f.w - P and m.y >= f.y + P and m.y <= f.y + f.h - P
+    target = over and 1 or rest
+  end
+  local cur = HUDA + (target - HUDA) * (1 - math.exp(-9 * clampN(dt, 0.001, 0.1)))
+  if math.abs(cur - target) < 0.004 then cur = target end
+  cur = clampN(cur, 0.3, 1)
+  if cur ~= HUDA then overlay:alpha(cur); HUDA = cur end
+end
+
 updateUI = function()
   local I = RECIDX
   if not overlay or mode ~= "rec" or not I then return end
   local t = now()
-  local dt = I.last and math.min(0.1, t - I.last) or 0.016
+  local dt = clampN(I.last and (t - I.last) or 0.016, 0.001, 0.1)
   I.last = t
+  guarded("alpha", function() hudRestAlpha(dt) end)
   local active = ((not paused) and (recording or I.preview)) and true or false
   local warn = (micWarned and recording and not paused) and true or false
   if I.settled and not active then return end
-
   local text = warn and "NO MIC" or fmtTime(currentElapsed())
-  if text ~= I.lastText then overlay:elementAttribute(I.timer, "text", text); I.lastText = text end
-  if warn ~= I.warnPrev then
-    I.warnPrev = warn
-    overlay:elementAttribute(I.timer, "textSize", warn and (I.timerSize * (I.vertical and 0.8 or 0.66)) or I.timerSize)
-    overlay:elementAttribute(I.timer, "frame", I.timerFrames[warn and 2 or 1])
-    overlay:elementAttribute(I.timer, "textColor", warn and COL.warn or COL.fg)
-    if I.badge then overlay:elementAttribute(I.badge, "strokeColor", warn and withA(COL.warn, 0.75) or withA(COL.accent, 0.55)) end
-    if warn then shakeHUD() else overlay:elementAttribute(I.border, "strokeColor", COL.border) end
-  end
-  if warn then overlay:elementAttribute(I.border, "strokeColor", mix(COL.border, COL.warn, 0.55 + 0.45 * math.sin(t * 7))) end
-
-  -- anelli pulsanti dietro al mic
-  if I.ring1 then
-    local col = warn and COL.warn or COL.accent
-    local speed = warn and 1.9 or 0.85
-    for k, ri in ipairs({ I.ring1, I.ring2 }) do
-      local ph = (t * speed + (k - 1) * 0.5) % 1
-      local e = 1 - (1 - ph) ^ 2
-      overlay:elementAttribute(ri, "radius", I.br * (1 + 0.55 * e))
-      overlay:elementAttribute(ri, "strokeColor", withA(col, active and 0.55 * (1 - ph) ^ 1.6 or 0))
-    end
-    overlay:elementAttribute(I.badge, "radius", I.br * (1 + (active and 0.035 * math.sin(t * 2 * math.pi * 0.85) or 0)))
-  end
-
-  -- onda: i livelli arrivano a 10Hz, qui sono lisciati (attacco rapido, rilascio lento)
-  local bm = I.barMeta
-  local base = warn and COL.warn or (active and COL.accent or COL.accentDim)
-  local n, maxDelta = #I.bars, 0
-  for i, b in ipairs(I.bars) do
-    local target = 0
-    if active and not warn then target = (I.demo and I.demo[i]) or levels[i] or 0 end
-    local cur = I.disp[i] or 0
-    local rate = (target > cur) and 22 or 6
-    cur = cur + (target - cur) * (1 - math.exp(-rate * dt))
-    I.disp[i] = cur
-    maxDelta = math.max(maxDelta, math.abs(target - cur))
-    local lv = cur
-    if active and not warn then lv = math.max(lv, 0.06 + 0.05 * math.sin(t * 2.4 + i * 0.8)) end   -- respiro a riposo
-    if bm.horizontal then
-      local h = (4 + lv * bm.maxLen) * bm.s
-      overlay:elementAttribute(b.idx, "frame", { x = b.x, y = bm.cy - h / 2, w = bm.barW, h = h })
-    else
-      local w = (5 + lv * bm.maxLen) * bm.s
-      overlay:elementAttribute(b.idx, "frame", { x = b.cx - w / 2, y = b.y, w = w, h = bm.barH })
-    end
-    local fade = 0.5 + 0.5 * i / n
-    local a = active and ((0.42 + 0.58 * math.min(1, lv * 1.4)) * fade) or 0.8
-    overlay:elementAttribute(b.idx, "fillColor", withA(base, a))
-  end
-  I.settled = (not active) and (maxDelta < 0.004)
+  local md = hudVisuals(overlay, I, t, dt, active, warn, text, shakeHUD, I.demo or levels)
+  I.settled = (not active) and (md < 0.004)
 end
 
 ------------------------------------------------------------------------
@@ -1091,6 +1516,7 @@ showAnimated = function()
     overlay:frame({ x = ff.x, y = ff.y + 20 * (1 - e), w = ff.w, h = ff.h })
   end, function()
     animBusy = false
+    HUDA = 1
     if overlay and finalFrame then overlay:alpha(1); overlay:frame(finalFrame); pinOverlay() end
   end)
 end
@@ -1106,6 +1532,7 @@ hideAnimated = function()
     overlay:frame({ x = ff.x, y = ff.y + 12 * e, w = ff.w, h = ff.h })
   end, function()
     animBusy = false
+    HUDA = 1
     if overlay then overlay:hide(); overlay:alpha(1); if finalFrame then overlay:frame(finalFrame) end end
   end)
 end
@@ -1114,7 +1541,9 @@ showRecordingHUD = function()
   setRecordingElements(false)
   showAnimated()
   if uiTimer then uiTimer:stop() end
-  uiTimer = hs.timer.new(1 / 45, updateUI); uiTimer:start()
+  HUDA = 1
+  -- tick protetto: un errore non ferma timer/onda/pulsazione (lezione del bug NaN)
+  uiTimer = hs.timer.new(1 / 45, function() guarded("updateUI", updateUI) end); uiTimer:start()
 end
 stopUITimer = function() if uiTimer then uiTimer:stop(); uiTimer = nil end end
 function hideOverlay() stopUITimer(); mode = nil; RECIDX = nil; PROC = nil; hideAnimated() end
@@ -1124,19 +1553,24 @@ rebuildHUD = function() if mode == "rec" then setRecordingElements(paused) end e
 ------------------------------------------------------------------------
 -- PANNELLI (impostazioni + storico): stesso linguaggio vetro dell'HUD
 ------------------------------------------------------------------------
-local SPANEL_W = 340
+local SPANEL_W = 360
 local HPANEL_W = 380
 local PSP = 36                 -- margine attorno al pannello (ombra + bordo non tagliati)
-local segPrev, togglePrev = {}, nil   -- memoria per le animazioni (pillola che scivola, interruttore)
+local segPrev, togglePrev = {}, {}   -- memoria per le animazioni (pillola che scivola, interruttori)
 local settingsPos = nil        -- posizione scelta trascinando (nil = centrato)
-local sliderValIdx
+-- stato delle impostazioni: finestra a dimensione FISSA, contenuto scorrevole
+local SET = { scroll = 0, maxScroll = 0, sliders = {}, sbA = 0, W = nil, H = nil, frame = nil, pending = false }
+local scrollTap, previewTimer, PREV = nil, nil, nil
+local resetArmAt = 0
 
 local function placeholder() return { type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = 0, y = 0, w = 1, h = 1 } } end
+local function shallow(t) local c = {}; for k, v in pairs(t) do c[k] = v end return c end
+local function pct(v) return string.format("%d%%", math.floor(finite(v, 0) * 100 + 0.5)) end
 
 -- riempie gli slot riservati in testa (ombra + vetro) una volta nota l'altezza
 local function fillShell(els, W, H, dragId)
   local head = {}
-  pushGlass(head, PSP, PSP, W - 2 * PSP, H - 2 * PSP, 20, { s = 1, id = dragId, sheenH = 58, sheenA = 0.6, shadowMul = 1.25 })
+  pushGlass(head, PSP, PSP, W - 2 * PSP, H - 2 * PSP, R(20), { s = 1, id = dragId, sheenH = 58, sheenA = 0.6, shadowMul = 1.25 })
   for i = 1, NCARD do els[i] = head[i] or placeholder() end
 end
 
@@ -1159,41 +1593,153 @@ end
 local function panelHeader(els, map, pad, IW, y, title, iconFn, closeId)
   els[#els + 1] = { type = "circle", action = "strokeAndFill", fillColor = COL.accentSoft, strokeColor = COL.borderSoft, strokeWidth = 1,
     center = { x = pad + 14, y = y + 15 }, radius = 14,
-    fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { withA(COL.accentHi, 0.30), withA(COL.accentLo, 0.12) } }
+    fillGradient = "linear", fillGradientAngle = COL.multi and 45 or 90, fillGradientColors = gradFade(COL, 0.30, 0.12) }
   iconFn(els, pad + 14, y + 15, 16, COL.accentInk)
   txt(els, title, pad + 38, y + 5, IW - 38 - 34, 20, 16, COL.fg, { font = "bold" })
   circleButton(els, map, closeId, pad + IW - 12, y + 15, 12, "ghost", function(e, cx, cy) ICON.close(e, cx, cy, 13, COL.fg2, 1.8) end)
   els[#els + 1] = { type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad, y = y + 40, w = IW, h = 1 } }
 end
 
+do   -- (blocco: tiene sotto il limite di 200 variabili locali del chunk)
 ------------------------------------------------------------------------
--- IMPOSTAZIONI
+-- LOOK: valori di default, reset e "Sorprendimi"
 ------------------------------------------------------------------------
+local LOOK_DEFAULTS = {
+  style = "gold", themeMode = "dark", shadowOn = true, shadowIntensity = 0.5, glassOpacity = 0,
+  cornerStyle = "round", animOn = true, animSpeed = "normal", waveStyle = "bars", waveColor = "auto",
+  micPulse = 0.5, glowOn = false, uiFont = "sf", timerFont = "mono", density = "normal", idleOpacity = 1,
+}
+local LOOK_ORDER = { "style", "themeMode", "shadowOn", "shadowIntensity", "glassOpacity", "cornerStyle", "animOn", "animSpeed",
+  "waveStyle", "waveColor", "micPulse", "glowOn", "uiFont", "timerFont", "density", "idleOpacity" }
+local function setLook(key, val) config[key] = val; persist(key, val) end
+local function resetLook()
+  for _, k in ipairs(LOOK_ORDER) do setLook(k, LOOK_DEFAULTS[k]) end
+  segPrev = {}; togglePrev = {}
+  applyTheme(); rebuildHUD()
+end
+local function randomLook()
+  math.randomseed(os.time() + math.floor((hs.timer.secondsSinceEpoch() * 1000) % 100000))
+  local function pick(t) return t[math.random(#t)] end
+  local function r2(v) return tonumber(string.format("%.2f", v)) end
+  local choices = {}
+  for _, k in ipairs(FAMILY_ORDER) do if k ~= config.style then choices[#choices + 1] = k end end
+  setLook("style", pick(choices))
+  setLook("waveStyle", pick({ "bars", "thin", "dots", "line" }))
+  setLook("waveColor", math.random() < 0.65 and "gradient" or "accent")
+  setLook("cornerStyle", pick({ "round", "round", "medium", "square" }))
+  setLook("glowOn", math.random() < 0.4)
+  setLook("micPulse", r2(0.25 + math.random() * 0.6))
+  setLook("glassOpacity", r2(0.78 + math.random() * 0.22))
+  setLook("timerFont", pick({ "mono", "sf", "rounded" }))
+  setLook("uiFont", pick({ "sf", "sf", "rounded" }))
+  applyTheme(); rebuildHUD()
+end
+
+-- slider del tab Tema: key in config, intervallo, default (se la chiave non c'è)
+local SLIDER_DEFS = {
+  shadow = { key = "shadowIntensity", lo = 0,   hi = 1, def = 0.5,  rebuild = true },
+  glass  = { key = "glassOpacity",    lo = 0.5, hi = 1, def = 0.95, rebuild = true, live = function() applyTheme() end },
+  pulse  = { key = "micPulse",        lo = 0,   hi = 1, def = 0.5 },
+  idle   = { key = "idleOpacity",     lo = 0.3, hi = 1, def = 1 },
+}
+local function sliderValue(def)
+  local v = config[def.key]
+  if type(v) ~= "number" or v < def.lo - 1e-6 then v = def.def end    -- glassOpacity 0 = "default del tema"
+  return clampN(v, def.lo, def.hi)
+end
+
+------------------------------------------------------------------------
+-- IMPOSTAZIONI  (3 tab: Generale · Tasti · Tema). Finestra a dimensione fissa, ancorata in
+-- alto a sinistra; il contenuto che eccede scorre con rotella/trackpad (clip + scrollbar).
+------------------------------------------------------------------------
+local function settingsGeometry()
+  local sf = hs.screen.mainScreen():frame()
+  local W = SPANEL_W + 2 * PSP
+  local H = math.max(420, math.min(680, sf.h - 24))
+  return W, H
+end
+
+local function stopPreview() if previewTimer then previewTimer:stop(); previewTimer = nil end; PREV = nil end
+local function stopScrollTap() if scrollTap then scrollTap:stop(); scrollTap = nil end end
+
 closeSettings = function()
   local cv = settingsCanvas
   if not cv then return end
   settingsCanvas = nil; settingsPos = nil
-  Anim.cancel("sethv"); Anim.cancel("setui"); Anim.cancel("setvis")
+  stopPreview(); stopScrollTap()
+  SET.frame = nil; SET.W = nil; SET.H = nil; SET.scroll = 0; SET.maxScroll = 0
+  Anim.cancel("sethv"); Anim.cancel("setui"); Anim.cancel("setvis"); Anim.cancel("setsb")
   panelOut(cv)
 end
 
-startShadowSlider = function()
-  if not settingsCanvas or not sliderTrackW then return end
+-- scrollbar sottile: compare mentre si scorre, poi svanisce
+local function pokeScrollbar()
+  if SET.maxScroll <= 0 or not SET.sbIdx then return end
+  Anim.run("setsb", "fade", 1.5, "linear", function(t)
+    local a = (t < 0.55) and 1 or (1 - (t - 0.55) / 0.45)
+    SET.sbA = clampN(a, 0, 1) * 0.36
+    local cv = settingsCanvas
+    if cv and SET.sbIdx then cv:elementAttribute(SET.sbIdx, "fillColor", withA(COL.fg, SET.sbA)) end
+  end, function() SET.sbA = 0 end, true)
+end
+
+local function scrollBy(d)
+  if not settingsCanvas or SET.maxScroll <= 0 then return end
+  local ns = clampN(SET.scroll + finite(d, 0), 0, SET.maxScroll)
+  if ns == SET.scroll then return end
+  SET.scroll = ns
+  if not SET.pending then
+    SET.pending = true
+    hs.timer.doAfter(0.022, function()
+      SET.pending = false
+      if settingsCanvas then
+        local ok, err = pcall(renderSettings, { scroll = true })
+        if not ok then print("[GW] scroll: " .. tostring(err)) end
+      end
+    end)
+  end
+end
+
+local function startScrollTap()
+  if scrollTap then return end
+  local ev = hs.eventtap.event
+  scrollTap = hs.eventtap.new({ ev.types.scrollWheel }, function(e)
+    local cv = settingsCanvas
+    if not cv then return false end
+    local f = cv:frame(); local m = hs.mouse.absolutePosition()
+    if m.x < f.x + PSP or m.x > f.x + f.w - PSP or m.y < f.y + PSP or m.y > f.y + f.h - PSP then return false end
+    local dy = e:getProperty(ev.properties.scrollWheelEventPointDeltaAxis1)
+    if not dy or dy == 0 then dy = (e:getProperty(ev.properties.scrollWheelEventDeltaAxis1) or 0) * 8 end
+    scrollBy(-finite(dy, 0))
+    return true
+  end)
+  scrollTap:start()
+end
+
+local function startSlider(id)
+  local sl, def = SET.sliders[id], SLIDER_DEFS[id]
+  if not sl or not def or not settingsCanvas or not sl.tw or sl.tw <= 0 then return end
   if dragTap then dragTap:stop(); dragTap = nil end
   local function apply(commit)
     local cv = settingsCanvas; if not cv then return end
     local f = cv:frame()
-    local rel = (hs.mouse.absolutePosition().x - f.x - sliderTrackX) / sliderTrackW
-    if rel < 0 then rel = 0 elseif rel > 1 then rel = 1 end
-    config.shadowIntensity = rel
-    cv:elementAttribute(sliderKnobIdx, "center", { x = sliderTrackX + rel * sliderTrackW, y = sliderKnobY })
-    cv:elementAttribute(sliderFillIdx, "frame", { x = sliderTrackX, y = sliderTrackY, w = math.max(0.1, rel * sliderTrackW), h = sliderH })
-    cv:elementAttribute(sliderValIdx, "text", string.format("%d%%", math.floor(rel * 100 + 0.5)))
-    if commit then persist("shadowIntensity", tonumber(string.format("%.2f", rel))); rebuildHUD() end
+    local rel = clampN((hs.mouse.absolutePosition().x - f.x - sl.tx) / sl.tw, 0, 1)
+    local v = tonumber(string.format("%.2f", def.lo + rel * (def.hi - def.lo)))
+    config[def.key] = v
+    cv:elementAttribute(sl.knob, "center", { x = sl.tx + rel * sl.tw, y = sl.ty })
+    cv:elementAttribute(sl.fill, "frame", { x = sl.tx, y = sl.ty - 2.5, w = math.max(0.1, rel * sl.tw), h = 5 })
+    cv:elementAttribute(sl.val, "text", pct(v))
+    if def.live then def.live() end
+    if commit then
+      persist(def.key, v)
+      if def.rebuild then rebuildHUD(); renderSettings() end
+    end
   end
   dragTap = hs.eventtap.new({ hs.eventtap.event.types.leftMouseDragged, hs.eventtap.event.types.leftMouseUp }, function(e)
-    if e:getType() == hs.eventtap.event.types.leftMouseUp then dragTap:stop(); dragTap = nil; apply(true); return false end
-    apply(false); return false
+    local ok = pcall(function()
+      if e:getType() == hs.eventtap.event.types.leftMouseUp then dragTap:stop(); dragTap = nil; apply(true) else apply(false) end
+    end)
+    return false
   end)
   apply(false)
   dragTap:start()
@@ -1203,25 +1749,51 @@ settingsMouse = function(_c, msg, id)
   if msg == "mouseEnter" then hoverTo(settingsCanvas, sHoverMap, "sethv", id, true); return
   elseif msg == "mouseExit" then hoverTo(settingsCanvas, sHoverMap, "sethv", id, false); return
   elseif msg == "mouseDown" then
-    if id == "s_drag" then dragCanvas(settingsCanvas, false, function(f) settingsPos = { x = f.x, y = f.y } end)
-    elseif id == "shadowslider" then startShadowSlider() end
+    if id == "s_drag" then
+      dragCanvas(settingsCanvas, false, function(f) settingsPos = { x = f.x, y = f.y }; SET.frame = { x = f.x, y = f.y, w = f.w, h = f.h } end)
+    else
+      local sid = tostring(id):match("^sl_(.+)$")
+      if sid then startSlider(sid) end
+    end
     return
   elseif msg ~= "mouseUp" then return end
   if not settingsCanvas then return end
 
   if id == "s_close" then closeSettings(); return end
-  if id == "shadowtoggle" then config.shadowOn = not config.shadowOn; persist("shadowOn", config.shadowOn); rebuildHUD(); renderSettings(); return end
-  local kind, val = id:match("^(%a+):(.+)$")
+  if id == "tg_shadow" then setLook("shadowOn", not (config.shadowOn ~= false)); rebuildHUD(); renderSettings(); return end
+  if id == "tg_glow" then setLook("glowOn", not (config.glowOn == true)); rebuildHUD(); renderSettings(); return end
+  if id == "tg_anim" then setLook("animOn", not animOn()); renderSettings(); return end
+  if id == "btn_random" then randomLook(); resetArmAt = 0; renderSettings(); return end
+  if id == "btn_reset" then
+    if resetArmAt > 0 and (now() - resetArmAt) < 3 then
+      resetArmAt = 0; resetLook()
+    else
+      resetArmAt = now()
+      hs.timer.doAfter(3.1, function()
+        if resetArmAt > 0 and (now() - resetArmAt) >= 3 then resetArmAt = 0; if settingsCanvas then pcall(renderSettings) end end
+      end)
+    end
+    renderSettings(); return
+  end
+  local kind, val = tostring(id):match("^(%a+):(.+)$")
   if not kind then return end
   local pageChange = false
-  if kind == "tab" then settingsPage = val; pageChange = true
+  if kind == "tab" then
+    if settingsPage ~= val then settingsPage = val; SET.scroll = 0; pageChange = true end
   elseif kind == "mic" then
     local d = settingsDevices[tonumber(val)]
     if d then config.audioDevice = d.idx; config.micName = d.name; persist("micDevice", d.idx); persist("micName", d.name) end
   elseif kind == "size" then config.sizePreset = val; config.scale = scaleFor(val); persist("sizePreset", val); rebuildHUD()
   elseif kind == "orient" then config.orientation = val; persist("orientation", val); resetLevels(); rebuildHUD()
-  elseif kind == "style" then config.style = val; persist("style", val); applyTheme(); rebuildHUD()
-  elseif kind == "theme" then config.themeMode = val; persist("themeMode", val); applyTheme(); rebuildHUD()
+  elseif kind == "style" then setLook("style", val); applyTheme(); rebuildHUD()
+  elseif kind == "theme" then setLook("themeMode", val); applyTheme(); rebuildHUD()
+  elseif kind == "corner" then setLook("cornerStyle", val); rebuildHUD()
+  elseif kind == "wave" then setLook("waveStyle", val); rebuildHUD()
+  elseif kind == "wcol" then setLook("waveColor", val); rebuildHUD()
+  elseif kind == "aspeed" then setLook("animSpeed", val)
+  elseif kind == "uifont" then setLook("uiFont", val); rebuildHUD()
+  elseif kind == "tfont" then setLook("timerFont", val); rebuildHUD()
+  elseif kind == "dens" then setLook("density", val); rebuildHUD()
   elseif kind == "gest" then
     local which, i, g = val:match("(%a+):(%d+):(%a+)"); i = tonumber(i)
     local list = (which == "ss") and config.ssBindings or config.pauseBindings
@@ -1235,19 +1807,54 @@ settingsMouse = function(_c, msg, id)
   renderSettings({ page = pageChange })
 end
 
-renderSettings = function(opts)
-  opts = opts or {}
-  Anim.cancel("sethv"); Anim.cancel("setui")
-  local W = SPANEL_W + 2 * PSP
+-- anteprima viva: ogni tick aggiorna il mini-HUD del tab Tema con l'onda finta
+local function previewTick()
+  local cv, P = settingsCanvas, PREV
+  if not cv or not P or settingsPage ~= "theme" then return end
+  if P.bot < SET.clipTop or P.top > SET.clipBot then return end     -- fuori vista: salta
+  local I = P.I
+  local t = now()
+  local dt = clampN(I.last and (t - I.last) or 0.05, 0.001, 0.1)
+  I.last = t
+  if I.body and P.bgA ~= COL.bg.alpha then       -- trasparenza del vetro cambiata (slider in corso)
+    P.bgA = COL.bg.alpha
+    cv:elementAttribute(I.body, "fillGradientColors", { COL.bg, COL.bg2 })
+  end
+  local demo = {}
+  local env = 0.55 + 0.45 * math.sin(finite(t * 0.9, 0))
+  for i = 1, #I.bars do
+    demo[i] = clampN(0.12 + 0.85 * math.abs(math.sin(finite(t * 2.3 + i * 0.7, 0))) * env, 0, 1)
+  end
+  hudVisuals(cv, I, t, dt, true, false, fmtTime(12 + (t - P.t0)), nil, demo)
+end
+local function startPreview()
+  if previewTimer then return end
+  previewTimer = hs.timer.doEvery(1 / 20, function() guarded("preview", previewTick) end)
+end
+
+-- costruisce tutti gli elementi per un dato offset di scroll. Ritorna (els, info)
+local function layoutSettings(scroll)
+  local W, H = SET.W, SET.H
   local pad = PSP + 20
   local IW = W - 2 * pad
-  local els, y = {}, PSP + 20
+  local top = PSP + 20
+  local tabsY = top + 56
+  local bodyTop = tabsY + 36 + 16
+  local clipTop = tabsY + 36 + 8
+  local clipBot = H - PSP - 8
+  local viewH = clipBot - bodyTop
+  SET.clipTop, SET.clipBot = clipTop, clipBot
+  local GAP = 18 * gapK()
+  local els = {}
   sHoverMap = {}
+  SET.sliders = {}; SET.sbIdx = nil
+  PREV = nil
   for i = 1, NCARD do els[i] = placeholder() end     -- slot per ombra + vetro (riempiti a fine layout)
   local function add(el) els[#els + 1] = el; return #els end
+  local y = 0
   local function box(x, by, w, h)
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.rowBg, strokeColor = COL.divider, strokeWidth = 1,
-      roundedRectRadii = { xRadius = 12, yRadius = 12 }, frame = { x = x, y = by, w = w, h = h } })
+      roundedRectRadii = { xRadius = R(12), yRadius = R(12) }, frame = { x = x, y = by, w = w, h = h } })
   end
   local function sec(title)
     txt(els, title, pad + 2, y, IW, 14, 10.5, COL.fg3, { font = "bold" })
@@ -1264,16 +1871,16 @@ renderSettings = function(opts)
     local function pillX(i) return x0 + inset + (i - 1) * ow end
     local sel = 1
     for i, opt in ipairs(options) do if opt.val == current then sel = i end end
-    add({ type = "rectangle", action = "fill", fillColor = COL.track, roundedRectRadii = { xRadius = h / 2 - 3, yRadius = h / 2 - 3 },
+    add({ type = "rectangle", action = "fill", fillColor = COL.track, roundedRectRadii = { xRadius = R(h / 2 - 3), yRadius = R(h / 2 - 3) },
       frame = { x = x0, y = y0, w = w, h = h } })
-    local pillIdx = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = ph / 2 - 2, yRadius = ph / 2 - 2 },
+    local pillIdx = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(ph / 2 - 2), yRadius = R(ph / 2 - 2) },
       frame = { x = pillX(sel), y = y0 + inset, w = ow, h = ph },
-      fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.accentHi, COL.accentLo } })
+      fillGradient = "linear", fillGradientAngle = COL.multi and 0 or 90, fillGradientColors = COL.grad })
     local labels = {}
     for i, opt in ipairs(options) do
       local ox = pillX(i)
       local on = (i == sel)
-      hitRect(els, sHoverMap, prefix .. ":" .. opt.val, ox, y0 + inset, ow, ph, ph / 2 - 2,
+      hitRect(els, sHoverMap, prefix .. ":" .. opt.val, ox, y0 + inset, ow, ph, R(ph / 2 - 2),
         { fill = withA(COL.rowHover, 0), hoverFill = on and withA(COL.rowHover, 0) or COL.rowHover })
       local tx, tw = ox, ow
       if opt.icon then
@@ -1300,13 +1907,62 @@ renderSettings = function(opts)
     end
   end
 
-  -- intestazione
-  panelHeader(els, sHoverMap, pad, IW, y, "Impostazioni", ICON.gear, "s_close")
-  y = y + 56
+  -- interruttore animato dentro una riga alta 40 che parte da ry
+  local function switchRow(id, label, on, ry, dim)
+    hitRect(els, sHoverMap, id, pad + 4, ry + 2, IW - 8, 40, R(9), { fill = withA(COL.rowHover, 0), hoverFill = COL.rowHover })
+    txt(els, label, pad + 16, ry + 13, IW - 90, 18, 13, COL.fg, { font = "semi" })
+    local tw, th = 42, 24
+    local tx0, ty0 = pad + IW - 16 - tw, ry + 10
+    add({ type = "rectangle", action = "fill", fillColor = COL.track, roundedRectRadii = { xRadius = R(th / 2), yRadius = R(th / 2) },
+      frame = { x = tx0, y = ty0, w = tw, h = th } })
+    local onIdx = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, on and 1 or 0),
+      roundedRectRadii = { xRadius = R(th / 2), yRadius = R(th / 2) }, frame = { x = tx0, y = ty0, w = tw, h = th },
+      fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = gradA(COL, on and 1 or 0) })
+    local kxOn, kxOff = tx0 + tw - th / 2, tx0 + th / 2
+    local knobIdx = add({ type = "circle", action = "strokeAndFill", fillColor = COL.fgWhite, strokeColor = { red = 0, green = 0, blue = 0, alpha = 0.16 },
+      strokeWidth = 1, center = { x = on and kxOn or kxOff, y = ty0 + th / 2 }, radius = th / 2 - 2.5 })
+    local prev = togglePrev[id]
+    togglePrev[id] = on
+    if prev ~= nil and prev ~= on then
+      local fromX, toX = on and kxOff or kxOn, on and kxOn or kxOff
+      local fromA, toA = on and 0 or 1, on and 1 or 0
+      els[knobIdx].center.x = fromX
+      els[onIdx].fillGradientColors = gradA(COL, fromA)
+      Anim.run("setui", "toggle:" .. id, 0.26, "spring", function(e, p)
+        local cv = settingsCanvas; if not cv then return end
+        cv:elementAttribute(knobIdx, "center", { x = lerp(fromX, toX, e), y = ty0 + th / 2 })
+        cv:elementAttribute(onIdx, "fillGradientColors", gradA(COL, lerp(fromA, toA, clamp01(p * 1.4))))
+      end)
+    end
+  end
 
-  segmented("tab", { { label = "Generale", val = "general", icon = ICON.sliders }, { label = "Tasti", val = "keys", icon = ICON.keyboard } },
-    settingsPage, { y = y, h = 36, size = 12.5 })
-  y = y + 36 + 20
+  -- slider con etichetta e valore, riga che parte da sy
+  local function sliderRow(id, label, sy)
+    local def = SLIDER_DEFS[id]
+    local v = sliderValue(def)
+    local rel = (v - def.lo) / (def.hi - def.lo)
+    txt(els, label, pad + 16, sy + 14, 86, 16, 12, COL.fg2, {})
+    local tx, tw2 = pad + 16 + 90, IW - 32 - 90 - 40
+    local ty = sy + 22
+    add({ type = "rectangle", action = "fill", fillColor = COL.track, roundedRectRadii = { xRadius = 2.5, yRadius = 2.5 },
+      frame = { x = tx, y = ty - 2.5, w = tw2, h = 5 } })
+    local fillIdx = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 2.5, yRadius = 2.5 },
+      frame = { x = tx, y = ty - 2.5, w = math.max(0.1, rel * tw2), h = 5 },
+      fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = COL.grad })
+    local knobIdx = add({ type = "circle", action = "strokeAndFill", fillColor = COL.fgWhite, strokeColor = { red = 0, green = 0, blue = 0, alpha = 0.2 },
+      strokeWidth = 1, center = { x = tx + rel * tw2, y = ty }, radius = 8.5 })
+    local valIdx = txt(els, pct(v), tx + tw2 + 6, sy + 14, 34, 16, 12, COL.fg3, { align = "right", lb = "clip" })
+    add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = tx - 10, y = sy + 6, w = tw2 + 20, h = 32 },
+      trackMouseDown = true, id = "sl_" .. id })
+    SET.sliders[id] = { tx = tx, tw = tw2, ty = ty, knob = knobIdx, fill = fillIdx, val = valIdx }
+  end
+
+  ----------------------------------------------------------------------
+  -- CORPO (scorrevole, ritagliato)
+  ----------------------------------------------------------------------
+  add({ type = "rectangle", action = "clip", frame = { x = PSP + 1, y = clipTop, w = W - 2 * PSP - 2, h = clipBot - clipTop } })
+  y = bodyTop - scroll
+  local contentStart = y
 
   if settingsPage == "general" then
     -- MICROFONO
@@ -1320,11 +1976,11 @@ renderSettings = function(opts)
     end
     for i, d in ipairs(settingsDevices) do
       local cur = (d.name == config.micName)
-      hitRect(els, sHoverMap, "mic:" .. i, pad + 4, ry, IW - 8, 34, 9, { fill = withA(COL.rowHover, 0), hoverFill = COL.rowHover })
+      hitRect(els, sHoverMap, "mic:" .. i, pad + 4, ry, IW - 8, 34, R(9), { fill = withA(COL.rowHover, 0), hoverFill = COL.rowHover })
       local rx, rcy = pad + 24, ry + 17
       if cur then
         add({ type = "circle", action = "fill", fillColor = COL.accent, center = { x = rx, y = rcy }, radius = 8.5,
-          fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.accentHi, COL.accentLo } })
+          fillGradient = "linear", fillGradientAngle = COL.multi and 45 or 90, fillGradientColors = COL.grad })
         ICON.check(els, rx, rcy, 13, COL.accentText, 2.3)
       else
         add({ type = "circle", action = "stroke", strokeColor = COL.fg3, strokeWidth = 1.4, center = { x = rx, y = rcy }, radius = 7.5 })
@@ -1335,87 +1991,149 @@ renderSettings = function(opts)
       end
       ry = ry + 34
     end
-    y = y + bh + 18
+    y = y + bh + GAP
 
     sec("DIMENSIONE")
     segmented("size", { { label = "Minimal", val = "minimal" }, { label = "Standard", val = "standard" }, { label = "Grande", val = "large" } },
       config.sizePreset, { y = y })
-    y = y + 32 + 18
+    y = y + 32 + GAP
 
     sec("ORIENTAMENTO")
     segmented("orient", { { label = "Orizzontale", val = "horizontal", icon = ICON.orientH }, { label = "Verticale", val = "vertical", icon = ICON.orientV } },
       config.orientation, { y = y })
-    y = y + 32 + 18
+    y = y + 32 + GAP
+  elseif settingsPage == "theme" then
+    -- ANTEPRIMA VIVA: mini-HUD con le impostazioni correnti
+    sec("ANTEPRIMA")
+    local bh = 104
+    add({ type = "rectangle", action = "fill", fillColor = COL.rowBg, roundedRectRadii = { xRadius = R(14), yRadius = R(14) },
+      frame = { x = pad, y = y, w = IW, h = bh }, fillGradient = "linear", fillGradientAngle = 25, fillGradientColors = gradFade(COL, 0.55, 0.20) })
+    add({ type = "rectangle", action = "stroke", strokeColor = COL.divider, strokeWidth = 1, roundedRectRadii = { xRadius = R(14), yRadius = R(14) },
+      frame = { x = pad + 0.5, y = y + 0.5, w = IW - 1, h = bh - 1 } })
+    do
+      local s = 0.92
+      local pw, ph = recDims(false)
+      local ox, oy = pad + (IW - pw * s) / 2, y + (bh - ph * s) / 2
+      local I = buildRecCard(els, ox, oy, s, false, false, nil, false)
+      I.preview = true
+      PREV = { I = I, top = y, bot = y + bh, t0 = now(), bgA = COL.bg.alpha }
+    end
+    y = y + bh + GAP
 
-    -- STILE: campioni di colore (gradiente della famiglia, nel tema corrente)
+    -- STILE: griglia di campioni a gradiente (nel modo corrente)
     sec("STILE")
     local mode = resolveMode()
-    local cw = IW / #FAMILY_ORDER
+    local ncol = 5
+    local cw, rowH = IW / ncol, 62
     for i, key in ipairs(FAMILY_ORDER) do
       local F = FAMILIES[key]; local T = F[mode]
-      local cx, cy = pad + (i - 0.5) * cw, y + 18
+      local c, r = (i - 1) % ncol, math.floor((i - 1) / ncol)
+      local cx, cy = pad + (c + 0.5) * cw, y + r * rowH + 19
       local cur = (config.style == key)
-      add({ type = "circle", action = "fill", fillColor = T.accent, center = { x = cx, y = cy }, radius = 13,
-        fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { T.accentHi, T.accentLo } })
-      hitCircle(els, sHoverMap, "style:" .. key, cx, cy, 17, { fill = CLEAR,
+      add({ type = "circle", action = "fill", fillColor = T.accent, center = { x = cx, y = cy }, radius = 13.5,
+        fillGradient = "linear", fillGradientAngle = 45, fillGradientColors = T.grad })
+      hitCircle(els, sHoverMap, "style:" .. key, cx, cy, 17.5, { fill = CLEAR,
         stroke = cur and T.accent or withA(T.accent, 0), hoverStroke = cur and T.accent or withA(T.accent, 0.6), sw = 2 })
       if cur then ICON.check(els, cx, cy, 14, T.accentText, 2.4) end
-      txt(els, F.name, cx - cw / 2, y + 40, cw, 13, 10, cur and COL.fg or COL.fg3, { font = cur and "semi" or "reg", align = "center", lb = "clip" })
+      txt(els, F.name, cx - cw / 2, y + r * rowH + 40, cw, 13, 10, cur and COL.fg or COL.fg3, { font = cur and "semi" or "reg", align = "center", lb = "clip" })
     end
-    y = y + 62
+    y = y + math.ceil(#FAMILY_ORDER / ncol) * rowH + 4
 
-    sec("TEMA")
+    sec("MODO")
     segmented("theme", { { label = "Dark", val = "dark" }, { label = "Light", val = "light" }, { label = "Auto", val = "auto" } },
       config.themeMode, { y = y })
-    y = y + 32 + 18
+    y = y + 32 + GAP
 
-    -- OMBRA: interruttore animato + intensità
-    sec("OMBRA")
+    -- OMBRA + ALONE
+    sec("OMBRA E ALONE")
     local on = config.shadowOn ~= false
     local bh2 = on and 88 or 44
-    box(pad, y, IW, bh2)
-    hitRect(els, sHoverMap, "shadowtoggle", pad + 4, y + 2, IW - 8, 40, 9, { fill = withA(COL.rowHover, 0), hoverFill = COL.rowHover })
-    txt(els, on and "Ombra attiva" or "Ombra disattivata", pad + 16, y + 13, IW - 90, 18, 13, COL.fg, { font = "semi" })
-    local tw, th = 42, 24
-    local tx0, ty0 = pad + IW - 16 - tw, y + 10
-    add({ type = "rectangle", action = "fill", fillColor = COL.track, roundedRectRadii = { xRadius = th / 2, yRadius = th / 2 },
-      frame = { x = tx0, y = ty0, w = tw, h = th } })
-    local onIdx = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, on and 1 or 0),
-      roundedRectRadii = { xRadius = th / 2, yRadius = th / 2 }, frame = { x = tx0, y = ty0, w = tw, h = th } })
-    local kxOn, kxOff = tx0 + tw - th / 2, tx0 + th / 2
-    local knobIdx = add({ type = "circle", action = "strokeAndFill", fillColor = COL.fgWhite, strokeColor = { red = 0, green = 0, blue = 0, alpha = 0.16 },
-      strokeWidth = 1, center = { x = on and kxOn or kxOff, y = ty0 + th / 2 }, radius = th / 2 - 2.5 })
-    if togglePrev ~= nil and togglePrev ~= on then
-      local fromX, toX = on and kxOff or kxOn, on and kxOn or kxOff
-      local fromA, toA = on and 0 or 1, on and 1 or 0
-      els[knobIdx].center.x = fromX
-      els[onIdx].fillColor = withA(COL.accent, fromA)
-      Anim.run("setui", "toggle", 0.26, "spring", function(e, p)
-        local cv = settingsCanvas; if not cv then return end
-        cv:elementAttribute(knobIdx, "center", { x = lerp(fromX, toX, e), y = ty0 + th / 2 })
-        cv:elementAttribute(onIdx, "fillColor", withA(COL.accent, lerp(fromA, toA, clamp01(p * 1.4))))
-      end)
-    end
-    togglePrev = on
+    local glowOn = config.glowOn == true
+    box(pad, y, IW, bh2 + 44)
+    switchRow("tg_shadow", on and "Ombra attiva" or "Ombra disattivata", on, y)
+    local ry = y + 44
     if on then
-      local sy = y + 44
-      add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = sy, w = IW - 32, h = 1 } })
-      txt(els, "Intensità", pad + 16, sy + 14, 70, 16, 12, COL.fg2, {})
-      local tx, tw2 = pad + 16 + 74, IW - 32 - 74 - 40
-      local ty = sy + 22
-      sliderTrackX, sliderTrackW, sliderTrackY, sliderH, sliderKnobY = tx, tw2, ty - 2.5, 5, ty
-      local k = config.shadowIntensity or 0.5
-      add({ type = "rectangle", action = "fill", fillColor = COL.track, roundedRectRadii = { xRadius = 2.5, yRadius = 2.5 },
-        frame = { x = tx, y = ty - 2.5, w = tw2, h = 5 } })
-      sliderFillIdx = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 2.5, yRadius = 2.5 },
-        frame = { x = tx, y = ty - 2.5, w = math.max(0.1, k * tw2), h = 5 } })
-      sliderKnobIdx = add({ type = "circle", action = "strokeAndFill", fillColor = COL.fgWhite, strokeColor = { red = 0, green = 0, blue = 0, alpha = 0.2 },
-        strokeWidth = 1, center = { x = tx + k * tw2, y = ty }, radius = 8.5 })
-      sliderValIdx = txt(els, string.format("%d%%", math.floor(k * 100 + 0.5)), tx + tw2 + 6, sy + 14, 34, 16, 12, COL.fg3, { align = "right", lb = "clip" })
-      add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = tx - 10, y = sy + 6, w = tw2 + 20, h = 32 },
-        trackMouseDown = true, id = "shadowslider" })
+      add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = ry, w = IW - 32, h = 1 } })
+      sliderRow("shadow", "Intensità", ry)
+      ry = ry + 44
     end
-    y = y + bh2 + 6
+    add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = ry, w = IW - 32, h = 1 } })
+    switchRow("tg_glow", glowOn and "Alone accento attivo" or "Alone accento", glowOn, ry)
+    y = y + bh2 + 44 + GAP
+
+    sec("VETRO")
+    box(pad, y, IW, 44)
+    sliderRow("glass", "Opacità", y)
+    y = y + 44 + GAP
+
+    sec("ANGOLI")
+    segmented("corner", { { label = "Squadrati", val = "square" }, { label = "Medi", val = "medium" }, { label = "Tondi", val = "round" } },
+      config.cornerStyle or "round", { y = y })
+    y = y + 32 + GAP
+
+    sec("ONDA")
+    segmented("wave", { { label = "Barre", val = "bars" }, { label = "Sottili", val = "thin" }, { label = "Punti", val = "dots" }, { label = "Linea", val = "line" } },
+      waveStyleOf(), { y = y, size = 11.5 })
+    y = y + 32 + 10
+    segmented("wcol", { { label = "Accento", val = "accent" }, { label = "Gradiente", val = "gradient" } },
+      waveGradientOn() and "gradient" or "accent", { y = y })
+    y = y + 32 + GAP
+
+    sec("PULSAZIONE MIC")
+    box(pad, y, IW, 44)
+    sliderRow("pulse", "Intensità", y)
+    y = y + 44 + GAP
+
+    sec("ANIMAZIONI")
+    local an = animOn()
+    box(pad, y, IW, an and 44 + 50 or 44)
+    switchRow("tg_anim", an and "Animazioni attive" or "Animazioni disattivate", an, y)
+    if an then
+      add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = y + 44, w = IW - 32, h = 1 } })
+      segmented("aspeed", { { label = "Calme", val = "calm" }, { label = "Normali", val = "normal" }, { label = "Vivaci", val = "lively" } },
+        SPEED_MUL[config.animSpeed] and config.animSpeed or "normal", { x = pad + 10, w = IW - 20, y = y + 52, h = 30, size = 11.5 })
+      y = y + 44 + 50
+    else
+      y = y + 44
+    end
+    y = y + GAP
+
+    sec("TESTO")
+    segmented("uifont", { { label = "SF", val = "sf" }, { label = "Arrotondato", val = "rounded" }, { label = "Mono", val = "mono" } },
+      (config.uiFont == "rounded" or config.uiFont == "mono") and config.uiFont or "sf", { y = y })
+    y = y + 32 + GAP
+
+    sec("TIMER")
+    segmented("tfont", { { label = "Mono", val = "mono" }, { label = "SF", val = "sf" }, { label = "Arrotondato", val = "rounded" } },
+      (config.timerFont == "sf" or config.timerFont == "rounded") and config.timerFont or "mono", { y = y })
+    y = y + 32 + GAP
+
+    sec("DENSITÀ")
+    segmented("dens", { { label = "Compatta", val = "compact" }, { label = "Normale", val = "normal" }, { label = "Ampia", val = "wide" } },
+      DENS[config.density] and config.density or "normal", { y = y })
+    y = y + 32 + GAP
+
+    sec("HUD A RIPOSO")
+    box(pad, y, IW, 44)
+    sliderRow("idle", "Opacità", y)
+    y = y + 44 + GAP
+
+    -- azioni: Sorprendimi / Reset look
+    local bw = (IW - 10) / 2
+    local armed = resetArmAt > 0 and (now() - resetArmAt) < 3
+    add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(12), yRadius = R(12) },
+      frame = { x = pad, y = y, w = bw, h = 38 }, fillGradient = "linear", fillGradientAngle = COL.multi and 0 or 90, fillGradientColors = COL.grad })
+    hitRect(els, sHoverMap, "btn_random", pad, y, bw, 38, R(12), { fill = withA(COL.fgWhite, 0), hoverFill = withA(COL.fgWhite, 0.2) })
+    ICON.sparkle(els, pad + bw / 2 - 42, y + 19, 14, COL.accentText)
+    txt(els, "Sorprendimi", pad + bw / 2 - 30, y + 11, 90, 16, 12.5, COL.accentText, { font = "semi", lb = "clip" })
+    local rx = pad + bw + 10
+    hitRect(els, sHoverMap, "btn_reset", rx, y, bw, 38, R(12), { fill = armed and withA(COL.warn, 0.14) or COL.rowBg,
+      hoverFill = armed and withA(COL.warn, 0.22) or COL.accentSoft, stroke = armed and COL.warn or COL.borderSoft,
+      hoverStroke = armed and COL.warn or COL.border })
+    ICON.reset(els, rx + 20, y + 19, 14, armed and COL.warn or COL.accentInk)
+    txt(els, armed and "Sicuro? Tocca ancora" or "Reset look", rx + 34, y + 11, bw - 40, 16, armed and 11.5 or 12.5,
+      armed and COL.warn or COL.accentInk, { font = "semi", lb = "clip" })
+    y = y + 38 + 10
   else
     -- TASTI: una card per tasto [tasto] [gesto] [elimina]
     local function bindings(actionKey, list, gestures)
@@ -1425,7 +2143,7 @@ renderSettings = function(opts)
         local label = bindLabel(b)
         local cw = math.max(46, (utf8.len(label) or #label) * 8.5 + 22)
         add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.track, strokeColor = COL.divider, strokeWidth = 1,
-          roundedRectRadii = { xRadius = 8, yRadius = 8 }, frame = { x = pad + 10, y = y + 9, w = cw, h = 28 } })
+          roundedRectRadii = { xRadius = R(8), yRadius = R(8) }, frame = { x = pad + 10, y = y + 9, w = cw, h = 28 } })
         txt(els, label, pad + 10, y + 14, cw, 18, 13, COL.accentInk, { font = "mono", align = "center", lb = "clip" })
         local dcx = pad + IW - 10 - 10
         local gx = pad + 10 + cw + 10
@@ -1435,12 +2153,12 @@ renderSettings = function(opts)
           function(e, cx, cy) ICON.close(e, cx, cy, 12, COL.fg2, 1.8) end)
         y = y + rh + 8
       end
-      local ai = hitRect(els, sHoverMap, "add:" .. actionKey, pad, y, IW, 36, 12,
+      local ai = hitRect(els, sHoverMap, "add:" .. actionKey, pad, y, IW, 36, R(12),
         { fill = withA(COL.accent, 0), hoverFill = COL.accentFaint, stroke = COL.borderSoft, hoverStroke = COL.border })
       els[ai].strokeDashPattern = { 5, 4 }
       ICON.plus(els, pad + IW / 2 - 58, y + 18, 14, COL.accentInk, 1.9)
       txt(els, "Aggiungi tasto", pad + IW / 2 - 44, y + 10, 110, 16, 12.5, COL.accentInk, { font = "semi", lb = "clip" })
-      y = y + 36 + 18
+      y = y + 36 + GAP
     end
     sec("AVVIO / STOP")
     bindings("ss", config.ssBindings, { { label = "2 tap", val = "double" }, { label = "1 tap", val = "single" }, { label = "hold", val = "hold" } })
@@ -1448,17 +2166,63 @@ renderSettings = function(opts)
     bindings("pause", config.pauseBindings, { { label = "1 tap", val = "single" }, { label = "2 tap", val = "double" } })
     y = y - 12
   end
+  add({ type = "resetClip" })
 
-  local H = y + PSP + 8
+  local contentLen = (y + 10) - contentStart
+  local maxScroll = math.max(0, contentLen - viewH)
+
+  ----------------------------------------------------------------------
+  -- Sopra il corpo: schermi che bloccano i click sul contenuto scrollato fuori vista
+  -- (e fanno da maniglia di trascinamento), scrollbar, intestazione e tab (fissi).
+  ----------------------------------------------------------------------
+  add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = PSP, y = PSP, w = W - 2 * PSP, h = clipTop - PSP },
+    trackMouseDown = true, trackMouseUp = true, trackMouseEnterExit = true, id = "s_drag" })
+  add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = PSP, y = clipBot, w = W - 2 * PSP, h = H - PSP - clipBot },
+    trackMouseDown = true, trackMouseUp = true, trackMouseEnterExit = true, id = "s_drag" })
+  if scroll > 0.5 then       -- filo sotto i tab quando il contenuto è scorso
+    add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad, y = clipTop, w = IW, h = 1 } })
+  end
+  if maxScroll > 0 then
+    local trackH = viewH - 8
+    local barH = clampN(trackH * viewH / math.max(1, contentLen), 28, trackH)
+    local barY = bodyTop + 4 + (trackH - barH) * clampN(scroll / maxScroll, 0, 1)
+    SET.sbIdx = add({ type = "rectangle", action = "fill", fillColor = withA(COL.fg, SET.sbA or 0),
+      roundedRectRadii = { xRadius = 1.5, yRadius = 1.5 }, frame = { x = W - PSP - 8, y = barY, w = 3, h = barH } })
+  end
+
+  y = top
+  panelHeader(els, sHoverMap, pad, IW, y, "Impostazioni", ICON.gear, "s_close")
+  y = y + 56
+  segmented("tab", { { label = "Generale", val = "general", icon = ICON.sliders }, { label = "Tasti", val = "keys", icon = ICON.keyboard },
+    { label = "Tema", val = "theme", icon = ICON.palette } }, settingsPage, { y = y, h = 36, size = 12.5 })
+
   fillShell(els, W, H, "s_drag")
+  return els, { maxScroll = maxScroll, contentLen = contentLen }
+end
 
-  local sf = hs.screen.mainScreen():frame()
-  local fx, fy
-  if settingsPos then fx, fy = settingsPos.x, settingsPos.y
-  else fx = sf.x + (sf.w - W) / 2; fy = sf.y + (sf.h - H) / 2 end
-  fy = math.max(sf.y, math.min(fy, sf.y + sf.h - H))
+renderSettings = function(opts)
+  opts = opts or {}
+  if not SET.W then SET.W, SET.H = settingsGeometry() end
+  local W, H = SET.W, SET.H
+  Anim.cancel("sethv"); Anim.cancel("setui")
+  local snapSeg, snapTog = shallow(segPrev), shallow(togglePrev)
+  local els, info = layoutSettings(SET.scroll)
+  SET.maxScroll = info.maxScroll
+  if SET.scroll > info.maxScroll + 0.5 then       -- il contenuto si è accorciato: riallinea lo scroll
+    SET.scroll = info.maxScroll
+    segPrev, togglePrev = snapSeg, snapTog
+    els, info = layoutSettings(SET.scroll)
+    SET.maxScroll = info.maxScroll
+  end
+
   local isNew = (settingsCanvas == nil)
   if isNew then
+    local sf = hs.screen.mainScreen():frame()
+    local fx, fy
+    if settingsPos then fx, fy = settingsPos.x, settingsPos.y
+    else fx = sf.x + (sf.w - W) / 2; fy = sf.y + (sf.h - H) / 2 end
+    fy = math.max(sf.y, math.min(fy, sf.y + sf.h - H))
+    SET.frame = { x = fx, y = fy, w = W, h = H }
     settingsCanvas = hs.canvas.new({ x = fx, y = fy, w = W, h = H })
     settingsCanvas:level(hs.canvas.windowLevels.overlay)
     settingsCanvas:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
@@ -1467,16 +2231,29 @@ renderSettings = function(opts)
     settingsCanvas:alpha(0)
     settingsCanvas:show()
     panelIn("setvis", settingsCanvas, fx, fy, W, H, 18)
+    startScrollTap()
   else
-    settingsCanvas:frame({ x = fx, y = fy, w = W, h = H })
+    -- stessa finestra, stessa posizione, stessa dimensione: cambia solo il contenuto
     settingsCanvas:replaceElements(els)
-    if opts.page then panelIn("setvis", settingsCanvas, fx, fy, W, H, 8, 0.4) end
+    if opts.page then
+      local cv = settingsCanvas
+      Anim.cancel("setvis", "vis")
+      if SET.frame then cv:frame(SET.frame) end
+      Anim.run("setvis", "page", 0.22, "out", function(e) cv:alpha(0.4 + 0.6 * clamp01(e)) end, function() cv:alpha(1) end)
+    end
   end
+  if opts.scroll or opts.page or isNew then pokeScrollbar() end
+  if settingsPage == "theme" then startPreview() else stopPreview() end
 end
 
 openSettings = function()
-  segPrev = {}; togglePrev = nil
-  getAudioDevices(function(list) deviceCache = list; settingsDevices = list; renderSettings() end)
+  segPrev = {}; togglePrev = {}; resetArmAt = 0
+  getAudioDevices(function(list)
+    deviceCache = list; settingsDevices = list
+    if not settingsCanvas then SET.scroll = 0; SET.W, SET.H = settingsGeometry() end
+    renderSettings()
+  end)
+end
 end
 
 ------------------------------------------------------------------------
@@ -1956,6 +2733,8 @@ end
 ------------------------------------------------------------------------
 -- AUTO-UPDATE
 ------------------------------------------------------------------------
+local checkUpdate
+do   -- (blocco: limite di 200 variabili locali del chunk)
 local deferReload
 deferReload = function()
   if recording or busy then hs.timer.doAfter(30, deferReload); return end
@@ -1989,7 +2768,7 @@ local function applyUpdate(newVer)
   end, { "-fsSL", RAW_BASE .. "/src/groq_dictation.lua", "-o", tmp })
   t:start()
 end
-local function checkUpdate(silent)
+checkUpdate = function(silent)
   local t = hs.task.new(config.curl, function(code, out)
     if code ~= 0 then if not silent then gwAlert("Update: controllo fallito (rete?)") end return end
     local rem = trim(out or "")
@@ -2001,6 +2780,7 @@ local function checkUpdate(silent)
     elseif not silent then gwAlert("Golden Whisper è aggiornato ✓ (" .. loc .. ")", 2) end
   end, { "-fsSL", RAW_BASE .. "/VERSION" })
   t:start()
+end
 end
 
 function M.update() checkUpdate(false) end
@@ -2023,7 +2803,13 @@ function M.transcribeRecovered()
   end
   gwAlert(n == 0 and "Nessun audio da ritrascrivere (già fatti)" or ("📝 Ritrascrivo " .. n .. " audio salvati…"), 3)
 end
-function M.settings(page) if page then settingsPage = page end openSettings() end
+function M.settings(page)
+  if page then
+    if page ~= settingsPage then SET.scroll = 0 end
+    settingsPage = page
+  end
+  openSettings()
+end
 function M.toggle() if not busy then if recording then M.stop() else start() end end end
 
 -- PREVIEW per verifica estetica (M._preview(orient, isPaused) mostra l'HUD con onda finta, senza registrare)
