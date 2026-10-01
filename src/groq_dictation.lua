@@ -59,13 +59,13 @@ local elapsed, segStart = 0, nil
 local levels = {}
 local lastSoundAt, lastRmsAt, micWarned, micName = 0, 0, false, nil   -- rilevamento "mic muto"
 
-local overlay, uiTimer, rotTimer, animTimer, dragTap = nil, nil, nil, nil, nil
+local overlay, uiTimer, rotTimer, dragTap = nil, nil, nil, nil
 local finalFrame, mode, RECIDX = nil, nil, nil
 local procTextIdx = nil
 local taps = {}
 local hoverMap = {}     -- id -> {idx, fill, hoverFill, stroke, hoverStroke}  (overlay)
 
-local placeCanvas, mouseCb, startDrag, pushBadge, pushGear, pushPause, pushPlay, pushShadow
+local placeCanvas, mouseCb, startDrag, pushShadow, pushGlass
 local setRecordingElements, setProcessingElements, setStatus, updateUI
 local showAnimated, hideAnimated, showRecordingHUD, stopUITimer
 local openSettings, rebuildHUD, renderSettings, settingsMouse, closeSettings, dragCanvas
@@ -390,21 +390,305 @@ local function resolveMic()
 end
 
 ------------------------------------------------------------------------
+-- ANIMAZIONI
+-- Un solo timer a 60fps, condiviso: nasce quando parte la prima animazione
+-- e si ferma da solo quando la lista è vuota (nessun timer a HUD nascosto).
+------------------------------------------------------------------------
+local Anim = { list = {}, timer = nil }
+local function clamp01(t) if t < 0 then return 0 elseif t > 1 then return 1 end return t end
+local EASE = {
+  linear = function(t) return t end,
+  out    = function(t) return 1 - (1 - t) ^ 3 end,                  -- ease-out cubico
+  inq    = function(t) return t * t * t end,                        -- ease-in (uscite)
+  inout  = function(t) if t < 0.5 then return 4 * t * t * t end return 1 - ((-2 * t + 2) ^ 3) / 2 end,
+  spring = function(t) local c1 = 1.45; local c3 = c1 + 1; return 1 + c3 * (t - 1) ^ 3 + c1 * (t - 1) ^ 2 end,  -- easeOutBack
+}
+local function nowT() return hs.timer.secondsSinceEpoch() end
+
+function Anim.tick()
+  local t = nowT()
+  local finished = {}
+  for k, a in pairs(Anim.list) do
+    local p = clamp01((t - a.t0) / a.dur)
+    pcall(a.fn, a.ease(p), p)
+    if p >= 1 then finished[#finished + 1] = k end
+  end
+  for _, k in ipairs(finished) do
+    local a = Anim.list[k]; Anim.list[k] = nil
+    if a and a.done then pcall(a.done) end
+  end
+  if next(Anim.list) == nil and Anim.timer then Anim.timer:stop(); Anim.timer = nil end
+end
+-- group+key identificano l'animazione: una nuova con stessa chiave sostituisce la vecchia
+function Anim.run(group, key, dur, ease, fn, done)
+  Anim.list[group .. "|" .. key] = { t0 = nowT(), dur = dur, group = group, fn = fn, done = done,
+    ease = (type(ease) == "function") and ease or EASE[ease or "out"] or EASE.out }
+  if not Anim.timer then Anim.timer = hs.timer.doEvery(1 / 60, Anim.tick) end
+end
+function Anim.cancel(group, key)
+  for k, a in pairs(Anim.list) do
+    if a.group == group and (key == nil or k == group .. "|" .. key) then Anim.list[k] = nil end
+  end
+  if next(Anim.list) == nil and Anim.timer then Anim.timer:stop(); Anim.timer = nil end
+end
+local function lerp(a, b, t) return a + (b - a) * t end
+local function lerpC(a, b, t)
+  local aa, ba = a.alpha or 1, b.alpha or 1
+  return { red = lerp(a.red, b.red, t), green = lerp(a.green, b.green, t), blue = lerp(a.blue, b.blue, t), alpha = lerp(aa, ba, t) }
+end
+
+-- Hover animato: map[id] = {idx, fill, hoverFill, stroke, hoverStroke, p}
+local function hoverTo(cv, map, group, id, entering)
+  local h = map[id]; if not h or not cv then return end
+  local from, to = h.p or 0, entering and 1 or 0
+  if from == to then return end
+  Anim.run(group, "hv:" .. id, 0.16, "out", function(e)
+    local p = lerp(from, to, e); h.p = p
+    if h.fill then cv:elementAttribute(h.idx, "fillColor", lerpC(h.fill, h.hoverFill or h.fill, p)) end
+    if h.stroke then cv:elementAttribute(h.idx, "strokeColor", lerpC(h.stroke, h.hoverStroke or h.stroke, p)) end
+  end)
+end
+
+-- Font di sistema (SF) con fallback sicuri. Risolti una volta sola.
+local FONT = nil
+local function fonts()
+  if FONT then return FONT end
+  local function pick(c)
+    for _, n in ipairs(c) do
+      local ok, info = pcall(hs.styledtext.fontInfo, n)
+      if ok and info then return n end
+    end
+    return c[#c]
+  end
+  FONT = {
+    reg  = pick({ ".AppleSystemUIFont", "HelveticaNeue" }),
+    semi = pick({ ".AppleSystemUIFontDemi", "HelveticaNeue-Medium" }),
+    bold = pick({ ".AppleSystemUIFontBold", "HelveticaNeue-Bold" }),
+    mono = pick({ "SFMono-Semibold", "Menlo-Bold" }),
+  }
+  return FONT
+end
+
+------------------------------------------------------------------------
+-- ICONE (primitive canvas, tratto arrotondato coerente; sz = lato nominale)
+------------------------------------------------------------------------
+local ICON = {}
+local function arcPts(cx, cy, r, a0, a1, n)
+  local t = {}
+  for i = 0, n do
+    local a = math.rad(a0 + (a1 - a0) * i / n)
+    t[#t + 1] = { x = cx + r * math.cos(a), y = cy + r * math.sin(a) }
+  end
+  return t
+end
+local function seg(els, pts, col, sw, closed)
+  els[#els + 1] = { type = "segments", action = "stroke", strokeColor = col, strokeWidth = sw, closed = closed or false,
+    strokeCapStyle = "round", strokeJoinStyle = "round", coordinates = pts }
+end
+local function line(els, x1, y1, x2, y2, col, sw) seg(els, { { x = x1, y = y1 }, { x = x2, y = y2 } }, col, sw) end
+local function rrect(els, x, y, w, h, r, o)   -- o: fill, stroke, sw
+  els[#els + 1] = { type = "rectangle", action = (o.fill and o.stroke) and "strokeAndFill" or (o.fill and "fill" or "stroke"),
+    fillColor = o.fill, strokeColor = o.stroke, strokeWidth = o.sw or 1, roundedRectRadii = { xRadius = r, yRadius = r },
+    frame = { x = x, y = y, w = w, h = h } }
+end
+
+function ICON.mic(els, cx, cy, sz, col)
+  local u = sz / 16
+  rrect(els, cx - 2.7 * u, cy - 7.4 * u, 5.4 * u, 9.4 * u, 2.7 * u, { fill = col })
+  seg(els, arcPts(cx, cy - 0.6 * u, 5.4 * u, 0, 180, 16), col, 1.5 * u)
+  line(els, cx, cy + 4.8 * u, cx, cy + 7.2 * u, col, 1.5 * u)
+  line(els, cx - 3 * u, cy + 7.2 * u, cx + 3 * u, cy + 7.2 * u, col, 1.5 * u)
+end
+function ICON.pause(els, cx, cy, sz, col)
+  local u = sz / 16; local bw, bh, gap = 3.6 * u, 11 * u, 3.2 * u
+  rrect(els, cx - gap / 2 - bw, cy - bh / 2, bw, bh, 1.3 * u, { fill = col })
+  rrect(els, cx + gap / 2, cy - bh / 2, bw, bh, 1.3 * u, { fill = col })
+end
+function ICON.play(els, cx, cy, sz, col)
+  local u = sz / 16
+  els[#els + 1] = { type = "segments", action = "strokeAndFill", fillColor = col, strokeColor = col, strokeWidth = 1.8 * u,
+    strokeJoinStyle = "round", closed = true,
+    coordinates = { { x = cx - 3 * u, y = cy - 4.8 * u }, { x = cx - 3 * u, y = cy + 4.8 * u }, { x = cx + 4.8 * u, y = cy } } }
+end
+function ICON.stop(els, cx, cy, sz, col)
+  local u = sz / 16
+  rrect(els, cx - 4.4 * u, cy - 4.4 * u, 8.8 * u, 8.8 * u, 2.3 * u, { fill = col })
+end
+function ICON.gear(els, cx, cy, sz, col)
+  local u = sz / 16; local pts = {}
+  local R, rr = 7.5 * u, 5.7 * u
+  for i = 0, 7 do
+    local c = i * 45 - 90
+    for _, d in ipairs({ { -15, rr }, { -9, R }, { 9, R }, { 15, rr } }) do
+      local a = math.rad(c + d[1])
+      pts[#pts + 1] = { x = cx + d[2] * math.cos(a), y = cy + d[2] * math.sin(a) }
+    end
+  end
+  seg(els, pts, col, 1.35 * u, true)
+  els[#els + 1] = { type = "circle", action = "stroke", strokeColor = col, strokeWidth = 1.4 * u, center = { x = cx, y = cy }, radius = 2.4 * u }
+end
+function ICON.clock(els, cx, cy, sz, col)
+  local u = sz / 16
+  els[#els + 1] = { type = "circle", action = "stroke", strokeColor = col, strokeWidth = 1.5 * u, center = { x = cx, y = cy }, radius = 6.6 * u }
+  seg(els, { { x = cx, y = cy - 3.6 * u }, { x = cx, y = cy + 0.2 * u }, { x = cx + 2.8 * u, y = cy + 1.8 * u } }, col, 1.5 * u)
+end
+function ICON.copy(els, cx, cy, sz, col)
+  local u = sz / 16
+  rrect(els, cx - 2.2 * u, cy - 2.2 * u, 8.4 * u, 8.8 * u, 2 * u, { stroke = col, sw = 1.5 * u })
+  seg(els, { { x = cx + 2 * u, y = cy - 3.4 * u }, { x = cx + 2 * u, y = cy - 6 * u }, { x = cx - 4.6 * u, y = cy - 6 * u },
+    { x = cx - 6 * u, y = cy - 4.6 * u }, { x = cx - 6 * u, y = cy + 2.2 * u }, { x = cx - 3.4 * u, y = cy + 2.2 * u } }, col, 1.5 * u)
+end
+function ICON.check(els, cx, cy, sz, col, sw)
+  local u = sz / 16
+  seg(els, { { x = cx - 4.6 * u, y = cy + 0.4 * u }, { x = cx - 1.4 * u, y = cy + 3.6 * u }, { x = cx + 4.8 * u, y = cy - 3.6 * u } }, col, (sw or 1.9) * u)
+end
+function ICON.close(els, cx, cy, sz, col, sw)
+  local u = sz / 16; local a = 3.6 * u
+  line(els, cx - a, cy - a, cx + a, cy + a, col, (sw or 1.7) * u)
+  line(els, cx - a, cy + a, cx + a, cy - a, col, (sw or 1.7) * u)
+end
+function ICON.plus(els, cx, cy, sz, col, sw)
+  local u = sz / 16; local a = 4.6 * u
+  line(els, cx - a, cy, cx + a, cy, col, (sw or 1.7) * u)
+  line(els, cx, cy - a, cx, cy + a, col, (sw or 1.7) * u)
+end
+function ICON.sliders(els, cx, cy, sz, col)
+  local u = sz / 16
+  for i, kx in ipairs({ -2.6, 2.8, -1 }) do
+    local y = cy + (i - 2) * 5 * u
+    line(els, cx - 6.6 * u, y, cx + 6.6 * u, y, col, 1.4 * u)
+    els[#els + 1] = { type = "circle", action = "fill", fillColor = col, center = { x = cx + kx * u, y = y }, radius = 2.1 * u }
+  end
+end
+function ICON.keyboard(els, cx, cy, sz, col)
+  local u = sz / 16
+  rrect(els, cx - 7.2 * u, cy - 4.8 * u, 14.4 * u, 9.6 * u, 2.4 * u, { stroke = col, sw = 1.4 * u })
+  for _, dx in ipairs({ -3.6, 0, 3.6 }) do
+    els[#els + 1] = { type = "circle", action = "fill", fillColor = col, center = { x = cx + dx * u, y = cy - 1.6 * u }, radius = 0.85 * u }
+  end
+  line(els, cx - 3 * u, cy + 1.9 * u, cx + 3 * u, cy + 1.9 * u, col, 1.3 * u)
+end
+function ICON.orientH(els, cx, cy, sz, col)
+  local u = sz / 16
+  rrect(els, cx - 7 * u, cy - 3.4 * u, 14 * u, 6.8 * u, 3.4 * u, { stroke = col, sw = 1.4 * u })
+  els[#els + 1] = { type = "circle", action = "fill", fillColor = col, center = { x = cx - 3.4 * u, y = cy }, radius = 1.4 * u }
+end
+function ICON.orientV(els, cx, cy, sz, col)
+  local u = sz / 16
+  rrect(els, cx - 3.4 * u, cy - 7 * u, 6.8 * u, 14 * u, 3.4 * u, { stroke = col, sw = 1.4 * u })
+  els[#els + 1] = { type = "circle", action = "fill", fillColor = col, center = { x = cx, y = cy - 3.4 * u }, radius = 1.4 * u }
+end
+
+------------------------------------------------------------------------
+-- VETRO: ombre multi-strato + corpo traslucido + riflesso + bordo luminoso
+-- (hs.canvas non ha blur dello sfondo: la profondità è simulata)
+------------------------------------------------------------------------
+local NSH = 12       -- elementi d'ombra riservati (8 ambient + 4 contatto)
+local NCARD = NSH + 4 -- ombre + corpo + riflesso + highlight + bordo
+
+pushShadow = function(list, x, y, w, h, s, radius, mul)
+  if config.shadowOn == false then return end
+  local k = config.shadowIntensity or 0.5
+  local m = (mul or 1) * (COL.shadowK or 1)
+  for i = 1, 8 do                       -- ambient: ampia e morbida
+    local e = i * 2.6 * s * k
+    list[#list + 1] = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = 0.021 * m },
+      roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
+      frame = { x = x - e, y = y - e + 8 * s * k, w = w + 2 * e, h = h + 2 * e } }
+  end
+  for i = 1, 4 do                       -- contatto: stretta e più scura
+    local e = i * 0.9 * s * k
+    list[#list + 1] = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = 0.05 * m },
+      roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
+      frame = { x = x - e, y = y - e + 2 * s * k + 1, w = w + 2 * e, h = h + 2 * e } }
+  end
+end
+
+-- Corpo "clear glass". Ritorna (indice bordo, indice corpo).
+-- o: { id = "drag", s = scala, shadow = false, shadowMul = n, border = colore, bw = spessore }
+pushGlass = function(list, x, y, w, h, r, o)
+  o = o or {}
+  local s = o.s or 1
+  if o.shadow ~= false then pushShadow(list, x, y, w, h, s, r, o.shadowMul) end
+  local body = #list + 1
+  list[body] = { type = "rectangle", action = "fill", fillColor = COL.bg,
+    roundedRectRadii = { xRadius = r, yRadius = r }, frame = { x = x, y = y, w = w, h = h },
+    fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.bg, COL.bg2 },
+    trackMouseDown = o.id and true or nil, id = o.id }
+  -- riflesso: metà superiore, curva con gli angoli
+  local sh = o.sheenH or h * 0.5
+  local rr = math.min(r - 1, sh)
+  local sp = { { x = x + 1, y = y + sh } }
+  for _, p in ipairs(arcPts(x + 1 + rr, y + 1 + rr, rr, 180, 270, 10)) do sp[#sp + 1] = p end
+  for _, p in ipairs(arcPts(x + w - 1 - rr, y + 1 + rr, rr, 270, 360, 10)) do sp[#sp + 1] = p end
+  sp[#sp + 1] = { x = x + w - 1, y = y + sh }
+  list[#list + 1] = { type = "segments", action = "fill", fillColor = withA(COL.sheen, (COL.sheen.alpha or 0.04) * (o.sheenA or 1)),
+    closed = true, coordinates = sp }
+  -- highlight 1px lungo il bordo alto (luce che entra dall'alto)
+  local hl = {}
+  for _, p in ipairs(arcPts(x + r, y + r, r - 0.8, 212, 270, 8)) do hl[#hl + 1] = p end
+  for _, p in ipairs(arcPts(x + w - r, y + r, r - 0.8, 270, 328, 8)) do hl[#hl + 1] = p end
+  seg(list, hl, COL.hi, 1)
+  -- bordo
+  local border = #list + 1
+  list[border] = { type = "rectangle", action = "stroke", strokeColor = o.border or COL.border, strokeWidth = o.bw or 1,
+    roundedRectRadii = { xRadius = r, yRadius = r }, frame = { x = x + 0.5, y = y + 0.5, w = w - 1, h = h - 1 } }
+  return border, body
+end
+
+------------------------------------------------------------------------
+-- COMPONENTI: hit-layer con hover animato, bottoni tondi, testo
+------------------------------------------------------------------------
+local function hitRect(els, map, id, x, y, w, h, r, o)
+  local idx = #els + 1
+  els[idx] = { type = "rectangle", action = o.stroke and "strokeAndFill" or "fill", fillColor = o.fill, strokeColor = o.stroke,
+    strokeWidth = o.sw or 1, roundedRectRadii = { xRadius = r, yRadius = r }, frame = { x = x, y = y, w = w, h = h },
+    trackMouseUp = true, trackMouseEnterExit = true, id = id }
+  map[id] = { idx = idx, fill = o.fill, hoverFill = o.hoverFill, stroke = o.stroke, hoverStroke = o.hoverStroke }
+  return idx
+end
+local function hitCircle(els, map, id, cx, cy, r, o)
+  local idx = #els + 1
+  els[idx] = { type = "circle", action = o.stroke and "strokeAndFill" or "fill", fillColor = o.fill, strokeColor = o.stroke,
+    strokeWidth = o.sw or 1, center = { x = cx, y = cy }, radius = r,
+    trackMouseUp = true, trackMouseEnterExit = true, id = id }
+  map[id] = { idx = idx, fill = o.fill, hoverFill = o.hoverFill, stroke = o.stroke, hoverStroke = o.hoverStroke }
+  return idx
+end
+
+-- bottone tondo. kind: "primary" (gradiente accento) | "ghost" (vetro con bordo)
+-- icon(els, cx, cy) disegna il glifo sopra.
+local function circleButton(els, map, id, cx, cy, r, kind, icon, s)
+  s = s or 1
+  if kind == "primary" then
+    els[#els + 1] = { type = "circle", action = "fill", fillColor = COL.accent, center = { x = cx, y = cy }, radius = r,
+      fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.accentHi, COL.accentLo } }
+    hitCircle(els, map, id, cx, cy, r, { fill = withA(COL.fgWhite, 0), hoverFill = withA(COL.fgWhite, 0.22) })
+  else
+    hitCircle(els, map, id, cx, cy, r, { fill = COL.rowBg, hoverFill = COL.accentSoft,
+      stroke = COL.borderSoft, hoverStroke = COL.border, sw = 1 * s })
+  end
+  if icon then icon(els, cx, cy) end
+end
+
+local function txt(els, text, x, y, w, h, size, color, o)
+  o = o or {}
+  els[#els + 1] = { type = "text", text = text, textSize = size, textColor = color, textFont = fonts()[o.font or "reg"],
+    textAlignment = o.align or "left", textLineBreak = o.lb or "truncateTail", frame = { x = x, y = y, w = w, h = h } }
+  return #els
+end
+
+local function setAlphaAttr(cv, idx, attr, col, a) cv:elementAttribute(idx, attr, withA(col, a)) end
+
+------------------------------------------------------------------------
 -- HUD
 ------------------------------------------------------------------------
+local animBusy = false      -- true mentre l'HUD sta entrando/uscendo (la guardia non lo riposiziona)
+local PROC = nil            -- stato HUD "processing" (spinner / esito)
+
 mouseCb = function(_c, msg, id)
-  if msg == "mouseEnter" then
-    local h = hoverMap[id]; if h then
-      if h.hoverFill then overlay:elementAttribute(h.idx, "fillColor", h.hoverFill) end
-      if h.hoverStroke then overlay:elementAttribute(h.idx, "strokeColor", h.hoverStroke) end
-    end
-    return
-  elseif msg == "mouseExit" then
-    local h = hoverMap[id]; if h then
-      if h.fill then overlay:elementAttribute(h.idx, "fillColor", h.fill) end
-      if h.stroke then overlay:elementAttribute(h.idx, "strokeColor", h.stroke) end
-    end
-    return
+  if msg == "mouseEnter" then hoverTo(overlay, hoverMap, "hudhv", id, true); return
+  elseif msg == "mouseExit" then hoverTo(overlay, hoverMap, "hudhv", id, false); return
   elseif msg == "mouseDown" then
     if id == "drag" then startDrag() end
     return
@@ -498,233 +782,286 @@ startShadowSlider = function()
   dragTap:start()
 end
 
--- ✕ badge (cancel/close) sporgente dall'angolo
-pushBadge = function(els, id, cx, cy, s, map)
-  local r, a = 10 * s, 3.5 * s
-  pushShadow(els, cx - r, cy - r, 2 * r, 2 * r, s, r, 5, 0.03, 2 * s, 1.2 * s)   -- ombrina sotto il badge
-  local ci = #els + 1
-  els[ci] = { type = "circle", action = "strokeAndFill", fillColor = COL.bg,
-    strokeColor = COL.accent, strokeWidth = 1.2 * s, center = { x = cx, y = cy }, radius = r,
-    trackMouseUp = true, trackMouseEnterExit = true, id = id }
-  els[#els + 1] = { type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7 * s,
-    closed = false, coordinates = { { x = cx - a, y = cy - a }, { x = cx + a, y = cy + a } } }
-  els[#els + 1] = { type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7 * s,
-    closed = false, coordinates = { { x = cx - a, y = cy + a }, { x = cx + a, y = cy - a } } }
-  if map then map[id] = { idx = ci, fill = COL.bg, hoverFill = mix(COL.bg, COL.accent, 0.16), stroke = COL.accent, hoverStroke = COL.accentHover } end
+-- avviso "NO MIC": scossa orizzontale smorzata della card
+local function shakeHUD()
+  if not overlay or not finalFrame or dragTap then return end
+  local s = config.scale
+  Anim.run("hud", "shake", 0.5, "linear", function(_, p)
+    if not overlay or dragTap or animBusy then return end
+    local f = finalFrame
+    overlay:frame({ x = f.x + math.sin(p * math.pi * 7) * 5 * s * (1 - p), y = f.y, w = f.w, h = f.h })
+  end, function()
+    if overlay and finalFrame and not dragTap and not animBusy then overlay:frame(finalFrame) end
+  end)
 end
 
--- ingranaggio pieno (impostazioni)
-pushGear = function(els, cx, cy, r, s, id, map)
-  local hit = #els + 1
-  els[hit] = { type = "rectangle", action = "fill", fillColor = COL.clear,
-    frame = { x = cx - r - 6 * s, y = cy - r - 6 * s, w = (r + 6 * s) * 2, h = (r + 6 * s) * 2 },
-    trackMouseUp = true, trackMouseEnterExit = true, id = id }
-  local td = 3.4 * s
-  for i = 0, 7 do
-    local ang = (i / 8) * 2 * math.pi
-    local tx = cx + math.cos(ang) * (r + 1 * s)
-    local ty = cy + math.sin(ang) * (r + 1 * s)
-    els[#els + 1] = { type = "rectangle", action = "fill", fillColor = COL.accent,
-      roundedRectRadii = { xRadius = 1 * s, yRadius = 1 * s }, frame = { x = tx - td / 2, y = ty - td / 2, w = td, h = td } }
-  end
-  local disc = #els + 1
-  els[disc] = { type = "circle", action = "fill", fillColor = COL.accent, center = { x = cx, y = cy }, radius = r }
-  els[#els + 1] = { type = "circle", action = "fill", fillColor = COL.bg, center = { x = cx, y = cy }, radius = r * 0.36 }
-  if map then map[id] = { idx = disc, fill = COL.accent, hoverFill = COL.accentHover } end
+local function cleanStatus(t)
+  t = tostring(t or "")
+  local r = t:gsub("^[^%w]+", "")      -- toglie emoji/simboli iniziali (ora ci sono le icone)
+  if r == "" then return t end
+  return r
 end
 
-pushPause = function(els, cx, cy, s, col)
-  local bw, bh, gap = 3 * s, 12 * s, 3.5 * s
-  els[#els + 1] = { type = "rectangle", action = "fill", fillColor = col, roundedRectRadii = { xRadius = 1 * s, yRadius = 1 * s },
-    frame = { x = cx - gap / 2 - bw, y = cy - bh / 2, w = bw, h = bh } }
-  els[#els + 1] = { type = "rectangle", action = "fill", fillColor = col, roundedRectRadii = { xRadius = 1 * s, yRadius = 1 * s },
-    frame = { x = cx + gap / 2, y = cy - bh / 2, w = bw, h = bh } }
-end
-
-pushPlay = function(els, cx, cy, s, col)
-  local r = 6 * s
-  els[#els + 1] = { type = "segments", action = "fill", fillColor = col, closed = true,
-    coordinates = { { x = cx - r * 0.65, y = cy - r }, { x = cx - r * 0.65, y = cy + r }, { x = cx + r, y = cy } } }
-end
-
--- drop shadow disegnato a mano (l'attributo shadow del canvas HS non viene renderizzato):
--- strati concentrici sfumati dietro la card → penumbra morbida.
-pushShadow = function(list, x, y, w, h, s, radius, layers, alpha, off, spread)
-  if config.shadowOn == false then return end
-  local k = config.shadowIntensity or 0.5
-  layers = layers or 6; alpha = alpha or 0.035
-  off = (off or 5 * s) * k; spread = (spread or 2 * s) * k
-  for i = 1, layers do
-    local e = i * spread
-    list[#list + 1] = { type = "rectangle", action = "fill",
-      fillColor = { red = 0, green = 0, blue = 0, alpha = alpha },
-      roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
-      frame = { x = x - e, y = y - e + off, w = w + 2 * e, h = h + 2 * e } }
-  end
-end
-
-local function cardBg(s, x, y, w, h)
-  return { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
-    strokeWidth = 1.2 * s, roundedRectRadii = { xRadius = 14 * s, yRadius = 14 * s },
-    frame = { x = x, y = y, w = w, h = h },
-    fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.bg, COL.bg2 or COL.bg },
-    trackMouseDown = true, id = "drag" }
-end
-
+------------------------------------------------------------------------
+-- HUD registrazione: pillola di vetro, badge mic con anelli pulsanti, timer, onda, pausa/stop
+------------------------------------------------------------------------
 setRecordingElements = function(isPaused)
   local s = config.scale
   local function sc(v) return v * s end
-  local P = sc(40)   -- margine uniforme attorno alla card (spazio per ombra + badge)
-  local els, idx = {}, { bars = {} }
-  hoverMap = {}
+  local P = sc(40)   -- margine attorno alla card (ombra + badge)
+  local els = {}
+  local idx = { bars = {}, disp = {}, last = nil, settled = false, warnPrev = false }
   local function add(el) els[#els + 1] = el; return #els end
+  hoverMap = {}
+  Anim.cancel("hudhv")
+  local vertical = (config.orientation == "vertical")
+  local pw, ph = vertical and 56 or 296, vertical and 204 or 56
+  placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
+  idx.border = pushGlass(els, P, P, sc(pw), sc(ph), sc(28), { s = s, id = "drag" })
 
-  if config.orientation == "vertical" then
-    local pw, ph = 52, 180
-    local cx = P + sc(pw / 2)
-    placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
-    pushShadow(els, P, P, sc(pw), sc(ph), s, 14 * s)
-    add(cardBg(s, P, P, sc(pw), sc(ph)))
-    if isPaused then
-      pushGear(els, cx, P + sc(16), sc(7), s, "settings", hoverMap)
-    else
-      idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent, center = { x = cx, y = P + sc(16) }, radius = sc(4.5) })
-    end
-    idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(12 * s), textColor = COL.fg,
-      textFont = "Menlo-Bold", textAlignment = "center", frame = { x = P, y = P + sc(28), w = sc(pw), h = sc(16) } })
-    local by, pitch = 48, 7
-    for i = 1, 9 do
-      local yb = P + sc(by + (i - 1) * pitch)
-      local ei = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 2 * s, yRadius = 2 * s },
-        frame = { x = cx - sc(3), y = yb, w = sc(6), h = sc(3) } })
-      idx.bars[i] = { idx = ei, cx = cx, y = yb }
-    end
-    idx.barMeta = { horizontal = false, s = s, barH = sc(3), maxLen = 28 }
-    local pbi = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 7 * s, yRadius = 7 * s },
-      frame = { x = cx - sc(12), y = P + sc(112), w = sc(24), h = sc(24) }, trackMouseUp = true, trackMouseEnterExit = true, id = "pause" })
-    hoverMap["pause"] = { idx = pbi, fill = COL.accent, hoverFill = COL.accentHover }
-    if isPaused then pushPlay(els, cx, P + sc(124), s, COL.bg) else pushPause(els, cx, P + sc(124), s, COL.bg) end
-    local sti = add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
-      strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 7 * s, yRadius = 7 * s },
-      frame = { x = cx - sc(12), y = P + sc(142), w = sc(24), h = sc(24) }, trackMouseUp = true, trackMouseEnterExit = true, id = "stop" })
-    hoverMap["stop"] = { idx = sti, fill = COL.clear, hoverFill = COL.accentFaint, stroke = COL.accent, hoverStroke = COL.accentHover }
-    add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
-      frame = { x = cx - sc(6), y = P + sc(148), w = sc(12), h = sc(12) } })
-    pushBadge(els, "cancel", P + sc(pw), P, s, hoverMap)
+  -- badge mic (registrazione) oppure ingranaggio (in pausa: impostazioni/scelta mic)
+  local bcx = P + sc(28)
+  local bcy = P + sc(vertical and 30 or 28)
+  local br = sc(vertical and 16 or 17)
+  idx.br = br
+  if isPaused then
+    circleButton(els, hoverMap, "settings", bcx, bcy, br, "ghost", function(e, cx, cy)
+      ICON.gear(e, cx, cy, sc(17), COL.accentInk)
+    end, s)
   else
-    local pw, ph = 276, 54
-    placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
-    pushShadow(els, P, P, sc(pw), sc(ph), s, 14 * s)
-    add(cardBg(s, P, P, sc(pw), sc(ph)))
-    if isPaused then
-      pushGear(els, P + sc(22), P + sc(27), sc(8), s, "settings", hoverMap)
-    else
-      idx.dot = add({ type = "circle", action = "fill", fillColor = COL.accent, center = { x = P + sc(22), y = P + sc(27) }, radius = sc(6) })
+    local ring = { type = "circle", action = "stroke", strokeColor = withA(COL.accent, 0), strokeWidth = sc(1.4),
+      center = { x = bcx, y = bcy }, radius = br }
+    idx.ring1 = add(ring)
+    local ring2 = {}; for k, v in pairs(ring) do ring2[k] = v end
+    idx.ring2 = add(ring2)
+    idx.badge = add({ type = "circle", action = "strokeAndFill", fillColor = COL.accentSoft,
+      strokeColor = withA(COL.accent, 0.55), strokeWidth = sc(1), center = { x = bcx, y = bcy }, radius = br,
+      fillGradient = "linear", fillGradientAngle = 90,
+      fillGradientColors = { withA(COL.accentHi, 0.34), withA(COL.accentLo, 0.12) } })
+    ICON.mic(els, bcx, bcy, sc(16), COL.accentInk)
+  end
+
+  -- timer + onda
+  local bm
+  if vertical then
+    idx.timerSize = sc(12)
+    idx.timerFrames = { { x = P, y = P + sc(55), w = sc(56), h = sc(18) }, { x = P, y = P + sc(57), w = sc(56), h = sc(18) } }
+    idx.timer = txt(els, "0:00", P, P + sc(55), sc(56), sc(18), sc(12), COL.fg, { font = "mono", align = "center", lb = "clip" })
+    for i = 1, 9 do
+      local yb = P + sc(82 + (i - 1) * 5.6)
+      local ei = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, 0.5),
+        roundedRectRadii = { xRadius = sc(1.6), yRadius = sc(1.6) }, frame = { x = bcx - sc(2.5), y = yb, w = sc(5), h = sc(3.2) } })
+      idx.bars[i] = { idx = ei, cx = bcx, y = yb }
     end
-    idx.timer = add({ type = "text", text = "0:00", textSize = math.floor(19 * s), textColor = COL.fg,
-      textFont = "Menlo-Bold", textAlignment = "left", frame = { x = P + sc(46), y = P + sc(15), w = sc(48), h = sc(26) } })
-    local bx, pitch = 100, 7
+    bm = { horizontal = false, s = s, barH = sc(3.2), maxLen = 30 }
+  else
+    idx.timerSize = sc(17)
+    idx.timerFrames = { { x = P + sc(54), y = P + sc(17), w = sc(62), h = sc(24) }, { x = P + sc(54), y = P + sc(21), w = sc(62), h = sc(24) } }
+    idx.timer = txt(els, "0:00", P + sc(54), P + sc(17), sc(62), sc(24), sc(17), COL.fg, { font = "mono", lb = "clip" })
     for i = 1, 12 do
-      local xb = P + sc(bx + (i - 1) * pitch)
-      local ei = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 2 * s, yRadius = 2 * s },
-        frame = { x = xb, y = P + sc(25), w = sc(3), h = sc(4) } })
+      local xb = P + sc(120 + (i - 1) * 6.2)
+      local ei = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, 0.5),
+        roundedRectRadii = { xRadius = sc(1.6), yRadius = sc(1.6) }, frame = { x = xb, y = P + sc(26), w = sc(3.2), h = sc(4) } })
       idx.bars[i] = { idx = ei, x = xb }
     end
-    idx.barMeta = { horizontal = true, s = s, barW = sc(3), maxLen = 22, cy = P + sc(27) }
-    local pbi = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = P + sc(190), y = P + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, trackMouseEnterExit = true, id = "pause" })
-    hoverMap["pause"] = { idx = pbi, fill = COL.accent, hoverFill = COL.accentHover }
-    if isPaused then pushPlay(els, P + sc(206), P + sc(27), s, COL.bg) else pushPause(els, P + sc(206), P + sc(27), s, COL.bg) end
-    local sti = add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accent,
-      strokeWidth = 1.4 * s, roundedRectRadii = { xRadius = 8 * s, yRadius = 8 * s },
-      frame = { x = P + sc(230), y = P + sc(12), w = sc(32), h = sc(30) }, trackMouseUp = true, trackMouseEnterExit = true, id = "stop" })
-    hoverMap["stop"] = { idx = sti, fill = COL.clear, hoverFill = COL.accentFaint, stroke = COL.accent, hoverStroke = COL.accentHover }
-    add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s },
-      frame = { x = P + sc(239), y = P + sc(20), w = sc(14), h = sc(14) } })
-    pushBadge(els, "cancel", P + sc(pw), P, s, hoverMap)
+    bm = { horizontal = true, s = s, barW = sc(3.2), maxLen = 28, cy = P + sc(28) }
   end
+  idx.barMeta = bm
+
+  -- pausa (primario) + stop (vetro)
+  local pcx, pcy, scx, scy, brad
+  if vertical then pcx, pcy, scx, scy, brad = bcx, P + sc(152), bcx, P + sc(182), sc(13)
+  else pcx, pcy, scx, scy, brad = P + sc(224), P + sc(28), P + sc(260), P + sc(28), sc(15) end
+  circleButton(els, hoverMap, "pause", pcx, pcy, brad, "primary", function(e, cx, cy)
+    (isPaused and ICON.play or ICON.pause)(e, cx, cy, brad * 1.1, COL.accentText)
+  end, s)
+  circleButton(els, hoverMap, "stop", scx, scy, brad, "ghost", function(e, cx, cy)
+    ICON.stop(e, cx, cy, brad * 1.1, COL.accentInk)
+  end, s)
+
+  -- annulla: piccolo badge di vetro sul bordo alto-destro
+  local kx, ky, kr = P + sc(pw) - sc(8), P + sc(8), sc(9.5)
+  pushShadow(els, kx - kr, ky - kr, 2 * kr, 2 * kr, s, kr, 0.35)
+  hitCircle(els, hoverMap, "cancel", kx, ky, kr, { fill = COL.solid, hoverFill = mix(COL.solid, COL.warn, 0.25),
+    stroke = COL.border, hoverStroke = COL.warn, sw = 1 })
+  ICON.close(els, kx, ky, sc(11), COL.fg2, 1.8)
 
   overlay:replaceElements(els)
   RECIDX = idx
+  PROC = nil
   mode = "rec"
 end
 
+------------------------------------------------------------------------
+-- HUD elaborazione: spinner a scia (poi check/croce con pop) + testo di stato
+------------------------------------------------------------------------
 setProcessingElements = function(text)
   local s = config.scale
   local function sc(v) return v * s end
   local P = sc(40)
   hoverMap = {}
-  local pw, ph = 178, 46
+  Anim.cancel("hudhv")
+  local pw, ph = 236, 52
   placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
   local els = {}
-  pushShadow(els, P, P, sc(pw), sc(ph), s, 14 * s)
-  els[#els + 1] = cardBg(s, P, P, sc(pw), sc(ph))
-  els[#els + 1] = { type = "text", text = text or "…", textSize = math.floor(15 * s), textColor = COL.fg,
-    textFont = "Menlo-Bold", textAlignment = "center", frame = { x = P + sc(8), y = P + sc(13), w = sc(pw) - sc(24), h = sc(22) } }
-  procTextIdx = #els
-  pushBadge(els, "close", P + sc(pw), P, s, hoverMap)
+  local function add(el) els[#els + 1] = el; return #els end
+  pushGlass(els, P, P, sc(pw), sc(ph), sc(26), { s = s, id = "drag" })
+  local cx, cy = P + sc(28), P + sc(26)
+  local pr = { dots = {}, state = "busy" }
+  for i = 1, 10 do
+    local a = (i - 1) / 10 * 2 * math.pi - math.pi / 2
+    pr.dots[i] = add({ type = "circle", action = "fill", fillColor = withA(COL.accent, 0.2),
+      center = { x = cx + math.cos(a) * sc(9), y = cy + math.sin(a) * sc(9) }, radius = sc(1.9) })
+  end
+  pr.okC = add({ type = "circle", action = "fill", fillColor = withA(COL.ok, 0), center = { x = cx, y = cy }, radius = sc(12) })
+  ICON.check(els, cx, cy, sc(17), withA(COL.ok, 0), 2.1); pr.okChk = #els
+  pr.errC = add({ type = "circle", action = "fill", fillColor = withA(COL.warn, 0), center = { x = cx, y = cy }, radius = sc(12) })
+  ICON.close(els, cx, cy, sc(17), withA(COL.warn, 0), 2.1); pr.errX1 = #els - 1; pr.errX2 = #els
+  pr.text = txt(els, cleanStatus(text or "…"), P + sc(54), P + sc(16), sc(pw) - sc(54) - sc(22), sc(22), sc(14), COL.fg, { font = "semi" })
+  local kx, ky, kr = P + sc(pw) - sc(8), P + sc(8), sc(9.5)
+  pushShadow(els, kx - kr, ky - kr, 2 * kr, 2 * kr, s, kr, 0.35)
+  hitCircle(els, hoverMap, "close", kx, ky, kr, { fill = COL.solid, hoverFill = mix(COL.solid, COL.accent, 0.22),
+    stroke = COL.border, hoverStroke = COL.accent, sw = 1 })
+  ICON.close(els, kx, ky, sc(11), COL.fg2, 1.8)
   overlay:replaceElements(els)
+  PROC = pr
+  RECIDX = nil
   mode = "proc"
+  -- lo spinner gira solo finché l'HUD è in "proc" (il timer si ferma con stopUITimer)
+  if uiTimer then uiTimer:stop() end
+  uiTimer = hs.timer.new(1 / 30, function()
+    if not PROC or mode ~= "proc" or not overlay or PROC.state ~= "busy" then return end
+    local head = (hs.timer.secondsSinceEpoch() * 1.15) % 1
+    for i, d in ipairs(PROC.dots) do
+      local delta = (head - (i - 1) / 10) % 1
+      overlay:elementAttribute(d, "fillColor", withA(COL.accent, 0.14 + 0.86 * (1 - delta) ^ 2.2))
+    end
+  end)
+  uiTimer:start()
 end
 
 setStatus = function(text)
-  if overlay and mode == "proc" and procTextIdx then overlay:elementAttribute(procTextIdx, "text", text) end
+  if not (overlay and mode == "proc" and PROC) then return end
+  local pr = PROC
+  local kind = "busy"
+  if text:find("^✓") then kind = "ok" elseif text:find("^✕") then kind = "err" end
+  overlay:elementAttribute(pr.text, "text", cleanStatus(text))
+  overlay:elementAttribute(pr.text, "textColor", kind == "err" and COL.warn or COL.fg)
+  if kind ~= pr.state then
+    pr.state = kind
+    if kind ~= "busy" then
+      for _, d in ipairs(pr.dots) do overlay:elementAttribute(d, "fillColor", withA(COL.accent, 0)) end
+      Anim.run("hud", "result", 0.34, "spring", function(e)
+        local a = clamp01(e)
+        if kind == "ok" then
+          overlay:elementAttribute(pr.okC, "fillColor", withA(COL.ok, 0.20 * a))
+          overlay:elementAttribute(pr.okChk, "strokeColor", withA(COL.ok, a))
+        else
+          overlay:elementAttribute(pr.errC, "fillColor", withA(COL.warn, 0.20 * a))
+          overlay:elementAttribute(pr.errX1, "strokeColor", withA(COL.warn, a))
+          overlay:elementAttribute(pr.errX2, "strokeColor", withA(COL.warn, a))
+        end
+      end)
+    end
+  end
 end
 
+------------------------------------------------------------------------
+-- Aggiornamento continuo (solo durante la registrazione): onda fluida, anelli, avviso
+------------------------------------------------------------------------
 updateUI = function()
-  if not overlay or mode ~= "rec" or not RECIDX then return end
-  local warn = micWarned and recording and not paused
-  local WARN = { red = 0.95, green = 0.26, blue = 0.21, alpha = 1 }
-  overlay:elementAttribute(RECIDX.timer, "text", warn and "NO MIC" or fmtTime(currentElapsed()))
-  overlay:elementAttribute(RECIDX.timer, "textColor", warn and WARN or COL.fg)
-  if RECIDX.dot then
-    local a = 0.45 + 0.55 * math.abs(math.sin(now() * (warn and 8 or 3.2)))
-    local c = {}
-    for k, v in pairs(warn and WARN or COL.accent) do c[k] = v end
-    c.alpha = a
-    overlay:elementAttribute(RECIDX.dot, "fillColor", c)
+  local I = RECIDX
+  if not overlay or mode ~= "rec" or not I then return end
+  local t = now()
+  local dt = I.last and math.min(0.1, t - I.last) or 0.016
+  I.last = t
+  local active = ((not paused) and (recording or I.preview)) and true or false
+  local warn = (micWarned and recording and not paused) and true or false
+  if I.settled and not active then return end
+
+  local text = warn and "NO MIC" or fmtTime(currentElapsed())
+  if text ~= I.lastText then overlay:elementAttribute(I.timer, "text", text); I.lastText = text end
+  if warn ~= I.warnPrev then
+    I.warnPrev = warn
+    overlay:elementAttribute(I.timer, "textSize", warn and (I.timerSize * 0.66) or I.timerSize)
+    overlay:elementAttribute(I.timer, "frame", I.timerFrames[warn and 2 or 1])
+    overlay:elementAttribute(I.timer, "textColor", warn and COL.warn or COL.fg)
+    if I.badge then overlay:elementAttribute(I.badge, "strokeColor", warn and withA(COL.warn, 0.75) or withA(COL.accent, 0.55)) end
+    if warn then shakeHUD() else overlay:elementAttribute(I.border, "strokeColor", COL.border) end
   end
-  local bm = RECIDX.barMeta
-  local barCol = warn and WARN or ((recording and not paused) and COL.accent or COL.accentDim)
-  for i, b in ipairs(RECIDX.bars) do
-    local lv = levels[i] or 0
-    local fr
+  if warn then overlay:elementAttribute(I.border, "strokeColor", mix(COL.border, COL.warn, 0.55 + 0.45 * math.sin(t * 7))) end
+
+  -- anelli pulsanti dietro al mic
+  if I.ring1 then
+    local col = warn and COL.warn or COL.accent
+    local speed = warn and 1.9 or 0.85
+    for k, ri in ipairs({ I.ring1, I.ring2 }) do
+      local ph = (t * speed + (k - 1) * 0.5) % 1
+      local e = 1 - (1 - ph) ^ 2
+      overlay:elementAttribute(ri, "radius", I.br * (1 + 0.55 * e))
+      overlay:elementAttribute(ri, "strokeColor", withA(col, active and 0.55 * (1 - ph) ^ 1.6 or 0))
+    end
+    overlay:elementAttribute(I.badge, "radius", I.br * (1 + (active and 0.035 * math.sin(t * 2 * math.pi * 0.85) or 0)))
+  end
+
+  -- onda: i livelli arrivano a 10Hz, qui sono lisciati (attacco rapido, rilascio lento)
+  local bm = I.barMeta
+  local base = warn and COL.warn or (active and COL.accent or COL.accentDim)
+  local n, maxDelta = #I.bars, 0
+  for i, b in ipairs(I.bars) do
+    local target = 0
+    if active and not warn then target = (I.demo and I.demo[i]) or levels[i] or 0 end
+    local cur = I.disp[i] or 0
+    local rate = (target > cur) and 30 or 9
+    cur = cur + (target - cur) * (1 - math.exp(-rate * dt))
+    I.disp[i] = cur
+    maxDelta = math.max(maxDelta, math.abs(target - cur))
+    local lv = cur
+    if active and not warn then lv = math.max(lv, 0.06 + 0.05 * math.sin(t * 2.4 + i * 0.8)) end   -- respiro a riposo
     if bm.horizontal then
       local h = (4 + lv * bm.maxLen) * bm.s
-      fr = { x = b.x, y = bm.cy - h / 2, w = bm.barW, h = h }
+      overlay:elementAttribute(b.idx, "frame", { x = b.x, y = bm.cy - h / 2, w = bm.barW, h = h })
     else
       local w = (5 + lv * bm.maxLen) * bm.s
-      fr = { x = b.cx - w / 2, y = b.y, w = w, h = bm.barH }
+      overlay:elementAttribute(b.idx, "frame", { x = b.cx - w / 2, y = b.y, w = w, h = bm.barH })
     end
-    overlay:elementAttribute(b.idx, "fillColor", barCol)
-    overlay:elementAttribute(b.idx, "frame", fr)
+    local fade = 0.5 + 0.5 * i / n
+    local a = active and ((0.42 + 0.58 * math.min(1, lv * 1.4)) * fade) or 0.8
+    overlay:elementAttribute(b.idx, "fillColor", withA(base, a))
   end
+  I.settled = (not active) and (maxDelta < 0.004)
 end
 
+------------------------------------------------------------------------
+-- Entrata/uscita HUD: molla in entrata, ease-in in uscita
+------------------------------------------------------------------------
 showAnimated = function()
   if not overlay or not finalFrame then return end
-  if animTimer then animTimer:stop(); animTimer = nil end
   local f = finalFrame
-  overlay:alpha(0); overlay:frame({ x = f.x, y = f.y + 14, w = f.w, h = f.h }); overlay:show(); pinOverlay()
-  local steps, i = 9, 0
-  animTimer = hs.timer.doEvery(0.016, function()
-    i = i + 1
-    local e = 1 - (1 - i / steps) ^ 2
-    overlay:alpha(e); overlay:frame({ x = f.x, y = f.y + 14 * (1 - e), w = f.w, h = f.h })
-    if i >= steps then animTimer:stop(); animTimer = nil; overlay:alpha(1); overlay:frame(f) end
+  animBusy = true
+  overlay:alpha(0); overlay:frame({ x = f.x, y = f.y + 20, w = f.w, h = f.h }); overlay:show(); pinOverlay()
+  Anim.run("hud", "vis", 0.36, "spring", function(e, p)
+    local ff = finalFrame or f
+    overlay:alpha(clamp01(p * 2.4))
+    overlay:frame({ x = ff.x, y = ff.y + 20 * (1 - e), w = ff.w, h = ff.h })
+  end, function()
+    animBusy = false
+    if overlay and finalFrame then overlay:alpha(1); overlay:frame(finalFrame); pinOverlay() end
   end)
 end
 
 hideAnimated = function()
   if not overlay or not finalFrame then if overlay then overlay:hide() end return end
-  if animTimer then animTimer:stop(); animTimer = nil end
-  local f = finalFrame
-  local steps, i = 8, 0
-  animTimer = hs.timer.doEvery(0.016, function()
-    i = i + 1
-    local e = (i / steps) ^ 2
-    overlay:alpha(1 - e); overlay:frame({ x = f.x, y = f.y + 10 * e, w = f.w, h = f.h })
-    if i >= steps then animTimer:stop(); animTimer = nil; overlay:hide(); overlay:alpha(1); overlay:frame(f) end
+  animBusy = true
+  Anim.cancel("hud", "shake")
+  Anim.run("hud", "vis", 0.2, "inq", function(e)
+    local ff = finalFrame
+    if not ff then return end
+    overlay:alpha(1 - e)
+    overlay:frame({ x = ff.x, y = ff.y + 12 * e, w = ff.w, h = ff.h })
+  end, function()
+    animBusy = false
+    if overlay then overlay:hide(); overlay:alpha(1); if finalFrame then overlay:frame(finalFrame) end end
   end)
 end
 
@@ -732,11 +1069,12 @@ showRecordingHUD = function()
   setRecordingElements(false)
   showAnimated()
   if uiTimer then uiTimer:stop() end
-  uiTimer = hs.timer.new(0.06, updateUI); uiTimer:start()
+  uiTimer = hs.timer.new(1 / 45, updateUI); uiTimer:start()
 end
 stopUITimer = function() if uiTimer then uiTimer:stop(); uiTimer = nil end end
-function hideOverlay() stopUITimer(); mode = nil; RECIDX = nil; hideAnimated() end
+function hideOverlay() stopUITimer(); mode = nil; RECIDX = nil; PROC = nil; hideAnimated() end
 rebuildHUD = function() if mode == "rec" then setRecordingElements(paused) end end
+
 
 ------------------------------------------------------------------------
 -- MENU IMPOSTAZIONI (canvas, on-brand, trascinabile, con hover)
@@ -1206,7 +1544,7 @@ end
 
 local function finalizeAndTranscribe()
   busy = true; stopUITimer()
-  if animTimer then animTimer:stop(); animTimer = nil end
+  Anim.cancel("hud", "vis"); animBusy = false
   setProcessingElements("🎙️  Ricevuto")
   if overlay then overlay:alpha(1); overlay:show(); pinOverlay() end
   hs.timer.doAfter(0.25, function()
@@ -1247,7 +1585,7 @@ local lastScreenId = nil
 local function reassertOverlay(force)
   if not overlay or not mode or dragTap then return end
   local sid = hs.screen.mainScreen():id()
-  if (force or sid ~= lastScreenId) and finalFrame and not animTimer then
+  if (force or sid ~= lastScreenId) and finalFrame and not animBusy then
     lastScreenId = sid
     placeCanvas(finalFrame.w, finalFrame.h)
   end
@@ -1491,18 +1829,17 @@ end
 function M.settings(page) if page then settingsPage = page end openSettings() end
 function M.toggle() if not busy then if recording then M.stop() else start() end end end
 
--- PREVIEW per verifica estetica
+-- PREVIEW per verifica estetica (M._preview(orient, isPaused) mostra l'HUD con onda finta, senza registrare)
 function M._preview(orient, isPaused)
   config.orientation = orient or "vertical"; paused = isPaused and true or false
+  stopUITimer()
   setRecordingElements(paused)
-  if RECIDX and RECIDX.timer then overlay:elementAttribute(RECIDX.timer, "text", "0:03") end
-  local demo = { 0.25, 0.55, 0.85, 0.4, 0.95, 0.3, 0.7, 0.5, 0.65, 0.45, 0.8, 0.35 }
-  local bm = RECIDX.barMeta
-  for i, b in ipairs(RECIDX.bars) do
-    local lv = demo[i] or 0.5
-    if bm.horizontal then local h = (4 + lv * bm.maxLen) * bm.s; overlay:elementAttribute(b.idx, "frame", { x = b.x, y = bm.cy - h / 2, w = bm.barW, h = h })
-    else local w = (5 + lv * bm.maxLen) * bm.s; overlay:elementAttribute(b.idx, "frame", { x = b.cx - w / 2, y = b.y, w = w, h = bm.barH }) end
-  end
+  local I = RECIDX
+  I.preview = true
+  I.demo = { 0.25, 0.55, 0.85, 0.4, 0.95, 0.3, 0.7, 0.5, 0.65, 0.45, 0.8, 0.35 }
+  for i = 1, #I.bars do I.disp[i] = I.demo[i] or 0.5 end
+  updateUI()
+  overlay:elementAttribute(I.timer, "text", "0:03"); I.lastText = "0:03"
   overlay:alpha(1); overlay:show()
   local f = overlay:frame()
   return string.format("%d,%d,%d,%d", math.floor(f.x), math.floor(f.y), math.floor(f.w), math.floor(f.h))
