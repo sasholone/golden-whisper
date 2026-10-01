@@ -578,15 +578,21 @@ local function nowT() return hs.timer.secondsSinceEpoch() end
 function Anim.tick()
   local t = nowT()
   local finished = {}
-  for k, a in pairs(Anim.list) do
-    local p = clamp01(finite((t - a.t0) / a.dur, 1))
-    local okE, ev = pcall(a.ease, p)
-    pcall(a.fn, okE and finite(ev, p) or p, p)
-    if p >= 1 then finished[#finished + 1] = k end
+  local snapshot = {}
+  for k, a in pairs(Anim.list) do snapshot[#snapshot + 1] = { k, a } end     -- le animazioni possono crearne altre
+  for _, ka in ipairs(snapshot) do
+    local k, a = ka[1], ka[2]
+    if Anim.list[k] == a then
+      local p = clamp01(finite((t - a.t0) / a.dur, 1))
+      local okE, ev = pcall(a.ease, p)
+      pcall(a.fn, okE and finite(ev, p) or p, p)
+      if p >= 1 then finished[#finished + 1] = ka end
+    end
   end
-  for _, k in ipairs(finished) do
-    local a = Anim.list[k]; Anim.list[k] = nil
-    if a and a.done then pcall(a.done) end
+  for _, ka in ipairs(finished) do
+    local k, a = ka[1], ka[2]
+    if Anim.list[k] == a then Anim.list[k] = nil end         -- se nel frattempo è stata rimpiazzata, non toccarla
+    if a.done then pcall(a.done) end
   end
   if next(Anim.list) == nil and Anim.timer then Anim.timer:stop(); Anim.timer = nil end
 end
@@ -1398,7 +1404,7 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
     local pk = clampN(config.micPulse == nil and 0.5 or config.micPulse, 0, 1) * 2
     if not animOn() then pk = 0 end
     if warn then pk = math.max(pk, 1) end
-    local grow = math.min(0.95, 0.55 * pk)
+    local grow = math.min(0.75, 0.55 * pk)
     local cols = { warn and COL.warn or COL.accent, warn and COL.warn or (COL.multi and COL.accent2 or COL.accent) }
     local speed = warn and 1.9 or 0.85
     for k, ri in ipairs({ I.ring1, I.ring2 }) do
@@ -1528,7 +1534,7 @@ hideAnimated = function()
   Anim.run("hud", "vis", 0.2, "inq", function(e)
     local ff = finalFrame
     if not ff then return end
-    overlay:alpha(1 - e)
+    overlay:alpha((1 - e) * HUDA)
     overlay:frame({ x = ff.x, y = ff.y + 12 * e, w = ff.w, h = ff.h })
   end, function()
     animBusy = false
@@ -2037,7 +2043,7 @@ local function layoutSettings(scroll)
       if cur then ICON.check(els, cx, cy, 14, T.accentText, 2.4) end
       txt(els, F.name, cx - cw / 2, y + r * rowH + 40, cw, 13, 10, cur and COL.fg or COL.fg3, { font = cur and "semi" or "reg", align = "center", lb = "clip" })
     end
-    y = y + math.ceil(#FAMILY_ORDER / ncol) * rowH + 4
+    y = y + math.ceil(#FAMILY_ORDER / ncol) * rowH + 10
 
     sec("MODO")
     segmented("theme", { { label = "Dark", val = "dark" }, { label = "Light", val = "light" }, { label = "Auto", val = "auto" } },
@@ -2339,7 +2345,7 @@ renderHistoryPanel = function()
       local e = hist[i]
       local preview = wordTruncate(tostring(e.text or ""), 170)
       local ch = 108
-      hitRect(els, hHoverMap, "copy:" .. i, pad, y, IW, ch, 14,
+      hitRect(els, hHoverMap, "copy:" .. i, pad, y, IW, ch, R(14),
         { fill = COL.rowBg, hoverFill = COL.rowHover, stroke = COL.divider, hoverStroke = COL.borderSoft })
       -- barra d'accento (la più recente è piena, le altre sfumano)
       add({ type = "rectangle", action = "fill", fillColor = i == 1 and COL.accent or withA(COL.accent, 0.4),
@@ -2348,7 +2354,7 @@ renderHistoryPanel = function()
       -- chip "Copia"
       local cwid, cx0, cy0 = 74, pad + IW - 12 - 74, y + 10
       local c = {}
-      c.chipBg = add({ type = "rectangle", action = "fill", fillColor = COL.accentSoft, roundedRectRadii = { xRadius = 11, yRadius = 11 },
+      c.chipBg = add({ type = "rectangle", action = "fill", fillColor = COL.accentSoft, roundedRectRadii = { xRadius = R(11), yRadius = R(11) },
         frame = { x = cx0, y = cy0, w = cwid, h = 22 } })
       local from = #els + 1
       ICON.copy(els, cx0 + 14, cy0 + 11, 13, COL.accentInk)
@@ -2866,7 +2872,7 @@ function M.init()
   initHotkeys()
   -- HUD sempre in cima: guardia periodica + riposizionamento al cambio app/desktop
   if M._guardTimer then M._guardTimer:stop() end
-  M._guardTimer = hs.timer.doEvery(1, guardTick)
+  M._guardTimer = hs.timer.doEvery(1, function() guarded("guard", guardTick) end)
   local function bump() hs.timer.doAfter(0.2, function() reassertOverlay(true) end) end
   if M._appWatcher then M._appWatcher:stop() end
   M._appWatcher = hs.application.watcher.new(function(_n, ev)
