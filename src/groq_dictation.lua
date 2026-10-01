@@ -69,7 +69,7 @@ local placeCanvas, mouseCb, startDrag, pushShadow, pushGlass
 local setRecordingElements, setProcessingElements, setStatus, updateUI
 local showAnimated, hideAnimated, showRecordingHUD, stopUITimer
 local openSettings, rebuildHUD, renderSettings, settingsMouse, closeSettings, dragCanvas
-local startCapture, saveBindings
+local startCapture, saveBindings, gwAlert
 
 -- Modulo nativo opzionale (~/.hammerspoon/gw_sticky.so): tiene l'HUD fermo durante il cambio Space
 -- (Ctrl+freccia) invece di farlo scorrere col desktop. Se manca, tutto funziona lo stesso.
@@ -133,7 +133,7 @@ local function theme(d, isDark)
   T.border      = withA(T.accent, isDark and 0.36 or 0.42)   -- bordo carta
   T.borderSoft  = withA(T.accent, isDark and 0.18 or 0.24)   -- hairline interne
   T.hi          = isDark and { red = 1, green = 1, blue = 1, alpha = 0.28 } or { red = 1, green = 1, blue = 1, alpha = 0.95 }
-  T.sheen       = isDark and { red = 1, green = 1, blue = 1, alpha = 0.035 } or { red = 1, green = 1, blue = 1, alpha = 0.45 }
+  T.sheen       = isDark and { red = 1, green = 1, blue = 1, alpha = 0.035 } or { red = 1, green = 1, blue = 1, alpha = 0.28 }
   T.rowBg       = withA(hex(d.fg), isDark and 0.05 or 0.045)
   T.rowHover    = withA(hex(d.fg), isDark and 0.10 or 0.085)
   T.track       = withA(hex(d.fg), isDark and 0.13 or 0.11)
@@ -151,7 +151,7 @@ local function family(name, dark, light) return { name = name, dark = theme(dark
 local FAMILIES = {
   gold = family("Gold",
     { top = "#1B1914", bot = "#0A0907", fg = "#F7F2E6", fg2 = "#B8AD94", acc = "#D6AF5E", hi = "#EBCB85", lo = "#B48B3B", on = "#1A1304" },
-    { top = "#FFFCF3", bot = "#F4E8CE", fg = "#2A2012", fg2 = "#6E5D3D", acc = "#B3822A", hi = "#D4A545", lo = "#966A1B", on = "#FFFBEF", ink = "#8A5F12" }),
+    { top = "#FFFCF3", bot = "#F4E8CE", fg = "#2A2012", fg2 = "#6E5D3D", acc = "#B3822A", hi = "#CB9C3A", lo = "#966A1B", on = "#FFFBEF", ink = "#8A5F12" }),
   mono = family("Mono",
     { top = "#1E1E21", bot = "#0C0C0E", fg = "#F5F5F7", fg2 = "#A1A1A8", acc = "#E4E4E9", hi = "#FFFFFF", lo = "#B6B6BE", on = "#111114" },
     { top = "#FFFFFF", bot = "#ECECF1", fg = "#17171A", fg2 = "#62626B", acc = "#2B2B31", hi = "#474750", lo = "#18181C", on = "#FFFFFF" }),
@@ -230,7 +230,7 @@ end
 local function loadSettings()
   local f = io.open(config.settingsPath, "r"); if not f then return end; f:close()
   local ok, s = pcall(dofile, config.settingsPath)
-  if not ok or type(s) ~= "table" then hs.alert.show("⚠️ settings.lua non valido") return end
+  if not ok or type(s) ~= "table" then gwAlert("⚠️ settings.lua non valido") return end
   if s.language ~= nil then config.language = (s.language == "auto") and nil or s.language end
   if s.micDevice then config.audioDevice = s.micDevice end
   if s.micName   then config.micName = s.micName end
@@ -346,7 +346,7 @@ local function recoverOrphans()
     end
     os.remove(p)
   end
-  if #recovered > 0 then hs.alert.show("💾 Recuperato audio da una sessione interrotta:\n" .. config.recDir, 8) end
+  if #recovered > 0 then gwAlert("💾 Recuperato audio da una sessione interrotta:\n" .. config.recDir, 8) end
   return recovered
 end
 
@@ -453,18 +453,24 @@ end
 local FONT = nil
 local function fonts()
   if FONT then return FONT end
-  local function pick(c)
+  -- prende il primo font che esiste E ha davvero il peso richiesto (se il nome di sistema
+  -- ricade silenziosamente sul regular, lo scarta e passa al fallback)
+  local function pick(c, want)
     for _, n in ipairs(c) do
       local ok, info = pcall(hs.styledtext.fontInfo, n)
-      if ok and info then return n end
+      if ok and type(info) == "table" and info.fontName then
+        if not want then return n end
+        local fname = tostring(info.fontName):lower()
+        for _, w in ipairs(want) do if fname:find(w, 1, true) then return n end end
+      end
     end
     return c[#c]
   end
   FONT = {
     reg  = pick({ ".AppleSystemUIFont", "HelveticaNeue" }),
-    semi = pick({ ".AppleSystemUIFontDemi", "HelveticaNeue-Medium" }),
-    bold = pick({ ".AppleSystemUIFontBold", "HelveticaNeue-Bold" }),
-    mono = pick({ "SFMono-Semibold", "Menlo-Bold" }),
+    semi = pick({ ".AppleSystemUIFontDemi", ".AppleSystemUIFontMedium", "HelveticaNeue-Medium" }, { "semibold", "demi", "medium" }),
+    bold = pick({ ".AppleSystemUIFontBold", "HelveticaNeue-Bold" }, { "bold", "heavy", "black" }),
+    mono = pick({ "SFMono-Semibold", "Menlo-Bold" }, { "mono", "menlo" }),
   }
   return FONT
 end
@@ -678,6 +684,17 @@ local function txt(els, text, x, y, w, h, size, color, o)
   return #els
 end
 
+-- avvisi di sistema (hs.alert) nello stile del tema corrente
+gwAlert = function(msg, dur)
+  local ok = pcall(function()
+    local style = { fillColor = withA(COL.solid, 0.94), strokeColor = COL.border, strokeWidth = 1, radius = 16,
+      textColor = COL.fg, textFont = fonts().semi, textSize = 14, padding = 16,
+      fadeInDuration = 0.14, fadeOutDuration = 0.35 }
+    hs.alert.show(msg, style, hs.screen.mainScreen(), dur or 2)
+  end)
+  if not ok then hs.alert.show(msg, dur or 2) end
+end
+
 local function setAlphaAttr(cv, idx, attr, col, a) cv:elementAttribute(idx, attr, withA(col, a)) end
 
 ------------------------------------------------------------------------
@@ -686,9 +703,36 @@ local function setAlphaAttr(cv, idx, attr, col, a) cv:elementAttribute(idx, attr
 local animBusy = false      -- true mentre l'HUD sta entrando/uscendo (la guardia non lo riposiziona)
 local PROC = nil            -- stato HUD "processing" (spinner / esito)
 
+-- tooltip: pillola di vetro sopra il bottone, compare/scompare con dissolvenza
+local function showTip(id, on)
+  local I = RECIDX
+  if not (overlay and mode == "rec" and I and I.tipBg and I.tips) then return end
+  if on then
+    local tip = I.tips[id]; if not tip then return end
+    local s = I.s
+    local w = (utf8.len(tip.label) or #tip.label) * 6.6 * s + 20 * s
+    local h = 20 * s
+    local fr = { x = tip.cx - w / 2, y = I.tipTop, w = w, h = h }
+    overlay:elementAttribute(I.tipBg, "frame", fr)
+    overlay:elementAttribute(I.tipText, "frame", { x = fr.x, y = fr.y + 3 * s, w = w, h = h })
+    overlay:elementAttribute(I.tipText, "text", tip.label)
+    I.tipOn = true
+  else
+    I.tipOn = false
+  end
+  local from = I.tipA or 0
+  local to = on and 1 or 0
+  Anim.run("hudtip", "a", on and 0.14 or 0.1, "out", function(e)
+    local a = lerp(from, to, e); I.tipA = a
+    overlay:elementAttribute(I.tipBg, "fillColor", withA(COL.solid, 0.96 * a))
+    overlay:elementAttribute(I.tipBg, "strokeColor", withA(COL.border, a))
+    overlay:elementAttribute(I.tipText, "textColor", withA(COL.fg, a))
+  end)
+end
+
 mouseCb = function(_c, msg, id)
-  if msg == "mouseEnter" then hoverTo(overlay, hoverMap, "hudhv", id, true); return
-  elseif msg == "mouseExit" then hoverTo(overlay, hoverMap, "hudhv", id, false); return
+  if msg == "mouseEnter" then hoverTo(overlay, hoverMap, "hudhv", id, true); showTip(id, true); return
+  elseif msg == "mouseExit" then hoverTo(overlay, hoverMap, "hudhv", id, false); showTip(id, false); return
   elseif msg == "mouseDown" then
     if id == "drag" then startDrag() end
     return
@@ -795,17 +839,18 @@ setRecordingElements = function(isPaused)
   local idx = { bars = {}, disp = {}, last = nil, settled = false, warnPrev = false }
   local function add(el) els[#els + 1] = el; return #els end
   hoverMap = {}
-  Anim.cancel("hudhv")
+  Anim.cancel("hudhv"); Anim.cancel("hudtip")
   local vertical = (config.orientation == "vertical")
   local pw, ph = vertical and 56 or 296, vertical and 204 or 56
   placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
   idx.border = pushGlass(els, P, P, sc(pw), sc(ph), sc(28), { s = s, id = "drag" })
 
   -- badge mic (registrazione) oppure ingranaggio (in pausa: impostazioni/scelta mic)
-  local bcx = P + sc(28)
+  local bcx = P + sc(vertical and 28 or 31)
   local bcy = P + sc(vertical and 30 or 28)
   local br = sc(vertical and 16 or 17)
   idx.br = br
+  idx.vertical = vertical
   if isPaused then
     circleButton(els, hoverMap, "settings", bcx, bcy, br, "ghost", function(e, cx, cy)
       ICON.gear(e, cx, cy, sc(17), COL.accentInk)
@@ -838,8 +883,8 @@ setRecordingElements = function(isPaused)
     bm = { horizontal = false, s = s, barH = sc(3.2), maxLen = 30 }
   else
     idx.timerSize = sc(17)
-    idx.timerFrames = { { x = P + sc(54), y = P + sc(17), w = sc(62), h = sc(24) }, { x = P + sc(54), y = P + sc(21), w = sc(62), h = sc(24) } }
-    idx.timer = txt(els, "0:00", P + sc(54), P + sc(17), sc(62), sc(24), sc(17), COL.fg, { font = "mono", lb = "clip" })
+    idx.timerFrames = { { x = P + sc(57), y = P + sc(17), w = sc(60), h = sc(24) }, { x = P + sc(57), y = P + sc(21), w = sc(60), h = sc(24) } }
+    idx.timer = txt(els, "0:00", P + sc(57), P + sc(17), sc(60), sc(24), sc(17), COL.fg, { font = "mono", lb = "clip" })
     for i = 1, 12 do
       local xb = P + sc(120 + (i - 1) * 6.2)
       local ei = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, 0.5),
@@ -852,7 +897,7 @@ setRecordingElements = function(isPaused)
 
   -- pausa (primario) + stop (vetro)
   local pcx, pcy, scx, scy, brad
-  if vertical then pcx, pcy, scx, scy, brad = bcx, P + sc(152), bcx, P + sc(182), sc(13)
+  if vertical then pcx, pcy, scx, scy, brad = bcx, P + sc(151), bcx, P + sc(182), sc(13)
   else pcx, pcy, scx, scy, brad = P + sc(224), P + sc(28), P + sc(260), P + sc(28), sc(15) end
   circleButton(els, hoverMap, "pause", pcx, pcy, brad, "primary", function(e, cx, cy)
     (isPaused and ICON.play or ICON.pause)(e, cx, cy, brad * 1.1, COL.accentText)
@@ -867,6 +912,21 @@ setRecordingElements = function(isPaused)
   hitCircle(els, hoverMap, "cancel", kx, ky, kr, { fill = COL.solid, hoverFill = mix(COL.solid, COL.warn, 0.25),
     stroke = COL.border, hoverStroke = COL.warn, sw = 1 })
   ICON.close(els, kx, ky, sc(11), COL.fg2, 1.8)
+
+  -- tooltip sintetici sopra la card (solo orizzontale: in verticale non c'è spazio ai lati)
+  if not vertical then
+    idx.tipBg = add({ type = "rectangle", action = "strokeAndFill", fillColor = withA(COL.solid, 0), strokeColor = withA(COL.border, 0),
+      strokeWidth = 1, roundedRectRadii = { xRadius = sc(8), yRadius = sc(8) }, frame = { x = 0, y = 0, w = 1, h = 1 } })
+    idx.tipText = txt(els, "", 0, 0, 1, 1, sc(11), withA(COL.fg, 0), { font = "semi", align = "center", lb = "clip" })
+    idx.tips = {
+      pause = { cx = pcx, label = isPaused and "Riprendi" or "Pausa" },
+      stop = { cx = scx, label = "Stop e trascrivi" },
+      cancel = { cx = kx - sc(14), label = "Annulla" },
+      settings = { cx = bcx, label = "Impostazioni" },
+    }
+    idx.tipTop = P - sc(30)
+    idx.s = s
+  end
 
   overlay:replaceElements(els)
   RECIDX = idx
@@ -965,7 +1025,7 @@ updateUI = function()
   if text ~= I.lastText then overlay:elementAttribute(I.timer, "text", text); I.lastText = text end
   if warn ~= I.warnPrev then
     I.warnPrev = warn
-    overlay:elementAttribute(I.timer, "textSize", warn and (I.timerSize * 0.66) or I.timerSize)
+    overlay:elementAttribute(I.timer, "textSize", warn and (I.timerSize * (I.vertical and 0.8 or 0.66)) or I.timerSize)
     overlay:elementAttribute(I.timer, "frame", I.timerFrames[warn and 2 or 1])
     overlay:elementAttribute(I.timer, "textColor", warn and COL.warn or COL.fg)
     if I.badge then overlay:elementAttribute(I.badge, "strokeColor", warn and withA(COL.warn, 0.75) or withA(COL.accent, 0.55)) end
@@ -1520,7 +1580,7 @@ renderHistoryPanel = function()
       txt(els, preview, pad + 24, y + 38, IW - 24 - 16, ch - 46, 12.5, COL.fg, { lb = "wordWrap" })
       y = y + ch + 12
     end
-    txt(els, "Tocca un transcript per copiarlo", pad, y + 2, IW, 14, 10.5, COL.fg3, { align = "center" })
+    txt(els, "Clicca un transcript per copiarlo", pad, y + 2, IW, 14, 10.5, COL.fg3, { align = "center" })
     y = y + 20
   end
 
@@ -1581,7 +1641,7 @@ local function failSaving(msg)
   local saved = backupSegments(); cleanupSegments()
   setStatus("✕ " .. msg)
   if #saved > 0 then
-    hs.alert.show("💾 Audio salvato in\n" .. config.recDir, 6)
+    gwAlert("💾 Audio salvato in\n" .. config.recDir, 6)
     -- la trascrizione è fallita (spesso un intoppo di rete): ritenta in automatico sull'audio salvato
     if config.autoTranscribeRecovered ~= false then
       hs.timer.doAfter(2.0, function() transcribeBackup(saved, "salvato") end)
@@ -1630,12 +1690,12 @@ transcribeBackup = function(paths, label)
   local function step(i)
     if i > #paths then
       local text = trim(table.concat(acc, " "))
-      if text == "" then hs.alert.show("⚠️ Audio " .. (label or "recuperato") .. ": trascrizione non riuscita (resta il file audio)", 6); return end
+      if text == "" then gwAlert("⚠️ Audio " .. (label or "recuperato") .. ": trascrizione non riuscita (resta il file audio)", 6); return end
       saveHistoryEntry(text)
       hs.pasteboard.setContents(text)
       local sidecar = paths[1]:gsub("%-%d+%.wav$", ".txt"):gsub("%.wav$", ".txt")
       local f = io.open(sidecar, "w"); if f then f:write(text); f:close() end
-      hs.alert.show("📝 Audio " .. (label or "recuperato") .. " trascritto → copiato in clipboard\n(salvato anche in " .. config.recDir .. ")", 8)
+      gwAlert("📝 Audio " .. (label or "recuperato") .. " trascritto → copiato in clipboard\n(salvato anche in " .. config.recDir .. ")", 8)
       return
     end
     transcribeOne(paths[i], function(ok, t)
@@ -1650,7 +1710,7 @@ end
 -- Flusso indipendente da recording/busy: nessun HUD, esito in clipboard + storico + sidecar .txt.
 local uploadBusy = false
 function M.transcribeUploaded()
-  if uploadBusy then hs.alert.show("⏳ Trascrizione upload già in corso…", 2); return end
+  if uploadBusy then gwAlert("⏳ Trascrizione upload già in corso…", 2); return end
   local ok, path = hs.osascript.applescript(
     'POSIX path of (choose file with prompt "Scegli un audio da trascrivere" of type ' ..
     '{"public.audio", "public.mp3", "mp3", "wav", "m4a", "mp4", "aac", "aiff", "flac", "ogg"})'
@@ -1658,11 +1718,11 @@ function M.transcribeUploaded()
   if not ok or not path or trim(path) == "" then return end
   path = trim(path)
   uploadBusy = true
-  hs.alert.show("📤 Carico e trascrivo…\n" .. path:match("([^/]+)$"), 3)
+  gwAlert("📤 Carico e trascrivo…\n" .. path:match("([^/]+)$"), 3)
   transcribeOne(path, function(tok, text, err)
     uploadBusy = false
     if not tok or not text or trim(text) == "" then
-      hs.alert.show("✕ Trascrizione fallita: " .. tostring(err or "nessun testo"), 5)
+      gwAlert("✕ Trascrizione fallita: " .. tostring(err or "nessun testo"), 5)
       return
     end
     text = trim(text)
@@ -1672,13 +1732,13 @@ function M.transcribeUploaded()
     local base = path:match("([^/]+)%.[^./]+$") or path:match("([^/]+)$") or ("upload-" .. os.date("%Y%m%d-%H%M%S"))
     local sidecar = string.format("%s/%s.txt", config.recDir, base)
     local f = io.open(sidecar, "w"); if f then f:write(text); f:close() end
-    hs.alert.show("📝 Trascritto → copiato in clipboard\n(salvato anche in " .. config.recDir .. ")", 6)
+    gwAlert("📝 Trascritto → copiato in clipboard\n(salvato anche in " .. config.recDir .. ")", 6)
   end)
 end
 
 local function finalizeAndTranscribe()
   busy = true; stopUITimer()
-  Anim.cancel("hud", "vis"); animBusy = false
+  Anim.cancel("hud"); animBusy = false
   setProcessingElements("🎙️  Ricevuto")
   if overlay then overlay:alpha(1); overlay:show(); pinOverlay() end
   hs.timer.doAfter(0.25, function()
@@ -1699,7 +1759,7 @@ local function onStream(_t, _out, err)
       lastRmsAt = now()
       if db and db > config.silenceDb then
         lastSoundAt = lastRmsAt
-        if micWarned then micWarned = false; hs.alert.show("🎙️ Audio di nuovo ricevuto", 1.5) end
+        if micWarned then micWarned = false; gwAlert("🎙️ Audio di nuovo ricevuto", 1.5) end
       end
       table.remove(levels, 1); levels[#levels + 1] = mapLevel(db)
     end
@@ -1711,7 +1771,7 @@ end
 local function warnNoMic(msg)
   micWarned = true
   local snd = hs.sound.getByName("Basso"); if snd then snd:play() end
-  hs.alert.show(msg, 4)
+  gwAlert(msg, 4)
 end
 
 -- Guardia (1s): HUD sempre visibile/in cima sullo schermo attivo + controllo silenzio mic
@@ -1749,7 +1809,7 @@ local function startSegment()
   local args = { "-y", "-f", "avfoundation", "-i", config.audioDevice, "-ac", "1", "-ar", "16000",
     "-af", "asetnsamples=1600:p=0,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level", p }
   recTask = hs.task.new(config.ffmpeg, function() M._onSegmentFinished() end, onStream, args)
-  if not recTask:start() then hs.alert.show("❌ ffmpeg non parte"); recTask = nil; return false end
+  if not recTask:start() then gwAlert("❌ ffmpeg non parte"); recTask = nil; return false end
   segStart = now(); stopRotTimer()
   if config.maxSegmentSec and config.maxSegmentSec > 0 then rotTimer = hs.timer.doAfter(config.maxSegmentSec, function() rotate() end) end
   return true
@@ -1784,7 +1844,7 @@ local function start()
   local dev, fellBack, name = resolveMic()
   config.audioDevice = dev; micName = name; refreshDevices()
   elapsed = 0; segStart = nil; paused = false; segIndex = 0
-  if fellBack then hs.alert.show("🎙️ Mic salvato non disponibile → uso “" .. (name or dev) .. "”", 3) end
+  if fellBack then gwAlert("🎙️ Mic salvato non disponibile → uso “" .. (name or dev) .. "”", 3) end
   resetLevels()
   if not startSegment() then return end
   recording = true; showRecordingHUD()
@@ -1828,7 +1888,7 @@ local function matchAction(kc)
 end
 
 startCapture = function(actionKey)
-  hs.alert.show("Premi il tasto per « " .. (actionKey == "ss" and "Avvio / Stop" or "Pausa") .. " »…", 2)
+  gwAlert("Premi il tasto per « " .. (actionKey == "ss" and "Avvio / Stop" or "Pausa") .. " »…", 2)
   local tap
   tap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged, hs.eventtap.event.types.keyDown }, function(e)
     local kc, et = e:getKeyCode(), e:getType()
@@ -1917,25 +1977,25 @@ local function applyUpdate(newVer)
   local t = hs.task.new(config.curl, function(code)
     -- scarica su file temporaneo, poi sostituisci solo se il download è valido
     if code ~= 0 or fileSize(tmp) < 1000 then
-      os.remove(tmp); hs.alert.show("Golden Whisper: download update fallito"); return
+      os.remove(tmp); gwAlert("Golden Whisper: download update fallito"); return
     end
     os.rename(tmp, dest)
     writeLocalVersion(newVer)
-    hs.alert.show("⬆️ Golden Whisper aggiornato (" .. newVer .. ") — riavvio appena sei fermo", 4)
+    gwAlert("⬆️ Golden Whisper aggiornato (" .. newVer .. ") — riavvio appena sei fermo", 4)
     deferReload()
   end, { "-fsSL", RAW_BASE .. "/src/groq_dictation.lua", "-o", tmp })
   t:start()
 end
 local function checkUpdate(silent)
   local t = hs.task.new(config.curl, function(code, out)
-    if code ~= 0 then if not silent then hs.alert.show("Update: controllo fallito (rete?)") end return end
+    if code ~= 0 then if not silent then gwAlert("Update: controllo fallito (rete?)") end return end
     local rem = trim(out or "")
-    if rem == "" then if not silent then hs.alert.show("Update: versione remota vuota") end return end
+    if rem == "" then if not silent then gwAlert("Update: versione remota vuota") end return end
     local loc = localVersion()
     if loc ~= rem then
       if config.autoUpdate then applyUpdate(rem)
-      else hs.alert.show("⬆️ Golden Whisper: update disponibile (" .. rem .. ")", 5) end
-    elseif not silent then hs.alert.show("Golden Whisper è aggiornato ✓ (" .. loc .. ")", 2) end
+      else gwAlert("⬆️ Golden Whisper: update disponibile (" .. rem .. ")", 5) end
+    elseif not silent then gwAlert("Golden Whisper è aggiornato ✓ (" .. loc .. ")", 2) end
   end, { "-fsSL", RAW_BASE .. "/VERSION" })
   t:start()
 end
@@ -1958,7 +2018,7 @@ function M.transcribeRecovered()
       transcribeBackup(groups[base], "recuperato"); n = n + 1
     end
   end
-  hs.alert.show(n == 0 and "Nessun audio da ritrascrivere (già fatti)" or ("📝 Ritrascrivo " .. n .. " audio salvati…"), 3)
+  gwAlert(n == 0 and "Nessun audio da ritrascrivere (già fatti)" or ("📝 Ritrascrivo " .. n .. " audio salvati…"), 3)
 end
 function M.settings(page) if page then settingsPage = page end openSettings() end
 function M.toggle() if not busy then if recording then M.stop() else start() end end end
