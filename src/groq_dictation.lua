@@ -14,6 +14,8 @@ local config = {
   settingsPath = os.getenv("HOME") .. "/.config/groq-dictation/settings.lua",
   recDir       = os.getenv("HOME") .. "/.config/groq-dictation/recordings",
   workDir      = os.getenv("HOME") .. "/.config/groq-dictation/segments",
+  historyPath  = os.getenv("HOME") .. "/.config/groq-dictation/history.json",
+  historyMax   = 30,
   audioDevice  = ":0",
   language     = "it",
   model        = "whisper-large-v3-turbo",
@@ -29,6 +31,8 @@ local config = {
   pauseKeycode = 60, pauseFlag = "shift",
   doubleTapSec = 0.50,
   maxSegmentSec = 480,
+  silenceWarnSec = 6,          -- nessun audio dal mic per N secondi → avviso
+  silenceDb    = -70,          -- sotto questa soglia (dB RMS) conta come "nessun audio"
   restoreClipboard = false,
   autoUpdate   = true,
   updateCheckHours = 24,
@@ -53,6 +57,7 @@ local recTask, intent = nil, nil
 local segments, segIndex = {}, 0
 local elapsed, segStart = 0, nil
 local levels = {}
+local lastSoundAt, lastRmsAt, micWarned, micName = 0, 0, false, nil   -- rilevamento "mic muto"
 
 local overlay, uiTimer, rotTimer, animTimer, dragTap = nil, nil, nil, nil, nil
 local finalFrame, mode, RECIDX = nil, nil, nil
@@ -65,10 +70,24 @@ local setRecordingElements, setProcessingElements, setStatus, updateUI
 local showAnimated, hideAnimated, showRecordingHUD, stopUITimer
 local openSettings, rebuildHUD, renderSettings, settingsMouse, closeSettings, dragCanvas
 local startCapture, saveBindings
+
+-- Modulo nativo opzionale (~/.hammerspoon/gw_sticky.so): tiene l'HUD fermo durante il cambio Space
+-- (Ctrl+freccia) invece di farlo scorrere col desktop. Se manca, tutto funziona lo stesso.
+local stickyOk, sticky = pcall(require, "gw_sticky")
+if not stickyOk then sticky = nil end
+local function pinOverlay()
+  if sticky and overlay then
+    local f = overlay:frame()
+    pcall(sticky.pin, f.x, f.y, f.w, f.h)
+  end
+end
 local settingsCanvas
 local settingsDevices = {}
 local sHoverMap = {}
 local settingsPage = "general"   -- general | keys
+local openHistory, closeHistory, renderHistoryPanel, historyMouse
+local historyCanvas
+local hHoverMap = {}
 local startShadowSlider
 local sliderTrackX, sliderTrackW, sliderTrackY, sliderH, sliderKnobIdx, sliderFillIdx, sliderKnobY
 
@@ -222,6 +241,22 @@ local function readKey()
   return k
 end
 local function trim(s) if not s then return "" end return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+local function loadHistory()
+  local f = io.open(config.historyPath, "r"); if not f then return {} end
+  local raw = f:read("*a"); f:close()
+  local ok, data = pcall(hs.json.decode, raw)
+  if not ok or type(data) ~= "table" then return {} end
+  return data
+end
+local function saveHistoryEntry(text)
+  if not text or trim(text) == "" then return end
+  local hist = loadHistory()
+  table.insert(hist, 1, { ts = os.time(), text = text })
+  while #hist > config.historyMax do table.remove(hist) end
+  hs.execute("mkdir -p '" .. os.getenv("HOME") .. "/.config/groq-dictation'")
+  local f = io.open(config.historyPath, "w")
+  if f then f:write(hs.json.encode(hist)); f:close() end
+end
 local function fileSize(path)
   local f = io.open(path, "rb"); if not f then return 0 end
   local sz = f:seek("end"); f:close(); return sz or 0
@@ -283,10 +318,20 @@ local function getAudioDevices(cb)
 end
 local deviceCache = {}
 local function refreshDevices() getAudioDevices(function(list) deviceCache = list end) end
+-- Fallback quando il mic scelto non c'è (es. AirPods spente): il mic integrato del Mac,
+-- mai "il primo della lista" (che può essere il telefono).
+local function builtinOrFirst()
+  local builtin = {}
+  for _, d in ipairs(hs.audiodevice.allInputDevices()) do
+    if d:transportType() == "Built-in" then builtin[d:name()] = true end
+  end
+  for _, d in ipairs(deviceCache) do if builtin[d.name] then return d end end
+  return deviceCache[1]
+end
 local function resolveMic()
   if config.micName and #deviceCache > 0 then
     for _, d in ipairs(deviceCache) do if d.name == config.micName then return d.idx, false, d.name end end
-    return deviceCache[1].idx, true, deviceCache[1].name
+    return builtinOrFirst().idx, true, builtinOrFirst().name
   end
   if #deviceCache > 0 then return deviceCache[1].idx, false, deviceCache[1].name end
   return config.audioDevice or ":0", false, nil
@@ -321,17 +366,31 @@ mouseCb = function(_c, msg, id)
 end
 
 placeCanvas = function(w, h)
-  local sf = hs.screen.mainScreen():frame()
+  -- sempre sullo schermo attivo (quello della finestra in primo piano)
+  local main = hs.screen.mainScreen()
+  local sf = main:frame()
   local cx, cy
-  if config.posX and config.posY then cx, cy = config.posX, config.posY
+  if config.posX and config.posY then
+    cx, cy = config.posX, config.posY
+    -- posizione salvata su un altro schermo → stessa posizione relativa su quello attivo
+    local src = hs.geometry.point(cx, cy)
+    local home
+    for _, scr in ipairs(hs.screen.allScreens()) do if src:inside(scr:frame()) then home = scr; break end end
+    if home and home:id() ~= main:id() then
+      local hf = home:frame()
+      cx = sf.x + (cx - hf.x) / hf.w * sf.w
+      cy = sf.y + (cy - hf.y) / hf.h * sf.h
+    end
   else cx = sf.x + sf.w / 2; cy = sf.y + sf.h - 24 - h / 2 end
   local fx = math.max(sf.x, math.min(cx - w / 2, sf.x + sf.w - w))
   local fy = math.max(sf.y, math.min(cy - h / 2, sf.y + sf.h - h))
   finalFrame = { x = math.floor(fx), y = math.floor(fy), w = w, h = h }
   if not overlay then
     overlay = hs.canvas.new(finalFrame)
-    overlay:level(hs.canvas.windowLevels.overlay)
-    overlay:behavior({ "canJoinAllSpaces", "stationary", "fullScreenAuxiliary" })
+    -- livello screenSaver: sopra qualsiasi finestra, anche fullscreen/presentazioni
+    overlay:level(hs.canvas.windowLevels.screenSaver or hs.canvas.windowLevels.overlay)
+    -- niente "stationary": lega la finestra al desktop → scorreva col background al cambio Space
+    overlay:behavior(config.overlayBehavior or { "canJoinAllSpaces", "fullScreenAuxiliary", "ignoresCycle" })
     overlay:clickActivating(false)
     overlay:mouseCallback(mouseCb)
   else
@@ -562,16 +621,19 @@ end
 
 updateUI = function()
   if not overlay or mode ~= "rec" or not RECIDX then return end
-  overlay:elementAttribute(RECIDX.timer, "text", fmtTime(currentElapsed()))
+  local warn = micWarned and recording and not paused
+  local WARN = { red = 0.95, green = 0.26, blue = 0.21, alpha = 1 }
+  overlay:elementAttribute(RECIDX.timer, "text", warn and "NO MIC" or fmtTime(currentElapsed()))
+  overlay:elementAttribute(RECIDX.timer, "textColor", warn and WARN or COL.fg)
   if RECIDX.dot then
-    local a = 0.45 + 0.55 * math.abs(math.sin(now() * 3.2))
+    local a = 0.45 + 0.55 * math.abs(math.sin(now() * (warn and 8 or 3.2)))
     local c = {}
-    for k, v in pairs(COL.accent) do c[k] = v end
+    for k, v in pairs(warn and WARN or COL.accent) do c[k] = v end
     c.alpha = a
     overlay:elementAttribute(RECIDX.dot, "fillColor", c)
   end
   local bm = RECIDX.barMeta
-  local barCol = (recording and not paused) and COL.accent or COL.accentDim
+  local barCol = warn and WARN or ((recording and not paused) and COL.accent or COL.accentDim)
   for i, b in ipairs(RECIDX.bars) do
     local lv = levels[i] or 0
     local fr
@@ -591,7 +653,7 @@ showAnimated = function()
   if not overlay or not finalFrame then return end
   if animTimer then animTimer:stop(); animTimer = nil end
   local f = finalFrame
-  overlay:alpha(0); overlay:frame({ x = f.x, y = f.y + 14, w = f.w, h = f.h }); overlay:show()
+  overlay:alpha(0); overlay:frame({ x = f.x, y = f.y + 14, w = f.w, h = f.h }); overlay:show(); pinOverlay()
   local steps, i = 9, 0
   animTimer = hs.timer.doEvery(0.016, function()
     i = i + 1
@@ -850,6 +912,119 @@ openSettings = function()
 end
 
 ------------------------------------------------------------------------
+-- PANNELLO TRANSCRIPT RECENTI (mini clipboard manager, on-brand)
+------------------------------------------------------------------------
+local HPANEL_W = 380
+
+closeHistory = function() if historyCanvas then historyCanvas:delete(); historyCanvas = nil end end
+
+historyMouse = function(_c, msg, id)
+  if msg == "mouseEnter" then
+    local h = hHoverMap[id]; if h and historyCanvas then
+      if h.hoverFill then historyCanvas:elementAttribute(h.idx, "fillColor", h.hoverFill) end
+      if h.hoverStroke then historyCanvas:elementAttribute(h.idx, "strokeColor", h.hoverStroke) end
+    end
+    return
+  elseif msg == "mouseExit" then
+    local h = hHoverMap[id]; if h and historyCanvas then
+      if h.fill then historyCanvas:elementAttribute(h.idx, "fillColor", h.fill) end
+      if h.stroke then historyCanvas:elementAttribute(h.idx, "strokeColor", h.stroke) end
+    end
+    return
+  elseif msg == "mouseDown" then
+    if id == "h_drag" then dragCanvas(historyCanvas, false) end
+    return
+  elseif msg ~= "mouseUp" then return end
+
+  if id == "h_close" then closeHistory(); return end
+  local i = id:match("^copy:(%d+)$")
+  if i then
+    local hist = loadHistory()
+    local e = hist[tonumber(i)]
+    if e then hs.pasteboard.setContents(e.text); hs.alert.show("📋 Copiato in clipboard", 1.5) end
+  end
+end
+
+renderHistoryPanel = function()
+  local SP = 26
+  local W, pad = HPANEL_W + 2 * SP, 16 + SP
+  local els, y = {}, 12 + SP
+  hHoverMap = {}
+  local NSHADOW = 14
+  for i = 1, NSHADOW + 1 do els[i] = { type = "rectangle", action = "fill", fillColor = { alpha = 0 }, frame = { x = 0, y = 0, w = 1, h = 1 } } end
+  local function add(el) els[#els + 1] = el; return #els end
+
+  add({ type = "text", text = "TRANSCRIPT RECENTI", textSize = 13, textColor = COL.accent, textFont = "Menlo-Bold",
+    textAlignment = "left", frame = { x = pad, y = y, w = W - pad * 2 - 22, h = 18 } })
+  y = y + 30
+
+  local hist = loadHistory()
+  if #hist == 0 then
+    add({ type = "text", text = "Nessun transcript salvato ancora.", textSize = 12, textColor = COL.accentDim,
+      textAlignment = "center", frame = { x = pad, y = y + 14, w = W - pad * 2, h = 20 } })
+    y = y + 46
+  else
+    local function wordTruncate(s, n)
+      s = s:gsub("%s+", " ")
+      if #s <= n then return s end
+      local cut = s:sub(1, n):gsub("%s+%S*$", "")
+      return cut .. " …"
+    end
+    for i = 1, math.min(3, #hist) do
+      local e = hist[i]
+      local preview = wordTruncate(tostring(e.text or ""), 170)
+      local cardW, cardH = W - pad * 2, 100
+      local ci = add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.clear, strokeColor = COL.accentDim, strokeWidth = 1,
+        roundedRectRadii = { xRadius = 12, yRadius = 12 }, frame = { x = pad, y = y, w = cardW, h = cardH },
+        trackMouseUp = true, trackMouseEnterExit = true, id = "copy:" .. i })
+      hHoverMap["copy:" .. i] = { idx = ci, fill = COL.clear, hoverFill = COL.accentFaint, stroke = COL.accentDim, hoverStroke = COL.accent }
+      -- barra d'accento a sinistra (più recente = più in alto)
+      add({ type = "rectangle", action = "fill", fillColor = mix(COL.accent, COL.bg, i == 1 and 0 or 0.35),
+        roundedRectRadii = { xRadius = 2, yRadius = 2 }, frame = { x = pad + 8, y = y + 10, w = 3, h = cardH - 20 } })
+      add({ type = "text", text = os.date("%d/%m · %H:%M", e.ts), textSize = 10, textColor = COL.accentDim, textFont = "Menlo-Bold",
+        textAlignment = "left", frame = { x = pad + 22, y = y + 12, w = cardW - 34 - 44, h = 14 } })
+      add({ type = "text", text = "copia ⧉", textSize = 10, textColor = COL.accent, textFont = "Menlo-Bold",
+        textAlignment = "right", frame = { x = pad + cardW - 66, y = y + 12, w = 54, h = 14 } })
+      add({ type = "text", text = preview, textSize = 12, textColor = COL.fg,
+        textAlignment = "left", frame = { x = pad + 22, y = y + 32, w = cardW - 34, h = cardH - 42 } })
+      y = y + cardH + 14
+    end
+  end
+
+  local H = y + SP + 4
+
+  local head = {}
+  pushShadow(head, SP, SP, W - 2 * SP, H - 2 * SP, 1, 16, NSHADOW, 0.02, 6, 1.1)
+  head[#head + 1] = { type = "rectangle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent,
+    strokeWidth = 1.5, roundedRectRadii = { xRadius = 16, yRadius = 16 },
+    frame = { x = SP, y = SP, w = W - 2 * SP, h = H - 2 * SP },
+    fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = { COL.bg, COL.bg2 or COL.bg },
+    trackMouseDown = true, id = "h_drag" }
+  for i = 1, NSHADOW + 1 do els[i] = head[i] or { type = "rectangle", action = "fill", fillColor = { alpha = 0 }, frame = { x = 0, y = 0, w = 1, h = 1 } } end
+
+  local cbi = add({ type = "circle", action = "strokeAndFill", fillColor = COL.bg, strokeColor = COL.accent, strokeWidth = 1.2,
+    center = { x = W - SP - 22, y = SP + 24 }, radius = 11, trackMouseUp = true, trackMouseEnterExit = true, id = "h_close" })
+  hHoverMap["h_close"] = { idx = cbi, fill = COL.bg, hoverFill = mix(COL.bg, COL.accent, 0.16), stroke = COL.accent, hoverStroke = COL.accentHover }
+  add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7, closed = false,
+    coordinates = { { x = W - SP - 26, y = SP + 20 }, { x = W - SP - 18, y = SP + 28 } } })
+  add({ type = "segments", action = "stroke", strokeColor = COL.accent, strokeWidth = 1.7, closed = false,
+    coordinates = { { x = W - SP - 26, y = SP + 28 }, { x = W - SP - 18, y = SP + 20 } } })
+
+  local sf = hs.screen.mainScreen():frame()
+  local fx = sf.x + (sf.w - W) / 2
+  local fy = sf.y + (sf.h - H) / 2
+  if historyCanvas then historyCanvas:delete() end
+  historyCanvas = hs.canvas.new({ x = fx, y = fy, w = W, h = H })
+  historyCanvas:level(hs.canvas.windowLevels.overlay)
+  historyCanvas:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
+  historyCanvas:replaceElements(els)
+  historyCanvas:mouseCallback(historyMouse)
+  historyCanvas:show()
+end
+
+openHistory = function() renderHistoryPanel() end
+
+------------------------------------------------------------------------
 -- INCOLLA
 ------------------------------------------------------------------------
 local function pasteText(text)
@@ -906,6 +1081,7 @@ local function transcribeAll(paths, i, acc)
   if i > #paths then
     local text = trim(table.concat(acc, " "))
     if text == "" then failSaving("Nessun testo") return end
+    saveHistoryEntry(text)
     busy = false; setStatus("✓  Fatto")
     hs.timer.doAfter(0.30, function() pasteText(text) end)
     hs.timer.doAfter(0.85, hideOverlay); cleanupSegments()
@@ -931,6 +1107,7 @@ transcribeBackup = function(paths, label)
     if i > #paths then
       local text = trim(table.concat(acc, " "))
       if text == "" then hs.alert.show("⚠️ Audio " .. (label or "recuperato") .. ": trascrizione non riuscita (resta il file audio)", 6); return end
+      saveHistoryEntry(text)
       hs.pasteboard.setContents(text)
       local sidecar = paths[1]:gsub("%-%d+%.wav$", ".txt"):gsub("%.wav$", ".txt")
       local f = io.open(sidecar, "w"); if f then f:write(text); f:close() end
@@ -945,11 +1122,41 @@ transcribeBackup = function(paths, label)
   step(1)
 end
 
+-- Carica un audio esterno (non registrato dal mic) e lo trascrive con Groq.
+-- Flusso indipendente da recording/busy: nessun HUD, esito in clipboard + storico + sidecar .txt.
+local uploadBusy = false
+function M.transcribeUploaded()
+  if uploadBusy then hs.alert.show("⏳ Trascrizione upload già in corso…", 2); return end
+  local ok, path = hs.osascript.applescript(
+    'POSIX path of (choose file with prompt "Scegli un audio da trascrivere" of type ' ..
+    '{"public.audio", "public.mp3", "mp3", "wav", "m4a", "mp4", "aac", "aiff", "flac", "ogg"})'
+  )
+  if not ok or not path or trim(path) == "" then return end
+  path = trim(path)
+  uploadBusy = true
+  hs.alert.show("📤 Carico e trascrivo…\n" .. path:match("([^/]+)$"), 3)
+  transcribeOne(path, function(tok, text, err)
+    uploadBusy = false
+    if not tok or not text or trim(text) == "" then
+      hs.alert.show("✕ Trascrizione fallita: " .. tostring(err or "nessun testo"), 5)
+      return
+    end
+    text = trim(text)
+    saveHistoryEntry(text)
+    hs.pasteboard.setContents(text)
+    hs.execute("mkdir -p '" .. config.recDir .. "'")
+    local base = path:match("([^/]+)%.[^./]+$") or path:match("([^/]+)$") or ("upload-" .. os.date("%Y%m%d-%H%M%S"))
+    local sidecar = string.format("%s/%s.txt", config.recDir, base)
+    local f = io.open(sidecar, "w"); if f then f:write(text); f:close() end
+    hs.alert.show("📝 Trascritto → copiato in clipboard\n(salvato anche in " .. config.recDir .. ")", 6)
+  end)
+end
+
 local function finalizeAndTranscribe()
   busy = true; stopUITimer()
   if animTimer then animTimer:stop(); animTimer = nil end
   setProcessingElements("🎙️  Ricevuto")
-  if overlay then overlay:alpha(1); overlay:show() end
+  if overlay then overlay:alpha(1); overlay:show(); pinOverlay() end
   hs.timer.doAfter(0.25, function()
     local valid = {}
     for _, p in ipairs(segments) do if fileSize(p) > 1000 then valid[#valid + 1] = p end end
@@ -963,14 +1170,58 @@ end
 ------------------------------------------------------------------------
 local function onStream(_t, _out, err)
   if err and recording and not paused then
-    for m in err:gmatch("RMS_level=(%S+)") do table.remove(levels, 1); levels[#levels + 1] = mapLevel(tonumber(m)) end
+    for m in err:gmatch("RMS_level=(%S+)") do
+      local db = tonumber(m)   -- "-inf" (silenzio digitale) → nil
+      lastRmsAt = now()
+      if db and db > config.silenceDb then
+        lastSoundAt = lastRmsAt
+        if micWarned then micWarned = false; hs.alert.show("🎙️ Audio di nuovo ricevuto", 1.5) end
+      end
+      table.remove(levels, 1); levels[#levels + 1] = mapLevel(db)
+    end
   end
   return true
+end
+
+-- Avviso "non sto registrando": suono + alert + HUD rosso (resta finché l'audio non torna)
+local function warnNoMic(msg)
+  micWarned = true
+  local snd = hs.sound.getByName("Basso"); if snd then snd:play() end
+  hs.alert.show(msg, 4)
+end
+
+-- Guardia (1s): HUD sempre visibile/in cima sullo schermo attivo + controllo silenzio mic
+local lastScreenId = nil
+local function reassertOverlay(force)
+  if not overlay or not mode or dragTap then return end
+  local sid = hs.screen.mainScreen():id()
+  if (force or sid ~= lastScreenId) and finalFrame and not animTimer then
+    lastScreenId = sid
+    placeCanvas(finalFrame.w, finalFrame.h)
+  end
+  if not overlay:isShowing() then overlay:alpha(1); overlay:show(); pinOverlay() end
+  if force then overlay:orderAbove(); pinOverlay() end
+end
+M._reassertOverlay = reassertOverlay
+-- prova varianti al volo: M._setBehavior({"canJoinAllSpaces", ...})
+function M._setBehavior(list) config.overlayBehavior = list; if overlay then overlay:behavior(list) end end
+local function guardTick()
+  reassertOverlay(false)
+  if recording and not paused and not micWarned and segStart then
+    if now() - math.max(lastSoundAt, segStart) >= config.silenceWarnSec then
+      local noData = now() - math.max(lastRmsAt, segStart) >= config.silenceWarnSec
+      warnNoMic(string.format("⚠️ Nessun audio dal microfono da %ds\n%s%s",
+        config.silenceWarnSec,
+        noData and "Il microfono non manda nulla — non sto registrando" or "Solo silenzio — mic mutato o sbagliato?",
+        micName and ("\nMic: " .. micName) or ""))
+    end
+  end
 end
 local function stopRotTimer() if rotTimer then rotTimer:stop(); rotTimer = nil end end
 local rotate
 local function startSegment()
   local p = segPath(segIndex); os.remove(p); segments[#segments + 1] = p
+  lastSoundAt, lastRmsAt, micWarned = now(), now(), false
   local args = { "-y", "-f", "avfoundation", "-i", config.audioDevice, "-ac", "1", "-ar", "16000",
     "-af", "asetnsamples=1600:p=0,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level", p }
   recTask = hs.task.new(config.ffmpeg, function() M._onSegmentFinished() end, onStream, args)
@@ -984,13 +1235,20 @@ function M._onSegmentFinished()
   if intent == "pause" then intent = nil
   elseif intent == "stop" then intent = nil; finalizeAndTranscribe()
   elseif intent == "cancel" then intent = nil; cleanupSegments()
-  elseif intent == "rotate" then intent = nil; segIndex = segIndex + 1; startSegment() end
+  elseif intent == "rotate" then intent = nil; segIndex = segIndex + 1; startSegment()
+  elseif recording and not paused then
+    -- ffmpeg uscito da solo: il microfono non c'è / si è staccato
+    warnNoMic("❌ Registrazione interrotta: microfono non disponibile" .. (micName and ("\nMic: " .. micName) or "") ..
+      "\nFerma per trascrivere quello che c'è")
+  end
 end
 local function stopCurrentSegment(newIntent)
   stopRotTimer(); intent = newIntent
   if recTask then
     local pid = recTask:pid()
     if pid and pid > 0 then hs.execute(config.kill .. " -INT " .. pid) else recTask:terminate() end
+  else
+    M._onSegmentFinished()   -- ffmpeg già morto: esegui subito l'intento (stop/cancel/…)
   end
 end
 rotate = function()
@@ -1000,7 +1258,7 @@ end
 local function start()
   recoverOrphans(); cleanupSegments()
   local dev, fellBack, name = resolveMic()
-  config.audioDevice = dev; refreshDevices()
+  config.audioDevice = dev; micName = name; refreshDevices()
   elapsed = 0; segStart = nil; paused = false; segIndex = 0
   if fellBack then hs.alert.show("🎙️ Mic salvato non disponibile → uso “" .. (name or dev) .. "”", 3) end
   resetLevels()
@@ -1234,6 +1492,19 @@ function M.init()
   end, "AppleInterfaceThemeChangedNotification")
   M._appearanceWatcher:start()
   initHotkeys()
+  -- HUD sempre in cima: guardia periodica + riposizionamento al cambio app/desktop
+  if M._guardTimer then M._guardTimer:stop() end
+  M._guardTimer = hs.timer.doEvery(1, guardTick)
+  local function bump() hs.timer.doAfter(0.2, function() reassertOverlay(true) end) end
+  if M._appWatcher then M._appWatcher:stop() end
+  M._appWatcher = hs.application.watcher.new(function(_n, ev)
+    if ev == hs.application.watcher.activated then bump() end
+  end)
+  M._appWatcher:start()
+  if M._spaceWatcher then M._spaceWatcher:stop() end
+  M._spaceWatcher = hs.spaces.watcher.new(bump); M._spaceWatcher:start()
+  if M._screenWatcher then M._screenWatcher:stop() end
+  M._screenWatcher = hs.screen.watcher.new(bump); M._screenWatcher:start()
   -- icona menu bar: apri impostazioni / avvia-ferma senza passare dalla pausa
   if not M._menu then M._menu = hs.menubar.new() end
   if M._menu then
@@ -1241,7 +1512,10 @@ function M.init()
     M._menu:setTooltip("Golden Whisper")
     M._menu:setMenu({
       { title = "🎙️  Avvia / Ferma dettatura", fn = function() M.toggle() end },
+      { title = "📤  Carica audio…", fn = function() M.transcribeUploaded() end },
       { title = "📝  Trascrivi audio recuperato", fn = function() M.transcribeRecovered() end },
+      { title = "📜  Transcript recenti…", fn = function() openHistory() end },
+      { title = "📂  Apri cartella recordings/transcript", fn = function() hs.execute("open '" .. config.recDir .. "'") end },
       { title = "⚙️  Impostazioni…", fn = function() openSettings() end },
       { title = "-" },
       { title = "🔄  Ricarica", fn = function() hs.reload() end },
