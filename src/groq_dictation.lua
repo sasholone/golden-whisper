@@ -896,13 +896,10 @@ pushGlass = function(list, x, y, w, h, r, o)
   for _, p in ipairs(arcPts(x + r, y + r, math.max(0.5, r - 0.8), 212, 270, 8)) do hl[#hl + 1] = p end
   for _, p in ipairs(arcPts(x + w - r, y + r, math.max(0.5, r - 0.8), 270, 328, 8)) do hl[#hl + 1] = p end
   seg(list, hl, COL.hi, 1)
-  -- filo di gradiente lungo il bordo basso (solo stili multi-colore)
-  if COL.multi then
-    local inset = math.min(r * 0.95, w * 0.3)
-    list[#list + 1] = { type = "rectangle", action = "fill", fillColor = COL.accent,
-      roundedRectRadii = { xRadius = 1, yRadius = 1 }, frame = { x = x + inset, y = y + h - 2.6, w = math.max(4, w - 2 * inset), h = 1.8 },
-      fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = gradA(COL, 0.85) }
-  end
+  -- (filo gradiente sul bordo basso rimosso: si vedeva come striscia sotto la card.
+  --  L'elemento resta, invisibile, per non spostare gli slot riservati NCARD.)
+  list[#list + 1] = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = 0 },
+    frame = { x = x, y = y + h - 2, w = 1, h = 1 } }
   -- bordo
   local border = #list + 1
   list[border] = { type = "rectangle", action = "stroke", strokeColor = o.border or COL.border, strokeWidth = o.bw or 1,
