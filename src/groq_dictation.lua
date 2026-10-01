@@ -92,33 +92,81 @@ local startShadowSlider
 local sliderTrackX, sliderTrackW, sliderTrackY, sliderH, sliderKnobIdx, sliderFillIdx, sliderKnobY
 
 ------------------------------------------------------------------------
--- PALETTE / STILI
+-- PALETTE / STILI  ("clear glass": rampe tonali per famiglia, dark + light)
+-- Ogni tema ha: sfondo a due toni (top/bot), testo a 3 livelli, accento a 3 toni
+-- (hi/base/lo per i gradienti), bordo + hairline, superfici (riga/hover/track),
+-- stati (warn/ok). Tutto derivato da ~9 esadecimali per tema.
 ------------------------------------------------------------------------
-local function C(r, g, b, a) return { red = r, green = g, blue = b, alpha = a or 1 } end
-local function lighten(c, t) return { red = c.red + (1 - c.red) * t, green = c.green + (1 - c.green) * t, blue = c.blue + (1 - c.blue) * t, alpha = 1 } end
-local function mix(a, b, t) return { red = a.red * (1 - t) + b.red * t, green = a.green * (1 - t) + b.green * t, blue = a.blue * (1 - t) + b.blue * t, alpha = 1 } end
-local function faint(c) return { red = c.red, green = c.green, blue = c.blue, alpha = 0.20 } end
-local function variant(bg, accent, fg)
-  return { bg = bg, accent = accent, fg = fg, clear = { alpha = 0 },
-    bg2 = lighten(bg, (fg.red or fg.white or 1) > 0.5 and 0.06 or -0.0),   -- gradiente sottile
-    accentDim = mix(accent, bg, 0.45), accentHover = lighten(accent, 0.30), accentFaint = faint(accent) }
+local function hex(h, a)
+  h = h:gsub("#", "")
+  return { red = tonumber(h:sub(1, 2), 16) / 255, green = tonumber(h:sub(3, 4), 16) / 255,
+           blue = tonumber(h:sub(5, 6), 16) / 255, alpha = a or 1 }
 end
-local DARK = C(0.05, 0.05, 0.06, 0.97)
+local function withA(c, a) return { red = c.red, green = c.green, blue = c.blue, alpha = a } end
+local function mix(a, b, t)
+  local aa, ba = a.alpha or 1, b.alpha or 1
+  return { red = a.red + (b.red - a.red) * t, green = a.green + (b.green - a.green) * t,
+           blue = a.blue + (b.blue - a.blue) * t, alpha = aa + (ba - aa) * t }
+end
+local function lighten(c, t) return mix(c, { red = 1, green = 1, blue = 1, alpha = c.alpha or 1 }, t) end
+local CLEAR = { red = 0, green = 0, blue = 0, alpha = 0 }
 
--- Famiglie di stile: ognuna con variante dark e light. Primario = accent.
+-- d = { top, bot, fg, fg2, acc, hi, lo, on, ink }  (esadecimali)
+local function theme(d, isDark)
+  local T = { dark = isDark, clear = CLEAR }
+  local solid = hex(d.bot)
+  T.bg      = hex(d.top, isDark and 0.95 or 0.96)      -- vetro: top (più chiaro)
+  T.bg2     = hex(d.bot, isDark and 0.97 or 0.97)      -- vetro: bottom
+  T.solid   = solid                                    -- opaco, per "ritagli" e testo su accento
+  T.fg      = hex(d.fg)                                -- testo primario
+  T.fg2     = hex(d.fg2)                               -- testo secondario
+  T.fg3     = mix(hex(d.fg2), solid, 0.42)             -- testo terziario / etichette
+  T.accent  = hex(d.acc)                               -- accento base
+  T.accentHi= hex(d.hi)                                -- gradiente: cima
+  T.accentLo= hex(d.lo)                                -- gradiente: fondo
+  T.accentInk = hex(d.ink or d.acc)                    -- accento usato COME TESTO (contrasto su sfondo)
+  T.accentText= hex(d.on)                              -- testo SU riempimento accento
+  T.accentHover = lighten(T.accent, 0.28)
+  T.accentDim   = mix(T.accent, solid, isDark and 0.50 or 0.42)
+  T.accentSoft  = withA(T.accent, isDark and 0.20 or 0.15)
+  T.accentFaint = withA(T.accent, isDark and 0.10 or 0.08)
+  T.border      = withA(T.accent, isDark and 0.36 or 0.42)   -- bordo carta
+  T.borderSoft  = withA(T.accent, isDark and 0.18 or 0.24)   -- hairline interne
+  T.hi          = isDark and { red = 1, green = 1, blue = 1, alpha = 0.28 } or { red = 1, green = 1, blue = 1, alpha = 0.95 }
+  T.sheen       = isDark and { red = 1, green = 1, blue = 1, alpha = 0.035 } or { red = 1, green = 1, blue = 1, alpha = 0.45 }
+  T.rowBg       = withA(hex(d.fg), isDark and 0.05 or 0.045)
+  T.rowHover    = withA(hex(d.fg), isDark and 0.10 or 0.085)
+  T.track       = withA(hex(d.fg), isDark and 0.13 or 0.11)
+  T.divider     = withA(hex(d.fg), isDark and 0.10 or 0.09)
+  T.warn        = isDark and hex("#FF5C54") or hex("#D93025")
+  T.ok          = isDark and hex("#4ADE80") or hex("#12904A")
+  T.shadowK     = isDark and 1.0 or 0.55                      -- le ombre su fondo chiaro sono più leggere
+  T.fgWhite     = { red = 1, green = 1, blue = 1, alpha = 1 }
+  return T
+end
+
+local function family(name, dark, light) return { name = name, dark = theme(dark, true), light = theme(light, false) } end
+
+-- Famiglie. Dark gold = carattere originale (nero caldo + oro); light gold = champagne + oro caldo.
 local FAMILIES = {
-  gold    = { name = "Gold",    dark = variant(DARK, C(0.83, 0.68, 0.36), C(1, 1, 1)),
-                                 light = variant(C(0.99, 0.98, 0.95, 0.98), C(0.66, 0.50, 0.14), C(0.14, 0.12, 0.08)) },
-  mono    = { name = "Mono",    dark = variant(DARK, C(0.88, 0.88, 0.90), C(1, 1, 1)),
-                                 light = variant(C(0.98, 0.98, 0.99, 0.98), C(0.18, 0.18, 0.22), C(0.10, 0.10, 0.12)) },
-  ocean   = { name = "Ocean",   dark = variant(C(0.04, 0.07, 0.12, 0.97), C(0.36, 0.56, 0.98), C(0.95, 0.97, 1)),
-                                 light = variant(C(0.95, 0.97, 1, 0.98), C(0.15, 0.40, 0.85), C(0.08, 0.12, 0.20)) },
-  violet  = { name = "Violet",  dark = variant(C(0.09, 0.06, 0.14, 0.97), C(0.62, 0.46, 0.96), C(0.97, 0.95, 1)),
-                                 light = variant(C(0.97, 0.95, 1, 0.98), C(0.46, 0.30, 0.85), C(0.14, 0.10, 0.20)) },
-  emerald = { name = "Emerald", dark = variant(C(0.03, 0.10, 0.08, 0.97), C(0.15, 0.80, 0.56), C(0.94, 1, 0.97)),
-                                 light = variant(C(0.94, 1, 0.97, 0.98), C(0.05, 0.60, 0.42), C(0.06, 0.16, 0.12)) },
-  rose    = { name = "Rose",    dark = variant(C(0.12, 0.05, 0.08, 0.97), C(0.98, 0.46, 0.56), C(1, 0.96, 0.97)),
-                                 light = variant(C(1, 0.95, 0.96, 0.98), C(0.85, 0.25, 0.40), C(0.18, 0.08, 0.10)) },
+  gold = family("Gold",
+    { top = "#1B1914", bot = "#0A0907", fg = "#F7F2E6", fg2 = "#B8AD94", acc = "#D6AF5E", hi = "#EBCB85", lo = "#B48B3B", on = "#1A1304" },
+    { top = "#FFFCF3", bot = "#F4E8CE", fg = "#2A2012", fg2 = "#6E5D3D", acc = "#B3822A", hi = "#D4A545", lo = "#966A1B", on = "#FFFBEF", ink = "#8A5F12" }),
+  mono = family("Mono",
+    { top = "#1E1E21", bot = "#0C0C0E", fg = "#F5F5F7", fg2 = "#A1A1A8", acc = "#E4E4E9", hi = "#FFFFFF", lo = "#B6B6BE", on = "#111114" },
+    { top = "#FFFFFF", bot = "#ECECF1", fg = "#17171A", fg2 = "#62626B", acc = "#2B2B31", hi = "#474750", lo = "#18181C", on = "#FFFFFF" }),
+  ocean = family("Ocean",
+    { top = "#101C31", bot = "#060B16", fg = "#EBF2FF", fg2 = "#93A6C6", acc = "#5C9CFF", hi = "#8EBCFF", lo = "#3B78E2", on = "#06142E" },
+    { top = "#F9FCFF", bot = "#E2EDFC", fg = "#0E1A33", fg2 = "#4A5E82", acc = "#2563D6", hi = "#4380F0", lo = "#1B4DB0", on = "#FFFFFF", ink = "#1D4FB8" }),
+  violet = family("Violet",
+    { top = "#1D1532", bot = "#0C0717", fg = "#F3EEFF", fg2 = "#A99DC9", acc = "#A27DFF", hi = "#C2A8FF", lo = "#7E56E8", on = "#190C38" },
+    { top = "#FCF9FF", bot = "#EBE3FB", fg = "#1D1433", fg2 = "#5E5082", acc = "#6D45DB", hi = "#8761F0", lo = "#5632B8", on = "#FFFFFF", ink = "#5A34C4" }),
+  emerald = family("Emerald",
+    { top = "#0F2821", bot = "#050F0C", fg = "#E9FFF6", fg2 = "#8EB9A9", acc = "#2FD6A2", hi = "#6DEAC2", lo = "#14A87E", on = "#04201A" },
+    { top = "#F7FFFC", bot = "#DBF3E9", fg = "#0A2A20", fg2 = "#46705F", acc = "#0B8F68", hi = "#18AF83", lo = "#06704F", on = "#FFFFFF", ink = "#077655" }),
+  rose = family("Rose",
+    { top = "#2B111B", bot = "#13050A", fg = "#FFEFF3", fg2 = "#C9A1AB", acc = "#FF7B94", hi = "#FFA5B7", lo = "#E65170", on = "#2E0612" },
+    { top = "#FFFAFB", bot = "#FAE2E7", fg = "#2E0F17", fg2 = "#7A4C57", acc = "#D62F52", hi = "#EF4E70", lo = "#B31F3F", on = "#FFFFFF", ink = "#BF2548" }),
 }
 local FAMILY_ORDER = { "gold", "mono", "ocean", "violet", "emerald", "rose" }
 local COL = FAMILIES.gold.dark
@@ -134,12 +182,16 @@ local function systemIsDark()
   return (out or ""):find("Dark") ~= nil
 end
 
+local function resolveMode()
+  local m = config.themeMode
+  if m == "auto" then m = systemIsDark() and "dark" or "light" end
+  if m ~= "dark" and m ~= "light" then m = "dark" end
+  return m
+end
+
 local function applyTheme()
   local fam = FAMILIES[config.style] or FAMILIES.gold
-  local mode = config.themeMode
-  if mode == "auto" then mode = systemIsDark() and "dark" or "light" end
-  if mode ~= "dark" and mode ~= "light" then mode = "dark" end
-  COL = fam[mode]
+  COL = fam[resolveMode()]
 end
 
 ------------------------------------------------------------------------
@@ -1488,7 +1540,7 @@ function M.init()
   hs.audiodevice.watcher.start()
   -- segui il tema di sistema quando themeAuto è attivo
   M._appearanceWatcher = hs.distributednotifications.new(function()
-    if config.themeAuto then applyTheme(); rebuildHUD() end
+    if config.themeMode == "auto" or config.themeAuto then applyTheme(); rebuildHUD() end
   end, "AppleInterfaceThemeChangedNotification")
   M._appearanceWatcher:start()
   initHotkeys()
