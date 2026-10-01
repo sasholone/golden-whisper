@@ -323,7 +323,9 @@ local function currentElapsed()
 end
 local function mapLevel(db)
   if not db then return 0 end
-  local v = (db + 60) / 60
+  -- il parlato sta tra ~-45 dB (piano) e ~-15 dB (forte): finestra stretta così le barre
+  -- distinguono piano/normale/forte; curva morbida per non saturare subito
+  local v = ((db + 50) / 36) ^ 1.15
   if v < 0 then v = 0 elseif v > 1 then v = 1 end
   return v
 end
@@ -1054,7 +1056,7 @@ updateUI = function()
     local target = 0
     if active and not warn then target = (I.demo and I.demo[i]) or levels[i] or 0 end
     local cur = I.disp[i] or 0
-    local rate = (target > cur) and 30 or 9
+    local rate = (target > cur) and 22 or 6
     cur = cur + (target - cur) * (1 - math.exp(-rate * dt))
     I.disp[i] = cur
     maxDelta = math.max(maxDelta, math.abs(target - cur))
