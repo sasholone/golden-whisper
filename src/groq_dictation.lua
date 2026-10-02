@@ -2694,7 +2694,7 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   idx.pw, idx.ph = pw, ph
   ICON.hudShape = ICON.shape()
   idx.border, idx.body, idx.borderCol = ICON.cardBody(els, ox, oy, sc(pw), sc(ph), s, { s = s, id = map and "drag" or nil, lite = (map == nil) }, "rec")
-  idx.parts = ICON.partsBuild(els, ox, oy, sc(pw), sc(ph), s, map == nil)       -- particelle dello stile (se ne ha)
+  if map then idx.parts = ICON.partsBuild(els, ox, oy, sc(pw), sc(ph), s, false) end      -- particelle dello stile (se ne ha); nell'anteprima del tab Tema (map nil) non ce ne sono
 
   -- badge mic (registrazione) oppure ingranaggio (in pausa: impostazioni/scelta mic)
   local bcx = ox + sc(vertical and 28 or 31)
@@ -4139,8 +4139,8 @@ settingsMouse = function(_c, msg, id)
   elseif kind == "size" then config.sizePreset = val; config.scale = scaleFor(val); persist("sizePreset", val); rebuildHUD()
   elseif kind == "orient" then config.orientation = val; persist("orientation", val); resetLevels(); rebuildHUD()
   elseif kind == "cat" then SET.cat = val; SET.sc[1] = 0
-  elseif kind == "style" then setLook("style", val); applyTheme(); rebuildHUD()
-  elseif kind == "theme" then setLook("themeMode", val); applyTheme(); rebuildHUD()
+  elseif kind == "style" then setLook("style", val); applyTheme(); rebuildHUD(); SET.pvBoost = now() + 1.2
+  elseif kind == "theme" then setLook("themeMode", val); applyTheme(); rebuildHUD(); SET.pvBoost = now() + 1.2
   elseif kind == "corner" then setLook("cornerStyle", val); rebuildHUD()
   elseif kind == "wave" then setLook("waveStyle", val); rebuildHUD()
   elseif kind == "wcol" then setLook("waveColor", val); rebuildHUD()
@@ -4161,18 +4161,21 @@ settingsMouse = function(_c, msg, id)
   renderSettings({ page = pageChange })
 end
 
--- anteprima viva: ~8 aggiornamenti/s del mini-HUD del tab Tema; in pausa durante scroll / resize / crossfade, con il mouse fuori dalla finestra o fermo da 3 s
+-- anteprima viva: anima SOLO se il mouse e' sopra l'anteprima (o per ~1,2 s dopo un cambio di stile/tema), a ~10 agg/s, senza particelle;
+-- altrimenti resta un fotogramma fermo (CPU ~0). Mai insieme a scroll, ridimensionamento, dissolvenza o aggiornamento dell'hero.
 local function previewTick()
   local cv, P = settingsCanvas, PREV
   if not cv or not P or settingsPage ~= "theme" then return end
   local t = now()
   if t - (SET.lastScroll or 0) < 0.25 then return end
-  -- fermo se nessuno guarda: mouse fuori dalla finestra, oppure immobile da 3 s (riparte al primo movimento) -> CPU ~0 a riposo
-  local m = hs.mouse.absolutePosition()
-  local f = cv:frame()
-  if m.x < f.x or m.x > f.x + f.w or m.y < f.y or m.y > f.y + f.h then return end
-  if not P.m or m.x ~= P.m.x or m.y ~= P.m.y then P.m = { x = m.x, y = m.y }; P.mt = t end
-  if t - (P.mt or t) > 3 then return end
+  if SET.heroAt and t - SET.heroAt < 0.2 then return end
+  local boost = SET.pvBoost and t < SET.pvBoost
+  if not boost then
+    local m = hs.mouse.absolutePosition()
+    local f = cv:frame()
+    local mx, my = m.x - f.x, m.y - f.y
+    if mx < (P.x0 or 0) or mx > (P.x1 or 0) or my < (P.top or 0) or my > (P.bot or 0) then return end
+  end
   if Anim.list["setvis|h"] or Anim.list["setvis|xfade"] or Anim.list["setvis|vis"] then return end
   local I = P.I
   local dt = clampN(I.last and (t - I.last) or 0.08, 0.001, 0.12)
@@ -4190,7 +4193,7 @@ local function previewTick()
 end
 local function startPreview()
   if previewTimer then return end
-  previewTimer = hs.timer.doEvery(1 / 8, function() guarded("preview", previewTick) end)
+  previewTimer = hs.timer.doEvery(1 / 10, function() guarded("preview", previewTick) end)
 end
 
 -- hero degli stili: mostra lo stile sotto il mouse (o quello attuale); aggiornamento a pochi attributi
@@ -4200,6 +4203,7 @@ function SET.heroSet(key)
   SET.heroPending = true
   hs.timer.doAfter(0.04, function()
     SET.heroPending = false
+    SET.heroAt = now()
     local cv, Hh = settingsCanvas, SET.hero
     if not cv or not Hh then return end
     local want = SET.heroWant
@@ -4888,7 +4892,7 @@ local function layoutSettings()
           return e0, buildRecCard(e0, ox, oy, s, false, false, nil, false)
         end, { x = 0, y = 0, w = SET.W, h = SET.H }, off)
         I.preview = true
-        PREV = { I = I, top = y, bot = y + bh, t0 = now(), bgA = COL.bg.alpha, mt = now() }
+        PREV = { I = I, top = y, bot = y + bh, x0 = pad, x1 = pad + IW, t0 = now(), bgA = COL.bg.alpha, mt = now() }
         Anim.cancel("egg", "prev")
         if I.egg then
           hitRect(els, sHoverMap, "pv_badge", ox + 14 * s, oy + 11 * s, 34 * s, 34 * s, 4, { fill = withA(COL.fgWhite, 0), hoverFill = withA(COL.fgWhite, 0) })
@@ -5540,7 +5544,10 @@ renderSettings = function(opts)
   end
   if (opts.scroll or opts.page or not cvOld) and not heightAnimating then pokeScrollbar() end
   if SET.kAnim then SET.K.anim(SET.kAnim); SET.kAnim = nil end
-  if settingsPage == "theme" then startPreview() else stopPreview() end
+  if settingsPage == "theme" then
+    if opts.page or not cvOld then SET.pvBoost = now() + 1.2 end        -- appena arrivati sul tab: qualche istante di movimento, poi fermo
+    startPreview()
+  else stopPreview() end
 end
 
 openSettings = function()
