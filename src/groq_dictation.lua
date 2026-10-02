@@ -2796,7 +2796,7 @@ setRecordingElements = function(isPaused)
   local spec = ICON.splitAnim(els, function()
     local e0 = {}
     return e0, buildRecCard(e0, P, P, s, vertical, isPaused, {}, true)
-  end, { x = 0, y = 0, w = pw * s + 2 * P, h = ph * s + 2 * P })
+  end, { x = 0, y = 0, w = pw * s + 2 * P, h = ph * s + 2 * P }, 0, nil, ICON.recGroup)
   overlay:replaceElements(els)
   ICON.safeLayers(overlay, els, spec)
   RECIDX = idx
@@ -3119,11 +3119,36 @@ do
     for k in pairs(b) do if a[k] == nil then return false end end
     return true
   end
+  -- ruolo di ogni elemento "caldo" del HUD: w = barre/segmenti dell'onda, t = timer, p = particelle, r = anelli/badge/icona/meter
+  function ICON.recGroup(I0)
+    local m = {}
+    if I0.timer then m[I0.timer] = "t" end
+    for _, b in ipairs(I0.bars or {}) do if b.idx then m[b.idx] = "w" end end
+    for _, si in ipairs(I0.segs or {}) do m[si] = "w" end
+    if I0.parts and I0.parts.idx then for _, i in ipairs(I0.parts.idx) do m[i] = "p" end end
+    return function(i) return m[i] or "r" end
+  end
+  -- frequenza massima di ridisegno (Hz) delle canvas del HUD di registrazione: onda 18, anelli/badge 12, timer 8 (cambia 1/s), particelle 16, avviso 15
+  ICON.GROUP_HZ = { w = 18, r = 12, t = 8, p = 16, x = 15 }
   function ICON.skipEl() return { type = "rectangle", action = "skip", frame = { x = 0, y = 0, w = 1, h = 1 } } end
   -- applica gli strati; se QUALCOSA fallisce torna a canvas singola (ripristina gli elementi spostati) invece di lasciare l'HUD a meta'
   function ICON.safeLayers(cv, els, spec)
     if not spec then pcall(function() cv:layerClear() end); return end
-    local ok, err = pcall(function() cv:layerApply(spec) end)
+    local ok, err = pcall(function()
+      if spec.groups then
+        local keep = {}
+        for _, k in ipairs(spec.order) do keep["g" .. k] = true end
+        cv:layerPrune(keep)
+        for _, k in ipairs(spec.order) do
+          local g = spec.groups[k]
+          g.hz = ICON.GROUP_HZ[k]
+          cv:layerApply(g, "g" .. k)
+        end
+      else
+        cv:layerPrune({ a = true })
+        cv:layerApply(spec)
+      end
+    end)
     if not ok then
       ICON.log("[GW] strati: " .. tostring(err))
       pcall(function() cv:layerClear() end)
@@ -3138,9 +3163,20 @@ do
   function ICON.wrap(base)
     local P = {}
     local layers = {}               -- upvalue: niente campi sul proxy (il suo __index inoltra alla canvas vera)
-    local function each(fn) for k, L in pairs(layers) do local w = L.win or L.cv; if w then pcall(fn, w, L, k) end end end
+    local seqN = 0
+    local function each(fn, ordered)
+      if ordered then       -- dall'alto: l'ultimo creato sta sotto (ognuno si mette subito sopra la base)
+        local ks = {}
+        for k in pairs(layers) do ks[#ks + 1] = k end
+        table.sort(ks, function(p, q) return (layers[p].seq or 0) > (layers[q].seq or 0) end)
+        for _, k in ipairs(ks) do local L = layers[k]; local w = L.win or L.cv; if w then pcall(fn, w, L, k) end end
+      else
+        for k, L in pairs(layers) do local w = L.win or L.cv; if w then pcall(fn, w, L, k) end end
+      end
+    end
     local function kill(L)
       L.dead = true
+      if L.ft then pcall(function() L.ft:stop() end); L.ft = nil end
       if L.cv then pcall(function() L.cv:delete() end) end
       if L.vc then pcall(function() L.vc:delete() end) end
     end
@@ -3275,20 +3311,25 @@ do
       if L and L.raster then P:layerClear(key); L = nil end
       if L and L.cv and L.w == b.w and L.h == b.h then
         L.cv:replaceElements(spec.els)
+        L.pq, L.pord = nil, nil                       -- scritture in coda riferite al contenuto vecchio: scartate
       else
         P:layerClear(key)
         local cv = hs.canvas.new({ x = f.x + b.x, y = f.y + b.y, w = b.w, h = b.h })
         pcall(function() cv:level(base:level()); cv:behavior(base:behavior()) end)
         cv:replaceElements(spec.els)
         cv:alpha(base:alpha())
-        L = { cv = cv, w = b.w, h = b.h }
+        seqN = seqN + 1
+        L = { cv = cv, w = b.w, h = b.h, seq = seqN }
         layers[key] = L
         local ok, sh = pcall(function() return base:isShowing() end)
         if ok and sh then cv:show(); pcall(function() cv:orderAbove(base) end) end
       end
       L.cv:mouseCallback(spec.cb)          -- nil = trasparente al mouse (click-through)
-      L.dx, L.dy, L.route = b.x, b.y, spec.route
+      L.dx, L.dy, L.route, L.hz = b.x, b.y, spec.route, spec.hz
       L.cv:topLeft({ x = f.x + b.x, y = f.y + b.y })
+    end
+    function P:layerPrune(keep)             -- elimina gli strati con chiave non in keep (set)
+      for k in pairs(layers) do if not keep[k] then P:layerClear(k) end end
     end
     function P:layerSize(key, w, h)         -- ritaglio dinamico (altezza della finestra in animazione)
       local L = layers[key]
@@ -3334,13 +3375,13 @@ do
     end
     function P:show()
       base:show()
-      each(function(cv) cv:show(); cv:orderAbove(base) end)
+      each(function(cv) cv:show(); cv:orderAbove(base) end, true)
       return P
     end
     function P:hide() base:hide(); each(function(cv) cv:hide() end); return P end
     function P:orderAbove(c2)
       base:orderAbove(c2)
-      each(function(cv) cv:orderAbove(base) end)
+      each(function(cv) cv:orderAbove(base) end, true)
       return P
     end
     function P:level(l)
@@ -3357,6 +3398,25 @@ do
     function P:elementAttribute(i, k, v)
       for _, L in pairs(layers) do
         local j = L.route and L.route[i]
+        if j and L.hz then
+          -- strato a frequenza limitata: le scritture si accodano (l'ultimo valore vince) e partono in blocco, al massimo hz volte/s
+          local key = j .. ":" .. k
+          L.pq = L.pq or {}; L.pord = L.pord or {}
+          if not L.pq[key] then L.pord[#L.pord + 1] = key end
+          L.pq[key] = { j, k, shiftVal(k, v, L.dx, L.dy) }
+          if not L.ft then
+            local gap = 1 / L.hz
+            L.ft = hs.timer.doAfter(math.max(0.001, gap - (hs.timer.secondsSinceEpoch() - (L.fl or 0))), function()
+              L.ft = nil
+              if L.dead or not L.pq then return end
+              local q, ord = L.pq, L.pord
+              L.pq, L.pord = nil, nil
+              L.fl = hs.timer.secondsSinceEpoch()
+              for _, kk in ipairs(ord) do local w = q[kk]; pcall(function() L.cv:elementAttribute(w[1], w[2], w[3]) end) end
+            end)
+          end
+          return P
+        end
         if j then
           L.cv:elementAttribute(j, k, shiftVal(k, v, L.dx, L.dy))
           if L.raster then L.touched = true; markDirty(L) end
@@ -3395,21 +3455,26 @@ do
   end
 
   -- Scopre QUALI elementi dell'HUD cambiano durante l'animazione (probe su una copia: nessuno stato reale toccato) e li sposta
-  -- in una canvas A. probe() -> els0, I0 (stessa card ricostruita a parte). Ritorna spec per layerApply, oppure nil (nessuna divisione).
-  -- els: lista reale (i passati ad A diventano segnaposto). bounds = {x,y,w,h} della base (A viene tagliata li').
-  function ICON.splitAnim(els, probe, bounds, off, drive)
+  -- in canvas piccole sopra la base. probe() -> els0, I0 (stessa card ricostruita a parte). Ritorna spec per layerApply, oppure nil.
+  -- els: lista reale (i passati agli strati diventano segnaposto). bounds = {x,y,w,h} della base (gli strati sono tagliati li').
+  -- grp (opzionale) = function(I0) -> function(i) -> chiave gruppo: gli elementi "caldi" (scritti durante la registrazione normale) si
+  -- dividono in piu' canvas, ognuna con la sua frequenza di ridisegno (hz); quelli scritti solo in avviso/riposo vanno in un gruppo "x" a
+  -- parte (a riposo non costa nulla). Senza grp: una sola canvas "a" (comportamento precedente).
+  function ICON.splitAnim(els, probe, bounds, off, drive, grp)
     off = off or 0
     if not ICON.layersOn() then return nil end
     local ok, spec = pcall(function()
       local els0, I0 = probe()
       if not I0 or (not drive and not I0.bars) then return nil end
-      local seen, W = {}, {}
+      local seen, seenHot, W = {}, {}, {}
+      local phase = 1
       local function ext(w, x0, y0, x1, y1)
         w.x0 = math.min(w.x0 or x0, x0); w.y0 = math.min(w.y0 or y0, y0); w.x1 = math.max(w.x1 or x1, x1); w.y1 = math.max(w.y1 or y1, y1)
       end
       local rec = setmetatable({}, { __index = function() return function() end end })
       rec.elementAttribute = function(_, i, k, v)
         seen[i] = true
+        if phase == 1 then seenHot[i] = true end
         local w = W[i]; if not w then w = {}; W[i] = w end
         if k == "frame" and type(v) == "table" then ext(w, v.x, v.y, v.x + v.w, v.y + v.h)
         elseif k == "center" and type(v) == "table" then ext(w, v.x, v.y, v.x, v.y)
@@ -3422,46 +3487,66 @@ do
         local lv = {}; for i = 1, #I0.bars do lv[i] = 0.2 + 0.7 * ((i * 0.37) % 1) end
         local t0 = 500
         for k = 1, 8 do hudVisuals(rec, I0, t0 + k * 0.09, 0.05, true, false, "0:0" .. k, nil, lv) end      -- registra
+        phase = 2
         for k = 1, 4 do hudVisuals(rec, I0, t0 + 1 + k * 0.09, 0.05, true, true, "NO MIC", nil, lv) end      -- avviso
         for k = 1, 4 do hudVisuals(rec, I0, t0 + 2 + k * 0.09, 0.05, false, false, "0:00", nil, lv) end     -- riposo
       end
-      if I0.badge and seen[I0.badge] and I0.icon0 and I0.icon1 then for i = I0.icon0, I0.icon1 do seen[i] = true end end   -- l'icona sta SOPRA il badge
-      local x0, y0, x1, y1, n = 1e9, 1e9, -1e9, -1e9, 0
-      for i in pairs(seen) do
+      if I0.badge and seen[I0.badge] and I0.icon0 and I0.icon1 then
+        for i = I0.icon0, I0.icon1 do seen[i] = true; if seenHot[I0.badge] then seenHot[i] = true end end   -- l'icona sta SOPRA il badge
+      end
+      local classify = grp and grp(I0) or nil
+      local G = {}                                   -- chiave -> { ids = {}, x0.. }
+      local function grow(g, i, e)
+        local a, b, c, d = extent(e)
+        if not a then return false end
+        local w = W[i]
+        if w and w.x0 then
+          local r = e.center and math.max(e.radius or 0, w.r or 0) + (e.strokeWidth or 0) * 0.5 + 1.5 or 0
+          if e.center then a, b, c, d = math.min(a, w.x0 - r), math.min(b, w.y0 - r), math.max(c, w.x1 + r), math.max(d, w.y1 + r)
+          else a, b, c, d = math.min(a, w.x0 - 2), math.min(b, w.y0 - 2), math.max(c, w.x1 + 2), math.max(d, w.y1 + 2) end
+        elseif w and w.r and e.center then
+          local r = w.r + (e.strokeWidth or 0) * 0.5 + 1.5
+          a, b, c, d = math.min(a, e.center.x - r), math.min(b, e.center.y - r), math.max(c, e.center.x + r), math.max(d, e.center.y + r)
+        end
+        g.x0 = math.min(g.x0 or a, a); g.y0 = math.min(g.y0 or b, b); g.x1 = math.max(g.x1 or c, c); g.y1 = math.max(g.y1 or d, d)
+        return true
+      end
+      local n = 0
+      local idxs = {}; for i in pairs(seen) do idxs[#idxs + 1] = i end
+      table.sort(idxs)
+      for _, i in ipairs(idxs) do
         local e = els0[i]
         if e and not (e.trackMouseUp or e.trackMouseDown or e.trackMouseEnterExit or e.trackMouseMove or e.id) and e.type ~= "image" and e.action ~= "clip" then
-          local a, b, c, d = extent(e)
-          if a then
-            local w = W[i]
-            if w and w.x0 then
-              local r = e.center and math.max(e.radius or 0, w.r or 0) + (e.strokeWidth or 0) * 0.5 + 1.5 or 0
-              if e.center then a, b, c, d = math.min(a, w.x0 - r), math.min(b, w.y0 - r), math.max(c, w.x1 + r), math.max(d, w.y1 + r)
-              else a, b, c, d = math.min(a, w.x0 - 2), math.min(b, w.y0 - 2), math.max(c, w.x1 + 2), math.max(d, w.y1 + 2) end
-            elseif w and w.r and e.center then
-              local r = w.r + (e.strokeWidth or 0) * 0.5 + 1.5
-              a, b, c, d = math.min(a, e.center.x - r), math.min(b, e.center.y - r), math.max(c, e.center.x + r), math.max(d, e.center.y + r)
-            end
-            x0 = math.min(x0, a); y0 = math.min(y0, b); x1 = math.max(x1, c); y1 = math.max(y1, d)
-            n = n + 1
-          else seen[i] = nil end
-        else seen[i] = nil end
+          local key = "a"
+          if classify then key = seenHot[i] and classify(i) or "x" end
+          local g = G[key]; if not g then g = { ids = {} }; G[key] = g end
+          if grow(g, i, e) then g.ids[#g.ids + 1] = i; n = n + 1 end
+        end
       end
       if n == 0 then return nil end
       -- ritaglio ai bordi della base, margine intero (pixel pieni)
       local bx, by, bw, bh = bounds.x, bounds.y, bounds.w, bounds.h
-      x0 = math.max(bx, math.floor(x0 - 2)); y0 = math.max(by, math.floor(y0 - 2))
-      x1 = math.min(bx + bw, math.ceil(x1 + 2)); y1 = math.min(by + bh, math.ceil(y1 + 2))
-      if x1 - x0 < 4 or y1 - y0 < 4 then return nil end
-      local idxs = {}; for i in pairs(seen) do idxs[#idxs + 1] = i end
-      table.sort(idxs)
-      local A, route = {}, {}
-      for _, i in ipairs(idxs) do
-        local e = els[i + off]
-        if e then A[#A + 1] = shiftEl(e, x0, y0); route[i + off] = #A end
+      local orig, groups, order = {}, {}, {}
+      for key, g in pairs(G) do
+        local x0 = math.max(bx, math.floor(g.x0 - 2)); local y0 = math.max(by, math.floor(g.y0 - 2))
+        local x1 = math.min(bx + bw, math.ceil(g.x1 + 2)); local y1 = math.min(by + bh, math.ceil(g.y1 + 2))
+        if x1 - x0 >= 4 and y1 - y0 >= 4 then
+          local A, route = {}, {}
+          for _, i in ipairs(g.ids) do
+            local e = els[i + off]
+            if e then A[#A + 1] = shiftEl(e, x0, y0); route[i + off] = #A end
+          end
+          for i in pairs(route) do orig[i] = els[i]; els[i] = ICON.skipEl() end
+          if #A > 0 then
+            groups[key] = { els = A, route = route, box = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 }, minIdx = g.ids[1] }
+            order[#order + 1] = key
+          end
+        end
       end
-      local orig = {}
-      for i in pairs(route) do orig[i] = els[i]; els[i] = ICON.skipEl() end
-      return { els = A, route = route, box = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 }, orig = orig }
+      if #order == 0 then return nil end
+      if not classify then local g = groups.a; g.orig = orig; return g end
+      table.sort(order, function(p, q) return groups[p].minIdx > groups[q].minIdx end)     -- creazione dall'alto: l'indice piu' basso resta sotto
+      return { groups = groups, order = order, orig = orig }
     end)
     if not ok then ICON.log("[GW] strati: " .. tostring(spec)); return nil end
     return spec
