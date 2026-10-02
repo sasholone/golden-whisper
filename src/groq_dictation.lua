@@ -432,9 +432,17 @@ local function scaleFor(preset)
   else return 1.0 end
 end
 
-local function systemIsDark()
-  local out = hs.execute("defaults read -g AppleInterfaceStyle 2>/dev/null")
-  return (out or ""):find("Dark") ~= nil
+local systemIsDark
+do   -- cache 3s: "Auto" non deve lanciare un processo ad ogni disegno (scroll, hover...)
+  local cache = { t = -100, v = false }
+  systemIsDark = function()
+    local t = hs.timer.secondsSinceEpoch()
+    if t - cache.t > 3 then
+      local out = hs.execute("defaults read -g AppleInterfaceStyle 2>/dev/null")
+      cache.v = (out or ""):find("Dark") ~= nil; cache.t = t
+    end
+    return cache.v
+  end
 end
 
 local function resolveMode()
@@ -1204,12 +1212,12 @@ local function ptCol(kind, i, n)
   return gradAt(COL, (i - 1) / math.max(1, n - 1))
 end
 -- elementi (nell'ordine) da aggiungere a els; ritorna { kind, idx = {...}, ox, oy, w, h, s }
-function ICON.partsBuild(els, ox, oy, w, h, s)
+function ICON.partsBuild(els, ox, oy, w, h, s, lite)
   local kind = COL.fx and COL.fx.part
   local spec = kind and PT[kind]
   if not spec then return nil end
   local R = { kind = kind, idx = {}, ox = ox, oy = oy, w = w, h = h, s = s }
-  for i = 1, spec.n do
+  for i = 1, (lite and math.ceil(spec.n * 0.5) or spec.n) do
     local col = withA(ptCol(kind, i, spec.n), 0)
     local el
     if spec.shape == "c" or spec.shape == "s" then
@@ -1299,7 +1307,7 @@ end
 ------------------------------------------------------------------------
 local NCARD = 25          -- slot riservati: 8 alone + 8 ambient + 4 contatto + corpo/riflesso/highlight/filo gradiente/bordo
 
-pushShadow = function(list, x, y, w, h, s, radius, mul, noGlow)
+pushShadow = function(list, x, y, w, h, s, radius, mul, noGlow, lite)
   local glow = (config.glowOn == true) and not noGlow
   local shadow = (config.shadowOn ~= false)
   if not glow and not shadow then return end
@@ -1307,25 +1315,27 @@ pushShadow = function(list, x, y, w, h, s, radius, mul, noGlow)
   local k = clampN(config.shadowIntensity or 0.5, 0, 1)
   local m = (mul or 1) * (COL.shadowK or 1)
   if glow then
-    local ga = (COL.dark and 0.05 or 0.055) * (mul or 1)
-    for i = 1, 8 do
-      local e = i * 2.4 * s
-      local c = COL.multi and gradAt(COL, (i - 1) / 7) or COL.accent
+    local gn = lite and 4 or 8                                    -- lite: meno strati (stessa resa, metà elementi)
+    local ga = (COL.dark and 0.05 or 0.055) * (mul or 1) * (8 / gn)
+    for i = 1, gn do
+      local e = i * 2.4 * (8 / gn) * s
+      local c = COL.multi and gradAt(COL, (i - 1) / (gn - 1)) or COL.accent
       list[#list + 1] = { type = "rectangle", action = "fill", fillColor = withA(c, ga),
         roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
         frame = { x = x - e, y = y - e, w = w + 2 * e, h = h + 2 * e } }
     end
   end
   if not shadow then return end
-  for i = 1, 8 do                       -- ambient: ampia e morbida
-    local e = i * 2.6 * s * k
-    list[#list + 1] = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = 0.021 * m },
+  local an = lite and 3 or 8
+  for i = 1, an do                       -- ambient: ampia e morbida
+    local e = i * 2.6 * (8 / an) * s * k
+    list[#list + 1] = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = 0.021 * (8 / an) * m },
       roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
       frame = { x = x - e, y = y - e + 8 * s * k, w = w + 2 * e, h = h + 2 * e } }
   end
-  for i = 1, 4 do                       -- contatto: stretta e più scura
-    local e = i * 0.9 * s * k
-    list[#list + 1] = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = 0.05 * m },
+  for i = 1, (lite and 1 or 4) do        -- contatto: stretta e più scura
+    local e = (lite and 2.4 or i * 0.9) * s * k
+    list[#list + 1] = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = (lite and 0.13 or 0.05) * m },
       roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
       frame = { x = x - e, y = y - e + 2 * s * k + 1, w = w + 2 * e, h = h + 2 * e } }
   end
@@ -1337,7 +1347,7 @@ pushGlass = function(list, x, y, w, h, r, o)
   o = o or {}
   local s = o.s or 1
   r = math.max(1, math.min(r, h / 2, w / 2))
-  if o.shadow ~= false then pushShadow(list, x, y, w, h, s, r, o.shadowMul) end
+  if o.shadow ~= false then pushShadow(list, x, y, w, h, s, r, o.shadowMul, nil, o.lite) end
   local body = #list + 1
   list[body] = { type = "rectangle", action = "fill", fillColor = COL.bg,
     roundedRectRadii = { xRadius = r, yRadius = r }, frame = { x = x, y = y, w = w, h = h },
@@ -1621,8 +1631,8 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   local n = vertical and 9 or 12
   local pw, ph = recDims(vertical)
   idx.pw, idx.ph = pw, ph
-  idx.border, idx.body = pushGlass(els, ox, oy, sc(pw), sc(ph), R(28 * s), { s = s, id = map and "drag" or nil })
-  idx.parts = ICON.partsBuild(els, ox, oy, sc(pw), sc(ph), s)       -- particelle dello stile (se ne ha)
+  idx.border, idx.body = pushGlass(els, ox, oy, sc(pw), sc(ph), R(28 * s), { s = s, id = map and "drag" or nil, lite = (map == nil) })
+  idx.parts = ICON.partsBuild(els, ox, oy, sc(pw), sc(ph), s, map == nil)       -- particelle dello stile (se ne ha)
 
   -- badge mic (registrazione) oppure ingranaggio (in pausa: impostazioni/scelta mic)
   local bcx = ox + sc(vertical and 28 or 31)
@@ -1870,19 +1880,29 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
     local grow = math.min(0.75, 0.55 * pk)
     local cols = { warn and COL.warn or COL.accent, warn and COL.warn or (COL.multi and COL.accent2 or COL.accent) }
     local speed = warn and 1.9 or 0.85
+    local RL = I.ringLast
+    if not RL then RL = {}; I.ringLast = RL end
     for k, ri in ipairs({ I.ring1, I.ring2 }) do
       local ph = (t * speed + (k - 1) * 0.5) % 1
       local e = 1 - (1 - ph) * (1 - ph)
-      cv:elementAttribute(ri, "radius", finite(I.br * (1 + grow * e), I.br))
-      cv:elementAttribute(ri, "strokeColor", withA(cols[k], active and 0.55 * math.min(1, pk) * spow(1 - ph, 1.6) or 0))
+      local rad = finite(I.br * (1 + grow * e), I.br)
+      local al = active and 0.55 * math.min(1, pk) * spow(1 - ph, 1.6) or 0
+      local L = RL[k]
+      -- scrive solo ciò che cambia oltre soglia (a riposo / pulsazione 0 niente da aggiornare)
+      if not L or math.abs(rad - L.r) > 0.12 or math.abs(al - L.a) > 0.012 or warn ~= L.w then
+        cv:elementAttribute(ri, "radius", rad)
+        cv:elementAttribute(ri, "strokeColor", withA(cols[k], al))
+        RL[k] = { r = rad, a = al, w = warn }
+      end
     end
-    cv:elementAttribute(I.badge, "radius", finite(I.br * (1 + (active and 0.035 * pk * math.sin(t * 2 * math.pi * 0.85) or 0)), I.br))
+    local brd = finite(I.br * (1 + (active and 0.035 * pk * math.sin(t * 2 * math.pi * 0.85) or 0)), I.br)
+    if not RL.b or math.abs(brd - RL.b) > 0.06 then cv:elementAttribute(I.badge, "radius", brd); RL.b = brd end
   end)
 
   -- particelle dello stile (neve, pipistrelli, ...): ~22 aggiornamenti/s, ferme se le animazioni sono spente o a riposo
   guarded("particles", function()
     if not I.parts then return end
-    if t - (I.partT or 0) < 0.045 and not I.partDirty then return end
+    if t - (I.partT or 0) < (I.preview and 0.1 or 0.06) and not I.partDirty then return end
     I.partT = t
     ICON.partsTick(cv, I.parts, t, animOn() and active and not warn)
   end)
@@ -1895,6 +1915,9 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
     local styleDots, styleLine = (I.wstyle == "dots"), (I.wstyle == "line")
     local pts = {}
     local cols = {}
+    local ckey = (active and 1 or 0) + (warn and 2 or 0)
+    if I.cacheKey ~= ckey or not I.bh then I.cacheKey = ckey; I.bh = {}; I.ba = {} end      -- cambio stato: riscrivi tutto
+    local BH, BA = I.bh, I.ba
     for i, b in ipairs(I.bars) do
       local target = 0
       if active and not warn then target = finite((src and src[i]) or 0, 0) end
@@ -1919,20 +1942,32 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
         pts[i] = bm.horizontal and { x = b.px, y = b.py + off } or { x = b.px + off, y = b.py }
         cols[i] = col
       elseif styleDots then
-        local r = (bm.dotMax * 0.38 + lv * bm.dotMax * 0.62) * bm.s
-        cv:elementAttribute(b.idx, "radius", finite(r, 1))
-        cv:elementAttribute(b.idx, "fillColor", col)
-      else
-        if bm.horizontal then
-          local h = (4 + lv * bm.maxLen) * bm.s
-          if bm.q then h = math.max(bm.q, math.floor(h / (bm.q * bm.s) + 0.5) * bm.q * bm.s) end          -- a blocchi
-          cv:elementAttribute(b.idx, "frame", { x = b.px - bm.thick * bm.s / 2, y = b.py - h / 2, w = bm.thick * bm.s, h = finite(h, 4) })
-        else
-          local w = (5 + lv * bm.maxLen) * bm.s
-          if bm.q then w = math.max(bm.q, math.floor(w / (bm.q * bm.s) + 0.5) * bm.q * bm.s) end
-          cv:elementAttribute(b.idx, "frame", { x = b.px - w / 2, y = b.py - bm.thick * bm.s / 2, w = finite(w, 5), h = bm.thick * bm.s })
+        local r = finite((bm.dotMax * 0.38 + lv * bm.dotMax * 0.62) * bm.s, 1)
+        if not BH[i] or math.abs(r - BH[i]) > 0.08 or not BA[i] or math.abs(a - BA[i]) > 0.012 then
+          cv:elementAttribute(b.idx, "radius", r)
+          cv:elementAttribute(b.idx, "fillColor", col)
+          BH[i], BA[i] = r, a
         end
-        cv:elementAttribute(b.idx, "fillColor", col)
+      else
+        local ext
+        if bm.horizontal then
+          ext = (4 + lv * bm.maxLen) * bm.s
+          if bm.q then ext = math.max(bm.q, math.floor(ext / (bm.q * bm.s) + 0.5) * bm.q * bm.s) end          -- a blocchi
+        else
+          ext = (5 + lv * bm.maxLen) * bm.s
+          if bm.q then ext = math.max(bm.q, math.floor(ext / (bm.q * bm.s) + 0.5) * bm.q * bm.s) end
+        end
+        ext = finite(ext, 4)
+        -- scrive solo se la barra è cambiata oltre una soglia (mezzo pixel / ~1% di opacità)
+        if not BH[i] or math.abs(ext - BH[i]) > 0.4 or not BA[i] or math.abs(a - BA[i]) > 0.012 then
+          if bm.horizontal then
+            cv:elementAttribute(b.idx, "frame", { x = b.px - bm.thick * bm.s / 2, y = b.py - ext / 2, w = bm.thick * bm.s, h = ext })
+          else
+            cv:elementAttribute(b.idx, "frame", { x = b.px - ext / 2, y = b.py - bm.thick * bm.s / 2, w = ext, h = bm.thick * bm.s })
+          end
+          cv:elementAttribute(b.idx, "fillColor", col)
+          BH[i], BA[i] = ext, a
+        end
       end
     end
     if styleLine and I.segs then
@@ -2041,7 +2076,8 @@ local settingsPos = nil        -- posizione scelta trascinando (nil = centrato)
 -- stato delle impostazioni: finestra a dimensione FISSA, contenuto scorrevole
 -- H = altezza TARGET (a misura del tab, tetto = cap); hCur = altezza visibile durante l'animazione
 local SET = { scroll = 0, maxScroll = 0, sliders = {}, sbA = 0, W = nil, H = nil, cap = nil, minH = 300, hCur = nil,
-  frame = nil, pending = false, ghost = nil, clipIdx = nil, botIdx = nil, pill = {}, tog = {}, trial = false }
+  frame = nil, pending = false, ghost = nil, botIdx = nil, pill = {}, tog = {}, trial = false,
+  sc = { 0, 0 }, reg = nil, dy = {}, wCur = nil, themeW = 800, cxHome = nil, lastScroll = 0 }
 local scrollTap, previewTimer, PREV = nil, nil, nil
 local resetArmAt = 0
 
@@ -2050,11 +2086,13 @@ local function shallow(t) local c = {}; for k, v in pairs(t) do c[k] = v end ret
 local function pct(v) return string.format("%d%%", math.floor(finite(v, 0) * 100 + 0.5)) end
 
 -- riempie gli slot riservati in testa (ombra + vetro) una volta nota l'altezza
-local function fillShell(els, W, H, dragId)
+local function fillShell(els, W, H, dragId, n, lite)
   local head = {}
-  pushGlass(head, PSP, PSP, W - 2 * PSP, H - 2 * PSP, R(20), { s = 1, id = dragId, sheenH = 58, sheenA = 0.6, shadowMul = 1.25 })
-  for i = 1, NCARD do els[i] = head[i] or placeholder() end
+  pushGlass(head, PSP, PSP, W - 2 * PSP, H - 2 * PSP, R(20), { s = 1, id = dragId, sheenH = 58, sheenA = 0.6, shadowMul = 1.25, lite = lite })
+  for i = 1, n or NCARD do els[i] = head[i] or placeholder() end
 end
+-- quanti elementi occupano ombra + vetro (versione "lite"): alone 4 + ombra 4 + corpo/riflesso/highlight/filo/bordo 5
+function SET.shellN() return ((config.glowOn == true) and 4 or 0) + ((config.shadowOn ~= false) and 4 or 0) + 5 end
 
 -- entrata a molla / cambio pagina (alpha + salita) e uscita ease-in
 local function panelIn(group, cv, fx, fy, W, H, dy, a0)
@@ -2134,12 +2172,19 @@ end
 -- IMPOSTAZIONI  (3 tab: Generale · Tasti · Tema). Finestra a dimensione fissa, ancorata in
 -- alto a sinistra; il contenuto che eccede scorre con rotella/trackpad (clip + scrollbar).
 ------------------------------------------------------------------------
-local function settingsGeometry()
+-- larghezza (canvas, ombra inclusa) e altezza massima per pagina: Tema si allarga (simmetrico), tetto = schermo-48
+local function widthFor(page)
   local sf = hs.screen.mainScreen():frame()
-  local W = SPANEL_W + 2 * PSP
-  local H = math.max(420, math.min(680, sf.h - 24))
-  return W, H
+  local base = SPANEL_W + 2 * PSP
+  if page == "theme" then return math.max(base, math.min(SET.themeW, sf.w - 48)) end
+  return base
 end
+local function capFor(page)
+  local sf = hs.screen.mainScreen():frame()
+  if page == "theme" then return math.max(480, math.min(760, sf.h - 24)) end
+  return math.max(420, math.min(680, sf.h - 24))
+end
+local function settingsGeometry() return widthFor(settingsPage), capFor(settingsPage) end
 
 local function killGhost()
   local G = SET.ghost; SET.ghost = nil
@@ -2154,33 +2199,97 @@ closeSettings = function()
   settingsCanvas = nil; settingsPos = nil
   stopPreview(); stopScrollTap(); killGhost()
   SET.K.msg = nil; SET.K.armAt = 0; SET.K.tipReset(); SET.K.exp = false; SET.K.q = 0; Anim.cancel("setvis", "kx")
-  SET.frame = nil; SET.W = nil; SET.H = nil; SET.cap = nil; SET.hCur = nil; SET.scroll = 0; SET.maxScroll = 0; SET.pill = {}; SET.tog = {}
+  SET.frame = nil; SET.W = nil; SET.H = nil; SET.cap = nil; SET.hCur = nil; SET.wCur = nil; SET.sc = { 0, 0 }; SET.reg = nil; SET.dy = {}
+  SET.pill = {}; SET.tog = {}; SET.cxHome = nil; SET.shellLast = nil; SET.hero = nil
   Anim.cancel("sethv"); Anim.cancel("setui"); Anim.cancel("setvis"); Anim.cancel("setsb")
   panelOut(cv)
 end
 
--- scrollbar sottile: compare mentre si scorre, poi svanisce
+-- scrollbar sottile: compare mentre si scorre, poi svanisce (una per regione)
 local function pokeScrollbar()
-  if SET.maxScroll <= 0 or not SET.sbIdx then return end
+  local any = false
+  for _, r in pairs(SET.reg or {}) do if r.sbIdx then any = true end end
+  if not any then return end
   Anim.run("setsb", "fade", 1.5, "linear", function(t)
     local a = (t < 0.55) and 1 or (1 - (t - 0.55) / 0.45)
     SET.sbA = clampN(a, 0, 1) * 0.36
-    local cv = settingsCanvas
-    if cv and SET.sbIdx then cv:elementAttribute(SET.sbIdx, "fillColor", withA(COL.fg, SET.sbA)) end
+    local cv = settingsCanvas; if not cv then return end
+    for _, r in pairs(SET.reg or {}) do
+      if r.sbIdx then cv:elementAttribute(r.sbIdx, "fillColor", withA(COL.fg, SET.sbA)) end
+    end
   end, function() SET.sbA = 0 end, true)
 end
 
-local function scrollBy(d)
-  if not settingsCanvas or SET.maxScroll <= 0 then return end
-  local ns = clampN(SET.scroll + finite(d, 0), 0, SET.maxScroll)
-  if ns == SET.scroll then return end
-  SET.scroll = ns
-  if not SET.pending then
+-- animazioni che scrivono posizioni ASSOLUTE dentro le regioni (non compatibili con lo scroll per spostamento)
+local function tweensBusy()
+  for k, a in pairs(Anim.list) do
+    if (a.group == "setui" and k ~= "setui|pill:tab") or k == "setvis|kx" then return true end
+  end
+  return false
+end
+
+-- sposta gli elementi di una regione al nuovo scroll: niente replaceElements, solo gli elementi in vista (+60px)
+local function regionShift(cv, r)
+  local d = r.scroll - r.base
+  SET.dy[r.i] = d
+  local lo, hi = r.top - 60, r.bot + 60
+  for _, rec in ipairs(r.shift) do
+    if rec[4] ~= d then
+      local k, kind, g = rec[1], rec[2], rec[3]
+      local y1, y2
+      if kind == "frame" then y1, y2 = g.y - d, g.y + g.h - d
+      elseif kind == "center" then y1, y2 = g.y - d - 20, g.y - d + 20
+      else y1 = (g[1] and g[1].y or 0) - d - 30; y2 = y1 + 60 end
+      if y2 >= lo and y1 <= hi then
+        rec[4] = d
+        if kind == "frame" then cv:elementAttribute(k, "frame", { x = g.x, y = g.y - d, w = g.w, h = g.h })
+        elseif kind == "center" then cv:elementAttribute(k, "center", { x = g.x, y = g.y - d })
+        else
+          local pts = {}
+          for i, pt in ipairs(g) do pts[i] = { x = pt.x, y = pt.y - d } end
+          cv:elementAttribute(k, "coordinates", pts)
+        end
+      end
+    end
+  end
+  if r.sbIdx and r.max > 0 then
+    local barY = r.contentTop + 4 + (r.trackH - r.barH) * clampN(r.scroll / r.max, 0, 1)
+    cv:elementAttribute(r.sbIdx, "frame", { x = r.cx1 - 5, y = barY, w = 3, h = r.barH })
+  end
+end
+
+function SET.applyScroll()
+  local cv = settingsCanvas
+  if not cv or not SET.reg then return end
+  local need, changed = false, {}
+  for _, r in pairs(SET.reg) do
+    if r.scroll ~= r.shown then
+      changed[#changed + 1] = r
+      if math.abs(r.scroll - r.base) > r.margin - 12 then need = true end     -- uscito dalla fascia costruita: ricostruisci
+    end
+  end
+  if #changed == 0 then return end
+  if need or tweensBusy() then renderSettings({ scroll = true }); return end
+  local anySc = false
+  for _, r in ipairs(changed) do regionShift(cv, r); r.shown = r.scroll end
+  for _, r in pairs(SET.reg) do if r.scroll > 0.5 then anySc = true end end
+  if SET.divIdx then cv:elementAttribute(SET.divIdx, "fillColor", anySc and COL.divider or withA(COL.divider, 0)) end
+  pokeScrollbar()
+end
+
+local function scrollBy(d, i)
+  local r = SET.reg and SET.reg[i]
+  if not settingsCanvas or not r or r.max <= 0 then return end
+  local ns = clampN(r.scroll + finite(d, 0), 0, r.max)
+  if ns == r.scroll then return end
+  r.scroll = ns; SET.sc[i] = ns
+  SET.lastScroll = now()
+  if not SET.pending then            -- coalescing: ~40 aggiornamenti/s al massimo, qualunque sia la frequenza degli eventi
     SET.pending = true
-    hs.timer.doAfter(0.022, function()
+    hs.timer.doAfter(0.024, function()
       SET.pending = false
       if settingsCanvas then
-        local ok, err = pcall(renderSettings, { scroll = true })
+        local ok, err = pcall(SET.applyScroll)
         if not ok then print("[GW] scroll: " .. tostring(err)) end
       end
     end)
@@ -2197,7 +2306,13 @@ local function startScrollTap()
     if m.x < f.x + PSP or m.x > f.x + f.w - PSP or m.y < f.y + PSP or m.y > f.y + f.h - PSP then return false end
     local dy = e:getProperty(ev.properties.scrollWheelEventPointDeltaAxis1)
     if not dy or dy == 0 then dy = (e:getProperty(ev.properties.scrollWheelEventDeltaAxis1) or 0) * 8 end
-    scrollBy(-finite(dy, 0))
+    -- regione sotto il mouse (colonna); fuori da ogni colonna: la più vicina
+    local rx, pick, best = m.x - f.x, 1, 1e9
+    for i, r in pairs(SET.reg or {}) do
+      local dist = (rx < r.cx0) and (r.cx0 - rx) or ((rx > r.cx1) and (rx - r.cx1) or 0)
+      if dist < best then best = dist; pick = i end
+    end
+    scrollBy(-finite(dy, 0), pick)
     return true
   end)
   scrollTap:start()
@@ -2211,10 +2326,11 @@ local function startSlider(id)
     local cv = settingsCanvas; if not cv then return end
     local f = cv:frame()
     local rel = clampN((hs.mouse.absolutePosition().x - f.x - sl.tx) / sl.tw, 0, 1)
+    local sty = sl.ty - (SET.dy[sl.reg or 1] or 0)
     local v = tonumber(string.format("%.2f", def.lo + rel * (def.hi - def.lo)))
     config[def.key] = v
-    cv:elementAttribute(sl.knob, "center", { x = sl.tx + rel * sl.tw, y = sl.ty })
-    cv:elementAttribute(sl.fill, "frame", { x = sl.tx, y = sl.ty - 2.5, w = math.max(0.1, rel * sl.tw), h = 5 })
+    cv:elementAttribute(sl.knob, "center", { x = sl.tx + rel * sl.tw, y = sty })
+    cv:elementAttribute(sl.fill, "frame", { x = sl.tx, y = sty - 2.5, w = math.max(0.1, rel * sl.tw), h = 5 })
     cv:elementAttribute(sl.val, "text", pct(v))
     if def.live then def.live() end
     if commit then
@@ -2236,14 +2352,17 @@ settingsMouse = function(_c, msg, id)
   if msg == "mouseEnter" then
     hoverTo(settingsCanvas, sHoverMap, "sethv", id, true)
     if id == "key_info" then SET.K.tipHover = true; SET.K.tipFade() end
+    local sk = tostring(id):match("^style:(.+)$")
+    if sk then SET.heroSet(sk) end
     return
   elseif msg == "mouseExit" then
     hoverTo(settingsCanvas, sHoverMap, "sethv", id, false)
     if id == "key_info" then SET.K.tipHover = false; SET.K.tipFade() end
+    if tostring(id):match("^style:") then SET.heroSet(nil) end
     return
   elseif msg == "mouseDown" then
     if id == "s_drag" then
-      dragCanvas(settingsCanvas, false, function(f) settingsPos = { x = f.x, y = f.y }; SET.frame = { x = f.x, y = f.y, w = f.w, h = f.h } end)
+      dragCanvas(settingsCanvas, false, function(f) settingsPos = { x = f.x, y = f.y }; SET.frame = { x = f.x, y = f.y, w = f.w, h = f.h }; SET.cxHome = nil end)
     else
       local sid = tostring(id):match("^sl_(.+)$")
       if sid then startSlider(sid) end
@@ -2280,13 +2399,13 @@ settingsMouse = function(_c, msg, id)
   if not kind then return end
   local pageChange = false
   if kind == "tab" then
-    if settingsPage ~= val then settingsPage = val; SET.scroll = 0; pageChange = true; SET.K.tipReset() end
+    if settingsPage ~= val then settingsPage = val; SET.sc = { 0, 0 }; pageChange = true; SET.K.tipReset() end
   elseif kind == "mic" then
     local d = settingsDevices[tonumber(val)]
     if d then config.audioDevice = d.idx; config.micName = d.name; persist("micDevice", d.idx); persist("micName", d.name) end
   elseif kind == "size" then config.sizePreset = val; config.scale = scaleFor(val); persist("sizePreset", val); rebuildHUD()
   elseif kind == "orient" then config.orientation = val; persist("orientation", val); resetLevels(); rebuildHUD()
-  elseif kind == "cat" then SET.cat = val
+  elseif kind == "cat" then SET.cat = val; SET.sc[1] = 0
   elseif kind == "style" then setLook("style", val); applyTheme(); rebuildHUD()
   elseif kind == "theme" then setLook("themeMode", val); applyTheme(); rebuildHUD()
   elseif kind == "corner" then setLook("cornerStyle", val); rebuildHUD()
@@ -2309,14 +2428,15 @@ settingsMouse = function(_c, msg, id)
   renderSettings({ page = pageChange })
 end
 
--- anteprima viva: ogni tick aggiorna il mini-HUD del tab Tema con l'onda finta
+-- anteprima viva: ~12 aggiornamenti/s del mini-HUD del tab Tema, in pausa durante scroll / resize / crossfade
 local function previewTick()
   local cv, P = settingsCanvas, PREV
   if not cv or not P or settingsPage ~= "theme" then return end
-  if P.bot < SET.clipTop or P.top > SET.clipBot then return end     -- fuori vista: salta
-  local I = P.I
   local t = now()
-  local dt = clampN(I.last and (t - I.last) or 0.05, 0.001, 0.1)
+  if t - (SET.lastScroll or 0) < 0.25 then return end
+  if Anim.list["setvis|h"] or Anim.list["setvis|xfade"] or Anim.list["setvis|vis"] then return end
+  local I = P.I
+  local dt = clampN(I.last and (t - I.last) or 0.08, 0.001, 0.12)
   I.last = t
   if I.body and P.bgA ~= COL.bg.alpha then       -- trasparenza del vetro cambiata (slider in corso)
     P.bgA = COL.bg.alpha
@@ -2331,7 +2451,33 @@ local function previewTick()
 end
 local function startPreview()
   if previewTimer then return end
-  previewTimer = hs.timer.doEvery(1 / 20, function() guarded("preview", previewTick) end)
+  previewTimer = hs.timer.doEvery(1 / 12, function() guarded("preview", previewTick) end)
+end
+
+-- hero degli stili: mostra lo stile sotto il mouse (o quello attuale); aggiornamento a pochi attributi
+function SET.heroSet(key)
+  SET.heroWant = key
+  if SET.heroPending then return end
+  SET.heroPending = true
+  hs.timer.doAfter(0.04, function()
+    SET.heroPending = false
+    local cv, Hh = settingsCanvas, SET.hero
+    if not cv or not Hh then return end
+    local want = SET.heroWant
+    local k2 = want or config.style
+    local F = FAMILIES[k2]
+    if not F or (Hh.shown == k2 and Hh.hover == (want ~= nil)) then return end
+    local T = F[Hh.mode]
+    Hh.shown = k2; Hh.hover = (want ~= nil)
+    local catNm = ""
+    for _, c in ipairs(FAMILY_ORDER.cats) do if c[1] == F.cat then catNm = c[2] end end
+    cv:elementAttribute(Hh.bg, "fillColor", T.accent)
+    cv:elementAttribute(Hh.bg, "fillGradientColors", T.grad)
+    cv:elementAttribute(Hh.name, "text", F.name)
+    cv:elementAttribute(Hh.name, "textColor", T.accentText)
+    cv:elementAttribute(Hh.sub, "text", ((want ~= nil) and "Anteprima · clicca per usarlo · " or "Stile attuale · ") .. catNm)
+    cv:elementAttribute(Hh.sub, "textColor", withA(T.accentText, 0.82))
+  end)
 end
 
 ------------------------------------------------------------------------
@@ -2466,25 +2612,69 @@ function K.anim(a)
 end
 
 -- costruisce tutti gli elementi per un dato offset di scroll. Ritorna (els, info)
-local function layoutSettings(scroll)
+local function layoutSettings()
   local W, H = SET.W, SET.H
-  local pad = PSP + 20
-  local IW = W - 2 * pad
+  local pad0 = PSP + 20
+  local pad = pad0
+  local IW0 = W - 2 * pad0
+  local IW = IW0
   local top = PSP + 20
   local tabsY = top + 56
   local bodyTop = tabsY + 36 + 16
   local clipTop = tabsY + 36 + 8
   local clipBot = H - PSP - 8
-  local viewH = clipBot - bodyTop
   SET.clipTop, SET.clipBot = clipTop, clipBot
   local GAP = 18 * gapK()
+  local trial = SET.trial                 -- prova a secco (targetHeight): niente elementi per le sezioni, niente effetti
   local els = {}
   sHoverMap = {}
-  SET.sliders = {}; SET.sbIdx = nil; SET.keyTip = nil; SET.kAnim = nil
+  SET.sliders = {}; SET.keyTip = nil; SET.kAnim = nil; SET.hero = nil
   PREV = nil
-  for i = 1, NCARD do els[i] = placeholder() end     -- slot per ombra + vetro (riempiti a fine layout)
+  SET.reg = {}; SET.dy = {}
+  local regs = SET.reg
+  local nShell = SET.shellN()
+  SET.nShell = nShell
+  for i = 1, nShell do els[i] = placeholder() end     -- slot per ombra + vetro (riempiti a fine layout)
   local function add(el) els[#els + 1] = el; return #els end
   local y = 0
+  local MARGIN = 140                                   -- elementi creati oltre il bordo visibile (scroll senza ridisegno)
+  local R0                                             -- regione di scroll aperta
+
+  -- REGIONI DI SCROLL: ogni regione ha un ritaglio, un proprio scroll (SET.sc[i]) e crea solo gli elementi
+  -- visibili + MARGIN. Lo scroll "normale" sposta gli elementi esistenti (elementAttribute), senza ridisegnare.
+  local function openRegion(i, cx0, cx1, ctop, cbot, contentTop)
+    local sc = SET.sc[i] or 0
+    local r = { i = i, cx0 = cx0, cx1 = cx1, top = ctop, bot = cbot, contentTop = contentTop, scroll = sc, base = sc, shown = sc,
+      visLo = ctop - MARGIN, visHi = cbot + MARGIN, margin = MARGIN }
+    r.clipIdx = add({ type = "rectangle", action = "clip", frame = { x = cx0, y = ctop, w = cx1 - cx0, h = math.max(1, cbot - ctop) } })
+    r.i0 = #els + 1
+    regs[i] = r; R0 = r
+    y = contentTop - sc
+  end
+  local function closeRegion(trail)
+    local r = R0
+    r.i1 = #els
+    add({ type = "resetClip" })
+    r.len = math.max(0, (y - trail) - (r.contentTop - r.scroll)) + 16
+    r.view = r.bot - r.contentTop
+    r.max = math.max(0, r.len - r.view)
+    local sh = {}
+    for k = r.i0, r.i1 do
+      local el = els[k]
+      if el.frame then sh[#sh + 1] = { k, "frame", el.frame }
+      elseif el.center then sh[#sh + 1] = { k, "center", el.center }
+      elseif el.coordinates then sh[#sh + 1] = { k, "coordinates", el.coordinates } end
+    end
+    r.shift = sh
+    R0 = nil
+  end
+  -- sezione di altezza nota h: costruita solo se interseca la fascia visibile (+margine)
+  local function S(h, fn)
+    local y0 = y
+    if not trial and R0 and (y0 + h >= R0.visLo) and (y0 <= R0.visHi) then fn() end
+    y = y0 + h
+  end
+
   local function box(x, by, w, h)
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.rowBg, strokeColor = COL.divider, strokeWidth = 1,
       roundedRectRadii = { xRadius = R(12), yRadius = R(12) }, frame = { x = x, y = by, w = w, h = h } })
@@ -2637,18 +2827,15 @@ local function layoutSettings(scroll)
     local valIdx = txt(els, pct(v), tx + tw2 + 6, sy + 14, 34, 16, 12, COL.fg3, { align = "right", lb = "clip" })
     add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = tx - 10, y = sy + 6, w = tw2 + 20, h = 32 },
       trackMouseDown = true, id = "sl_" .. id })
-    SET.sliders[id] = { tx = tx, tw = tw2, ty = ty, knob = knobIdx, fill = fillIdx, val = valIdx }
+    SET.sliders[id] = { tx = tx, tw = tw2, ty = ty, knob = knobIdx, fill = fillIdx, val = valIdx, reg = R0 and R0.i or 1 }
   end
 
   ----------------------------------------------------------------------
   -- CORPO (scorrevole, ritagliato)
   ----------------------------------------------------------------------
-  SET.clipIdx = add({ type = "rectangle", action = "clip", frame = { x = PSP + 1, y = clipTop, w = W - 2 * PSP - 2, h = clipBot - clipTop } })
-  y = bodyTop - scroll
-  local contentStart = y
-  local trail = GAP          -- spazio vuoto in coda al contenuto (tolto dal calcolo dell'altezza naturale)
-
   if settingsPage == "general" then
+    openRegion(1, PSP + 1, W - PSP - 1, clipTop, clipBot, bodyTop)
+    local trail = GAP          -- spazio vuoto in coda al contenuto (tolto dal calcolo dell'altezza naturale)
     -- CHIAVE GROQ: non impostata = in evidenza in cima; già impostata = scheda riducibile in fondo (dopo l'orientamento)
     if not K.has then
       txt(els, "CHIAVE GROQ", pad + 2, y, IW, 14, 10.5, COL.fg3, { font = "bold" })
@@ -2808,27 +2995,25 @@ local function layoutSettings(scroll)
       end
       y = y + 44 + (K.exp and bodyH or 0) + GAP
     end
+  -- popover (i) della chiave Groq: sopra tutto il corpo, trasparenza animata da K.tipA
+  K.tipEls = {}
+  if settingsPage == "general" and SET.keyTip then
+    local tx, ty, tw, th = pad, SET.keyTip.y, IW, 212
+    local function reg(ix, attr) K.tipEls[#K.tipEls + 1] = { ix, attr, els[ix][attr] }; els[ix][attr] = withA(els[ix][attr], (els[ix][attr].alpha or 1) * K.tipA) end
+    local bg = add({ type = "rectangle", action = "strokeAndFill", fillColor = withA(mix(COL.solid, COL.accent, 0.07), 0.99), strokeColor = COL.border,
+      strokeWidth = 1, roundedRectRadii = { xRadius = R(14), yRadius = R(14) }, frame = { x = tx, y = ty, w = tw, h = th } })
+    reg(bg, "fillColor"); reg(bg, "strokeColor")
+    local tt = txt(els, "Come ottenere la chiave", tx + 14, ty + 12, tw - 28, 18, 12.5, COL.fg, { font = "bold", lb = "clip" })
+    reg(tt, "textColor")
+    local st = txt(els, table.concat(KEY_STEPS, "\n"), tx + 14, ty + 36, tw - 28, th - 44, 11.5, COL.fg2, { lb = "wordWrap" })
+    reg(st, "textColor")
+  end
+    closeRegion(trail)
   elseif settingsPage == "theme" then
-    -- ANTEPRIMA VIVA: mini-HUD con le impostazioni correnti
-    sec("ANTEPRIMA")
-    local bh = 104
-    add({ type = "rectangle", action = "fill", fillColor = COL.rowBg, roundedRectRadii = { xRadius = R(14), yRadius = R(14) },
-      frame = { x = pad, y = y, w = IW, h = bh }, fillGradient = "linear", fillGradientAngle = 25, fillGradientColors = gradFade(COL, 0.55, 0.20) })
-    add({ type = "rectangle", action = "stroke", strokeColor = COL.divider, strokeWidth = 1, roundedRectRadii = { xRadius = R(14), yRadius = R(14) },
-      frame = { x = pad + 0.5, y = y + 0.5, w = IW - 1, h = bh - 1 } })
-    do
-      local s = 0.92
-      local pw, ph = recDims(false)
-      local ox, oy = pad + (IW - pw * s) / 2, y + (bh - ph * s) / 2
-      local I = buildRecCard(els, ox, oy, s, false, false, nil, false)
-      I.preview = true
-      PREV = { I = I, top = y, bot = y + bh, t0 = now(), bgA = COL.bg.alpha }
-    end
-    y = y + bh + GAP
-
-    -- STILE: chip di categoria (a capo se serve) + griglia di campioni a gradiente (nel modo corrente)
-    sec("STILE")
     local mode = resolveMode()
+    local Lw = math.floor(IW0 * 0.58)                   -- colonna sinistra: stili · destra: anteprima + controlli
+    local colBx = pad0 + Lw + 16
+    local colBw = IW0 - Lw - 16
     local cats = FAMILY_ORDER.cats
     local curCat = SET.cat or "all"
     do
@@ -2836,144 +3021,233 @@ local function layoutSettings(scroll)
       for _, c in ipairs(cats) do if c[1] == curCat then found = true end end
       if not found then curCat = "all"; SET.cat = "all" end
     end
-    do
-      local cx, cy = pad, y
-      for _, c in ipairs(cats) do
-        local w = math.max(36, (utf8.len(c[2]) or #c[2]) * 6.2 + 20)
-        if cx + w > pad + IW + 0.5 then cx = pad; cy = cy + 28 end
+    local list, counts = {}, { all = #FAMILY_ORDER }
+    for _, key in ipairs(FAMILY_ORDER) do
+      local ct = FAMILIES[key].cat
+      counts[ct] = (counts[ct] or 0) + 1
+      if curCat == "all" or ct == curCat then list[#list + 1] = key end
+    end
+    local heroH, catW = 60, 104
+    local leftTop = bodyTop + heroH + 12               -- inizio di categorie e carte
+
+    ---- COLONNA SINISTRA ---------------------------------------------------
+    if not trial then
+      -- hero: gradiente a più stop + onda finta + nome; segue lo stile sotto il mouse (altrimenti quello attuale)
+      local FH = FAMILIES[config.style] or FAMILIES.gold
+      local TH = FH[mode]
+      local hbg = add({ type = "rectangle", action = "fill", fillColor = TH.accent, roundedRectRadii = { xRadius = R(14), yRadius = R(14) },
+        frame = { x = pad0, y = bodyTop, w = Lw, h = heroH }, fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = TH.grad })
+      for i = 0, 10 do
+        local bh = 8 + 24 * math.abs(math.sin(i * 0.83 + 0.55))
+        add({ type = "rectangle", action = "fill", fillColor = { red = 1, green = 1, blue = 1, alpha = 0.40 },
+          roundedRectRadii = { xRadius = 1.6, yRadius = 1.6 },
+          frame = { x = pad0 + Lw - 18 - (11 - i) * 8.5, y = bodyTop + (heroH - bh) / 2, w = 3.2, h = bh } })
+      end
+      local hn = txt(els, FH.name, pad0 + 16, bodyTop + 11, Lw - 150, 22, 15, TH.accentText, { font = "bold", lb = "clip" })
+      local catNm = ""
+      for _, c in ipairs(cats) do if c[1] == FH.cat then catNm = c[2] end end
+      local hs = txt(els, "Stile attuale · " .. catNm, pad0 + 16, bodyTop + 35, Lw - 150, 16, 10.5, withA(TH.accentText, 0.82), { lb = "clip" })
+      SET.hero = { bg = hbg, name = hn, sub = hs, mode = mode, shown = config.style, hover = false }
+
+      -- categorie (con conteggio)
+      for i, c in ipairs(cats) do
+        local ry = leftTop + (i - 1) * 36
         local on = (c[1] == curCat)
         if on then
-          add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(11), yRadius = R(11) },
-            frame = { x = cx, y = cy, w = w, h = 22 }, fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = COL.grad })
+          add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(10), yRadius = R(10) },
+            frame = { x = pad0, y = ry, w = catW, h = 32 }, fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = COL.grad })
         end
-        local ho = { fill = on and withA(COL.fgWhite, 0) or COL.rowBg, hoverFill = on and withA(COL.fgWhite, 0.16) or COL.accentSoft }
-        if not on then ho.stroke = COL.divider; ho.hoverStroke = COL.borderSoft end
-        hitRect(els, sHoverMap, "cat:" .. c[1], cx, cy, w, 22, R(11), ho)
-        txt(els, c[2], cx, cy + 4, w, 15, 10.5, on and COL.accentText or COL.fg2, { font = "semi", align = "center", lb = "clip" })
-        cx = cx + w + 6
+        hitRect(els, sHoverMap, "cat:" .. c[1], pad0, ry, catW, 32, R(10),
+          { fill = on and withA(COL.fgWhite, 0) or withA(COL.rowBg, 0), hoverFill = on and withA(COL.fgWhite, 0.16) or COL.rowHover })
+        txt(els, c[2], pad0 + 12, ry + 8, catW - 44, 16, 12, on and COL.accentText or COL.fg2, { font = "semi", lb = "clip" })
+        txt(els, tostring(counts[c[1]] or 0), pad0 + catW - 34, ry + 9, 24, 14, 10.5, on and withA(COL.accentText, 0.75) or COL.fg3, { align = "right", lb = "clip" })
       end
-      y = cy + 22 + 14
     end
-    local list = {}
-    for _, key in ipairs(FAMILY_ORDER) do
-      if curCat == "all" or FAMILIES[key].cat == curCat then list[#list + 1] = key end
-    end
-    local ncol = 5
-    local cw, rowH = IW / ncol, 60
-    for i, key in ipairs(list) do
-      local F = FAMILIES[key]; local T = F[mode]
-      local c, r = (i - 1) % ncol, math.floor((i - 1) / ncol)
-      local cx, cy = pad + (c + 0.5) * cw, y + r * rowH + 19
-      local cur = (config.style == key)
-      add({ type = "circle", action = "fill", fillColor = T.accent, center = { x = cx, y = cy }, radius = 13.5,
-        fillGradient = "linear", fillGradientAngle = 45, fillGradientColors = T.grad })
-      if cur then add({ type = "circle", action = "stroke", strokeColor = withA(T.accent, 0.3), strokeWidth = 1, center = { x = cx, y = cy }, radius = 20.5 }) end
-      if not cur and F.fx and F.fx.icon then ICON.drawFx(els, F.fx.icon, cx, cy, 15, T.accentText, T) end
-      hitCircle(els, sHoverMap, "style:" .. key, cx, cy, 17.5, { fill = CLEAR,
-        stroke = cur and T.accent or withA(T.accent, 0), hoverStroke = cur and T.accent or withA(T.accent, 0.6), sw = 2 })
-      if cur then ICON.check(els, cx, cy, 14, T.accentText, 2.4) end
-      txt(els, F.name, cx - cw / 2, y + r * rowH + 40, cw, 13, 9.5, cur and COL.fg or COL.fg3, { font = cur and "semi" or "reg", align = "center", lb = "clip" })
-    end
-    y = y + math.ceil(#list / ncol) * rowH + 10
 
-    sec("MODO")
-    segmented("theme", { { label = "Dark", val = "dark", icon = ICON.moon }, { label = "Light", val = "light", icon = ICON.sun },
-      { label = "Auto", val = "auto", icon = ICON.auto } },
-      config.themeMode, { y = y })
-    y = y + 32 + GAP
+    -- carte stile (regione 1: scorrono, solo quelle visibili hanno elementi)
+    do
+      local cardsX = pad0 + catW + 10
+      local cardsW = Lw - catW - 10
+      local ncol = clampN(math.floor((cardsW + 8) / 94), 2, 4)
+      local cw = (cardsW - (ncol - 1) * 8) / ncol
+      local ch, pitch = 76, 84
+      openRegion(1, cardsX - 3, cardsX + cardsW + 3, leftTop - 4, clipBot, leftTop)
+      pad, IW = cardsX, cardsW
+      local rows = math.ceil(#list / ncol)
+      local y0 = y
+      if not trial then
+        for r = 0, rows - 1 do
+          local ry = y0 + r * pitch
+          if ry + ch >= R0.visLo and ry <= R0.visHi then
+            for c = 0, ncol - 1 do
+              local key = list[r * ncol + c + 1]
+              if key then
+                local F = FAMILIES[key]; local T = F[mode]
+                local cx = cardsX + c * (cw + 8)
+                local cur = (config.style == key)
+                hitRect(els, sHoverMap, "style:" .. key, cx, ry, cw, ch, R(12), {
+                  fill = cur and T.accentSoft or COL.rowBg, hoverFill = cur and withA(T.accent, 0.3) or COL.rowHover,
+                  stroke = cur and T.accent or COL.divider, hoverStroke = cur and T.accent or withA(T.accent, 0.75), sw = cur and 2 or 1 })
+                add({ type = "rectangle", action = "fill", fillColor = T.accent, roundedRectRadii = { xRadius = R(8), yRadius = R(8) },
+                  frame = { x = cx + 5, y = ry + 5, w = cw - 10, h = 42 }, fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = T.grad })
+                -- mini onda dello stile (rotonda / a blocchi / a punta)
+                local kind = F.fx and F.fx.bar or "round"
+                local pts = {}
+                for i = 0, 12 do
+                  local u = i / 12
+                  local v = math.sin(u * math.pi * 3.4 + 0.6) * math.sin(u * math.pi)
+                  if kind == "pixel" then v = math.floor(v * 3 + 0.5) / 3
+                  elseif kind == "square" then v = ((i % 2 == 0) and 1 or -1) * math.abs(v) end
+                  pts[#pts + 1] = { x = cx + 5 + 12 + u * (cw - 34), y = ry + 26 + v * 11 }
+                end
+                add({ type = "segments", action = "stroke", strokeColor = withA(T.accentText, kind == "ghost" and 0.6 or 0.92), strokeWidth = 2,
+                  strokeCapStyle = "round", strokeJoinStyle = "round", coordinates = pts })
+                txt(els, F.name, cx + 3, ry + 52, cw - 6, 16, 10.5, cur and COL.fg or COL.fg2, { font = cur and "semi" or "reg", align = "center", lb = "clip" })
+                if cur then
+                  add({ type = "circle", action = "fill", fillColor = T.accentText, center = { x = cx + cw - 15, y = ry + 15 }, radius = 7.5 })
+                  ICON.check(els, cx + cw - 15, ry + 15, 11, T.accent, 2.2)
+                end
+              end
+            end
+          end
+        end
+      end
+      y = y0 + rows * pitch
+      closeRegion(8)
+    end
 
-    -- OMBRA + ALONE
-    sec("OMBRA E ALONE")
+    ---- COLONNA DESTRA -------------------------------------------------------
+    pad, IW = colBx, colBw
+    y = bodyTop
+    sec("ANTEPRIMA")
+    do
+      local bh = 104
+      if not trial then
+        add({ type = "rectangle", action = "fill", fillColor = COL.rowBg, roundedRectRadii = { xRadius = R(14), yRadius = R(14) },
+          frame = { x = pad, y = y, w = IW, h = bh }, fillGradient = "linear", fillGradientAngle = 25, fillGradientColors = gradFade(COL, 0.55, 0.20) })
+        add({ type = "rectangle", action = "stroke", strokeColor = COL.divider, strokeWidth = 1, roundedRectRadii = { xRadius = R(14), yRadius = R(14) },
+          frame = { x = pad + 0.5, y = y + 0.5, w = IW - 1, h = bh - 1 } })
+        local pw, ph = recDims(false)
+        local s = clampN((IW - 20) / pw, 0.5, 0.92)
+        local ox, oy = pad + (IW - pw * s) / 2, y + (bh - ph * s) / 2
+        local I = buildRecCard(els, ox, oy, s, false, false, nil, false)
+        I.preview = true
+        PREV = { I = I, top = y, bot = y + bh, t0 = now(), bgA = COL.bg.alpha }
+      end
+      y = y + bh + 12
+    end
+    local ctB = y                                         -- = bodyTop + 136
+    openRegion(2, colBx - 4, colBx + colBw + 6, ctB - 6, clipBot, ctB)
+    pad, IW = colBx, colBw
+
+    S(20 + 32 + GAP, function()
+      sec("MODO")
+      segmented("theme", { { label = "Dark", val = "dark", icon = ICON.moon }, { label = "Light", val = "light", icon = ICON.sun },
+        { label = "Auto", val = "auto", icon = ICON.auto } }, config.themeMode, { y = y })
+    end)
+
     local on = config.shadowOn ~= false
     local bh2 = on and 88 or 44
-    local glowOn = config.glowOn == true
-    box(pad, y, IW, bh2 + 44)
-    switchRow("tg_shadow", on and "Ombra attiva" or "Ombra disattivata", on, y)
-    local ry = y + 44
-    if on then
+    S(20 + bh2 + 44 + GAP, function()
+      sec("OMBRA E ALONE")
+      local glowOn = config.glowOn == true
+      box(pad, y, IW, bh2 + 44)
+      switchRow("tg_shadow", on and "Ombra attiva" or "Ombra disattivata", on, y)
+      local ry = y + 44
+      if on then
+        add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = ry, w = IW - 32, h = 1 } })
+        sliderRow("shadow", "Intensità", ry)
+        ry = ry + 44
+      end
       add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = ry, w = IW - 32, h = 1 } })
-      sliderRow("shadow", "Intensità", ry)
-      ry = ry + 44
-    end
-    add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = ry, w = IW - 32, h = 1 } })
-    switchRow("tg_glow", glowOn and "Alone accento attivo" or "Alone accento", glowOn, ry)
-    y = y + bh2 + 44 + GAP
+      switchRow("tg_glow", glowOn and "Alone accento attivo" or "Alone accento", glowOn, ry)
+    end)
 
-    sec("VETRO")
-    box(pad, y, IW, 44)
-    sliderRow("glass", "Opacità", y)
-    y = y + 44 + GAP
+    S(20 + 44 + GAP, function()
+      sec("VETRO")
+      box(pad, y, IW, 44)
+      sliderRow("glass", "Opacità", y)
+    end)
 
-    sec("ANGOLI")
-    segmented("corner", { { label = "Squadrati", val = "square" }, { label = "Medi", val = "medium" }, { label = "Tondi", val = "round" } },
-      config.cornerStyle or "round", { y = y })
-    y = y + 32 + GAP
+    S(20 + 32 + GAP, function()
+      sec("ANGOLI")
+      segmented("corner", { { label = "Squadrati", val = "square" }, { label = "Medi", val = "medium" }, { label = "Tondi", val = "round" } },
+        config.cornerStyle or "round", { y = y })
+    end)
 
-    sec("ONDA")
-    segmented("wave", { { label = "Barre", val = "bars" }, { label = "Sottili", val = "thin" }, { label = "Punti", val = "dots" }, { label = "Linea", val = "line" } },
-      waveStyleOf(), { y = y, size = 11.5 })
-    y = y + 32 + 10
-    segmented("wcol", { { label = "Accento", val = "accent" }, { label = "Gradiente", val = "gradient" } },
-      waveGradientOn() and "gradient" or "accent", { y = y })
-    y = y + 32 + GAP
+    S(20 + 32 + 10 + 32 + GAP, function()
+      sec("ONDA")
+      segmented("wave", { { label = "Barre", val = "bars" }, { label = "Sottili", val = "thin" }, { label = "Punti", val = "dots" }, { label = "Linea", val = "line" } },
+        waveStyleOf(), { y = y, size = 11.5 })
+      y = y + 32 + 10
+      segmented("wcol", { { label = "Accento", val = "accent" }, { label = "Gradiente", val = "gradient" } },
+        waveGradientOn() and "gradient" or "accent", { y = y })
+    end)
 
-    sec("PULSAZIONE MIC")
-    box(pad, y, IW, 44)
-    sliderRow("pulse", "Intensità", y)
-    y = y + 44 + GAP
+    S(20 + 44 + GAP, function()
+      sec("PULSAZIONE MIC")
+      box(pad, y, IW, 44)
+      sliderRow("pulse", "Intensità", y)
+    end)
 
-    sec("ANIMAZIONI")
     local an = animOn()
-    box(pad, y, IW, an and 44 + 50 or 44)
-    switchRow("tg_anim", an and "Animazioni attive" or "Animazioni disattivate", an, y)
-    if an then
-      add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = y + 44, w = IW - 32, h = 1 } })
-      segmented("aspeed", { { label = "Calme", val = "calm" }, { label = "Normali", val = "normal" }, { label = "Vivaci", val = "lively" } },
-        SPEED_MUL[config.animSpeed] and config.animSpeed or "normal", { x = pad + 10, w = IW - 20, y = y + 52, h = 30, size = 11.5 })
-      y = y + 44 + 50
-    else
-      y = y + 44
-    end
-    y = y + GAP
+    S(20 + (an and 94 or 44) + GAP, function()
+      sec("ANIMAZIONI")
+      box(pad, y, IW, an and 44 + 50 or 44)
+      switchRow("tg_anim", an and "Animazioni attive" or "Animazioni disattivate", an, y)
+      if an then
+        add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = y + 44, w = IW - 32, h = 1 } })
+        segmented("aspeed", { { label = "Calme", val = "calm" }, { label = "Normali", val = "normal" }, { label = "Vivaci", val = "lively" } },
+          SPEED_MUL[config.animSpeed] and config.animSpeed or "normal", { x = pad + 10, w = IW - 20, y = y + 52, h = 30, size = 11.5 })
+      end
+    end)
 
-    sec("TESTO")
-    segmented("uifont", { { label = "SF", val = "sf" }, { label = "Arrotondato", val = "rounded" }, { label = "Mono", val = "mono" } },
-      (config.uiFont == "rounded" or config.uiFont == "mono") and config.uiFont or "sf", { y = y })
-    y = y + 32 + GAP
+    S(20 + 32 + GAP, function()
+      sec("TESTO")
+      segmented("uifont", { { label = "SF", val = "sf" }, { label = "Arrotondato", val = "rounded" }, { label = "Mono", val = "mono" } },
+        (config.uiFont == "rounded" or config.uiFont == "mono") and config.uiFont or "sf", { y = y })
+    end)
 
-    sec("TIMER")
-    segmented("tfont", { { label = "Mono", val = "mono" }, { label = "SF", val = "sf" }, { label = "Arrotondato", val = "rounded" } },
-      (config.timerFont == "sf" or config.timerFont == "rounded") and config.timerFont or "mono", { y = y })
-    y = y + 32 + GAP
+    S(20 + 32 + GAP, function()
+      sec("TIMER")
+      segmented("tfont", { { label = "Mono", val = "mono" }, { label = "SF", val = "sf" }, { label = "Arrotondato", val = "rounded" } },
+        (config.timerFont == "sf" or config.timerFont == "rounded") and config.timerFont or "mono", { y = y })
+    end)
 
-    sec("DENSITÀ")
-    segmented("dens", { { label = "Compatta", val = "compact" }, { label = "Normale", val = "normal" }, { label = "Ampia", val = "wide" } },
-      DENS[config.density] and config.density or "normal", { y = y })
-    y = y + 32 + GAP
+    S(20 + 32 + GAP, function()
+      sec("DENSITÀ")
+      segmented("dens", { { label = "Compatta", val = "compact" }, { label = "Normale", val = "normal" }, { label = "Ampia", val = "wide" } },
+        DENS[config.density] and config.density or "normal", { y = y })
+    end)
 
-    sec("HUD A RIPOSO")
-    box(pad, y, IW, 44)
-    sliderRow("idle", "Opacità", y)
-    y = y + 44 + GAP
+    S(20 + 44 + GAP, function()
+      sec("HUD A RIPOSO")
+      box(pad, y, IW, 44)
+      sliderRow("idle", "Opacità", y)
+    end)
 
     -- azioni: Sorprendimi / Reset look
-    local bw = (IW - 10) / 2
-    local armed = resetArmAt > 0 and (now() - resetArmAt) < 3
-    add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(12), yRadius = R(12) },
-      frame = { x = pad, y = y, w = bw, h = 38 }, fillGradient = "linear", fillGradientAngle = COL.multi and 0 or 90, fillGradientColors = COL.grad })
-    hitRect(els, sHoverMap, "btn_random", pad, y, bw, 38, R(12), { fill = withA(COL.fgWhite, 0), hoverFill = withA(COL.fgWhite, 0.2) })
-    ICON.sparkle(els, pad + bw / 2 - 42, y + 19, 14, COL.accentText)
-    txt(els, "Sorprendimi", pad + bw / 2 - 30, y + 11, 90, 16, 12.5, COL.accentText, { font = "semi", lb = "clip" })
-    local rx = pad + bw + 10
-    hitRect(els, sHoverMap, "btn_reset", rx, y, bw, 38, R(12), { fill = armed and withA(COL.warn, 0.14) or COL.rowBg,
-      hoverFill = armed and withA(COL.warn, 0.22) or COL.accentSoft, stroke = armed and COL.warn or COL.borderSoft,
-      hoverStroke = armed and COL.warn or COL.border })
-    ICON.reset(els, rx + 20, y + 19, 14, armed and COL.warn or COL.accentInk)
-    txt(els, armed and "Sicuro? Tocca ancora" or "Reset look", rx + 34, y + 11, bw - 40, 16, armed and 11.5 or 12.5,
-      armed and COL.warn or COL.accentInk, { font = "semi", lb = "clip" })
-    y = y + 38 + 10
-    trail = 10
+    S(38 + 10, function()
+      local bw = (IW - 10) / 2
+      local armed = resetArmAt > 0 and (now() - resetArmAt) < 3
+      add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(12), yRadius = R(12) },
+        frame = { x = pad, y = y, w = bw, h = 38 }, fillGradient = "linear", fillGradientAngle = COL.multi and 0 or 90, fillGradientColors = COL.grad })
+      hitRect(els, sHoverMap, "btn_random", pad, y, bw, 38, R(12), { fill = withA(COL.fgWhite, 0), hoverFill = withA(COL.fgWhite, 0.2) })
+      ICON.sparkle(els, pad + bw / 2 - 42, y + 19, 14, COL.accentText)
+      txt(els, "Sorprendimi", pad + bw / 2 - 30, y + 11, 90, 16, 12.5, COL.accentText, { font = "semi", lb = "clip" })
+      local rx = pad + bw + 10
+      hitRect(els, sHoverMap, "btn_reset", rx, y, bw, 38, R(12), { fill = armed and withA(COL.warn, 0.14) or COL.rowBg,
+        hoverFill = armed and withA(COL.warn, 0.22) or COL.accentSoft, stroke = armed and COL.warn or COL.borderSoft,
+        hoverStroke = armed and COL.warn or COL.border })
+      ICON.reset(els, rx + 20, y + 19, 14, armed and COL.warn or COL.accentInk)
+      txt(els, armed and "Confermi?" or "Reset look", rx + 34, y + 11, bw - 40, 16, 12.5,
+        armed and COL.warn or COL.accentInk, { font = "semi", lb = "clip" })
+    end)
+    closeRegion(10)
+    pad, IW = pad0, IW0
   else
+    openRegion(1, PSP + 1, W - PSP - 1, clipTop, clipBot, bodyTop)
+    local trail = GAP
     -- TASTI: una card per tasto [tasto] [gesto] [elimina]
     local function bindings(actionKey, list, gestures)
       for i, b in ipairs(list) do
@@ -3005,69 +3279,64 @@ local function layoutSettings(scroll)
     bindings("pause", config.pauseBindings, { { label = "1 tap", val = "single" }, { label = "2 tap", val = "double" } })
     y = y - 12
     trail = GAP - 12
+    closeRegion(trail)
   end
-  -- popover (i) della chiave Groq: sopra tutto il corpo, trasparenza animata da K.tipA
-  K.tipEls = {}
-  if settingsPage == "general" and SET.keyTip then
-    local tx, ty, tw, th = pad, SET.keyTip.y, IW, 212
-    local function reg(ix, attr) K.tipEls[#K.tipEls + 1] = { ix, attr, els[ix][attr] }; els[ix][attr] = withA(els[ix][attr], (els[ix][attr].alpha or 1) * K.tipA) end
-    local bg = add({ type = "rectangle", action = "strokeAndFill", fillColor = withA(mix(COL.solid, COL.accent, 0.07), 0.99), strokeColor = COL.border,
-      strokeWidth = 1, roundedRectRadii = { xRadius = R(14), yRadius = R(14) }, frame = { x = tx, y = ty, w = tw, h = th } })
-    reg(bg, "fillColor"); reg(bg, "strokeColor")
-    local tt = txt(els, "Come ottenere la chiave", tx + 14, ty + 12, tw - 28, 18, 12.5, COL.fg, { font = "bold", lb = "clip" })
-    reg(tt, "textColor")
-    local st = txt(els, table.concat(KEY_STEPS, "\n"), tx + 14, ty + 36, tw - 28, th - 44, 11.5, COL.fg2, { lb = "wordWrap" })
-    reg(st, "textColor")
-  end
-  add({ type = "resetClip" })
-
-  -- lunghezza del contenuto = dal primo titolo all'ultimo controllo + 16px d'aria (la coda vuota non conta):
-  -- è anche l'altezza "naturale" del tab (vedi targetHeight)
-  local contentLen = math.max(0, (y - trail) - contentStart) + 16
-  local maxScroll = math.max(0, contentLen - viewH)
 
   ----------------------------------------------------------------------
   -- Sopra il corpo: schermi che bloccano i click sul contenuto scrollato fuori vista
   -- (e fanno da maniglia di trascinamento), scrollbar, intestazione e tab (fissi).
   ----------------------------------------------------------------------
-  add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = PSP, y = PSP, w = W - 2 * PSP, h = clipTop - PSP },
-    trackMouseDown = true, trackMouseUp = true, trackMouseEnterExit = true, id = "s_drag" })
+  pad, IW = pad0, IW0
+  local function cover(x, cy, w, h) add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = x, y = cy, w = w, h = h },
+    trackMouseDown = true, trackMouseUp = true, trackMouseEnterExit = true, id = "s_drag" }) end
+  cover(PSP, PSP, W - 2 * PSP, clipTop - PSP)
   SET.botIdx = add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = PSP, y = clipBot, w = W - 2 * PSP, h = H - PSP - clipBot },
     trackMouseDown = true, trackMouseUp = true, trackMouseEnterExit = true, id = "s_drag" })
-  if scroll > 0.5 then       -- filo sotto i tab quando il contenuto è scorso
-    add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad, y = clipTop, w = IW, h = 1 } })
+  if settingsPage == "theme" then            -- zone fisse sopra le regioni (hero / anteprima): niente click "fantasma" dal contenuto scorso
+    for _, r in pairs(regs) do cover(r.cx0 - 6, clipTop, r.cx1 - r.cx0 + 12, math.max(1, r.top - clipTop)) end
   end
-  if maxScroll > 0 then
-    local trackH = viewH - 8
-    local barH = clampN(trackH * viewH / math.max(1, contentLen), 28, trackH)
-    local barY = bodyTop + 4 + (trackH - barH) * clampN(scroll / maxScroll, 0, 1)
-    SET.sbIdx = add({ type = "rectangle", action = "fill", fillColor = withA(COL.fg, SET.sbA or 0),
-      roundedRectRadii = { xRadius = 1.5, yRadius = 1.5 }, frame = { x = W - PSP - 8, y = barY, w = 3, h = barH } })
+  local anySc = false
+  for _, r in pairs(regs) do if r.scroll > 0.5 then anySc = true end end
+  -- filo sotto i tab quando il contenuto è scorso (sempre presente, opacità 0 a scroll zero)
+  SET.divIdx = add({ type = "rectangle", action = "fill", fillColor = anySc and COL.divider or withA(COL.divider, 0),
+    frame = { x = pad, y = clipTop, w = IW, h = 1 } })
+  for _, r in pairs(regs) do
+    r.sbIdx = nil
+    if r.max > 0 then
+      local trackH = r.view - 8
+      local barH = clampN(trackH * r.view / math.max(1, r.len), 28, trackH)
+      local barY = r.contentTop + 4 + (trackH - barH) * clampN(r.scroll / r.max, 0, 1)
+      r.trackH, r.barH = trackH, barH
+      r.sbIdx = add({ type = "rectangle", action = "fill", fillColor = withA(COL.fg, SET.sbA or 0),
+        roundedRectRadii = { xRadius = 1.5, yRadius = 1.5 }, frame = { x = r.cx1 - 5, y = barY, w = 3, h = barH } })
+    end
   end
 
   y = top
   panelHeader(els, sHoverMap, pad, IW, y, "Impostazioni", ICON.gear, "s_close")
   y = y + 56
   segmented("tab", { { label = "Generale", val = "general", icon = ICON.sliders }, { label = "Tasti", val = "keys", icon = ICON.keyboard },
-    { label = "Tema", val = "theme", icon = ICON.palette } }, settingsPage, { y = y, h = 36, size = 12.5 })
+    { label = "Tema", val = "theme", icon = ICON.palette } }, settingsPage, { y = y, h = 36, size = 12.5, w = math.min(IW0, SPANEL_W - 40) })
 
-  fillShell(els, W, H, "s_drag")
-  return els, { maxScroll = maxScroll, contentLen = contentLen, bodyTop = bodyTop }
+  fillShell(els, W, H, "s_drag", nShell, true)
+  local natural = 0
+  for _, r in pairs(regs) do natural = math.max(natural, r.contentTop + r.len + PSP + 8) end
+  return els, { natural = natural, bodyTop = bodyTop }
 end
 
--- Altezza naturale del tab corrente: layout di prova al tetto (senza effetti collaterali sulle animazioni),
--- poi H = intestazione+tab (bodyTop) + contenuto + margini. Mai sotto minH, mai sopra il tetto (cap).
+-- Altezza naturale del tab corrente: layout di prova al tetto (a secco: nessuna animazione, nessuno stato toccato),
+-- poi H = intestazione+tab + contenuto + margini. Mai sotto minH, mai sopra il tetto (cap).
 local function targetHeight()
   local oldH = SET.H
   local sS, sT = shallow(segPrev), shallow(togglePrev)
   SET.H = SET.cap
-  SET.trial = true                        -- prova a secco: nessuna animazione avviata, nessuno stato toccato
-  local ok, _, info = pcall(layoutSettings, 0)
+  SET.trial = true
+  local ok, _, info = pcall(layoutSettings)
   SET.trial = false
   segPrev, togglePrev = sS, sT
   SET.H = oldH
   if not ok or type(info) ~= "table" then return SET.cap end
-  return clampN(finite(info.bodyTop, 0) + finite(info.contentLen, 0) + PSP + 8, SET.minH, SET.cap)
+  return clampN(finite(info.natural, 0), SET.minH, SET.cap)
 end
 
 -- schermo che contiene la finestra (per il clamp verso l'alto del bordo basso)
@@ -3083,45 +3352,55 @@ local function screenFrameFor(f)
   return hs.screen.mainScreen():frame()
 end
 
--- Porta alla nuova altezza h TUTTO ciò che ne dipende, in un colpo solo (stessa passata del run loop):
--- finestra (angolo alto-sinistra fermo, salvo ny), ombra/vetro/bordo (ricalcolati con pushGlass),
--- ritaglio del corpo e schermo-maniglia in basso. Il contenuto resta lo stesso: nessun ridisegno.
-local function applyShellH(cv, h, ny)
+-- Porta alla nuova misura (w, h) TUTTO ciò che ne dipende, in un colpo solo (stessa passata del run loop):
+-- finestra (nx/ny se dati), ombra/vetro/bordo (aggiornati solo se la misura è cambiata), ritagli delle regioni
+-- e schermo-maniglia in basso. Il contenuto resta lo stesso: nessun ridisegno.
+local function applyShell(cv, w, h, nx, ny)
   if not cv or not SET.W then return end
-  h = clampN(h, 40, 4000)
-  local W = SET.W
-  local head = {}
-  pushGlass(head, PSP, PSP, W - 2 * PSP, h - 2 * PSP, R(20), { s = 1, sheenH = 58, sheenA = 0.6, shadowMul = 1.25 })
-  for i = 1, math.min(#head, NCARD) do
-    local e = head[i]
-    if e.frame then cv:elementAttribute(i, "frame", e.frame) end
-  end
-  local clipBot = h - PSP - 8
-  if SET.clipIdx and SET.clipTop then
-    cv:elementAttribute(SET.clipIdx, "frame", { x = PSP + 1, y = SET.clipTop, w = W - 2 * PSP - 2, h = math.max(1, clipBot - SET.clipTop) })
-  end
-  if SET.botIdx then
-    cv:elementAttribute(SET.botIdx, "frame", { x = PSP, y = clipBot, w = W - 2 * PSP, h = h - PSP - clipBot })
+  w = clampN(finite(w, SET.W), 120, 6000)
+  h = clampN(finite(h, SET.H or 300), 40, 4000)
+  local last = SET.shellLast
+  if not last or math.abs(last.w - w) > 0.05 or math.abs(last.h - h) > 0.05 then
+    local head = {}
+    pushGlass(head, PSP, PSP, w - 2 * PSP, h - 2 * PSP, R(20), { s = 1, sheenH = 58, sheenA = 0.6, shadowMul = 1.25, lite = true })
+    local coords = (not last) or math.abs(last.w - w) > 0.05
+    for i = 1, math.min(#head, SET.nShell or NCARD) do
+      local e = head[i]
+      if e.frame then cv:elementAttribute(i, "frame", e.frame) end
+      if coords and e.coordinates then cv:elementAttribute(i, "coordinates", e.coordinates) end
+    end
+    local clipBot = h - PSP - 8
+    for _, r in pairs(SET.reg or {}) do
+      cv:elementAttribute(r.clipIdx, "frame", { x = r.cx0, y = r.top, w = r.cx1 - r.cx0, h = math.max(1, clipBot - r.top) })
+    end
+    if SET.botIdx then
+      cv:elementAttribute(SET.botIdx, "frame", { x = PSP, y = clipBot, w = SET.W - 2 * PSP, h = math.max(1, h - PSP - clipBot) })
+    end
+    SET.shellLast = { w = w, h = h }
   end
   local f = cv:frame()
-  cv:frame({ x = f.x, y = (ny ~= nil) and finite(ny, f.y) or f.y, w = W, h = h })
+  local fx, fy = (nx ~= nil) and finite(nx, f.x) or f.x, (ny ~= nil) and finite(ny, f.y) or f.y
+  if math.abs(f.x - fx) > 0.02 or math.abs(f.y - fy) > 0.02 or math.abs(f.w - w) > 0.02 or math.abs(f.h - h) > 0.02 then
+    cv:frame({ x = fx, y = fy, w = w, h = h })
+  end
 end
 
 -- fantasma del corpo uscente: istantanea della canvas, in una finestra sottile sopra (ritagliata al corpo)
-local function makeGhost(cv, hFrom, ct)
+local function makeGhost(cv, hFrom, ct, wFrom)
   killGhost()
   local ok, g = pcall(function()
     local img = cv:imageFromCanvas()
     if not img then return nil end
-    local f, W = cv:frame(), SET.W
+    local f = cv:frame()
     local gh = clampN(hFrom - PSP - 8 - ct, 1, 4000)
-    local gc = hs.canvas.new({ x = f.x + PSP + 1, y = f.y + ct, w = W - 2 * PSP - 2, h = gh })
+    local gw = clampN(wFrom - 2 * PSP - 2, 1, 6000)
+    local gc = hs.canvas.new({ x = f.x + PSP + 1, y = f.y + ct, w = gw, h = gh })
     gc:level(hs.canvas.windowLevels.overlay)
     gc:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
-    gc:appendElements({ type = "image", image = img, imageScaling = "scaleToFit", frame = { x = -(PSP + 1), y = -ct, w = W, h = hFrom } })
+    gc:appendElements({ type = "image", image = img, imageScaling = "scaleToFit", frame = { x = -(PSP + 1), y = -ct, w = wFrom, h = hFrom } })
     gc:alpha(1)
     gc:show()
-    return { cv = gc, ct = ct, gh = gh, ih = hFrom }
+    return { cv = gc, ct = ct, gh = gh, gw = gw, ih = hFrom, iw = wFrom }
   end)
   if ok and g then SET.ghost = g; return g end
   return nil
@@ -3131,7 +3410,8 @@ local function syncGhost()
   if not G or not cv or not SET.W then return end
   local f = cv:frame()
   local vis = clampN(finite(SET.hCur, G.gh + G.ct + PSP + 8) - PSP - 8 - G.ct, 1, G.gh)
-  G.cv:frame({ x = f.x + PSP + 1, y = f.y + G.ct, w = SET.W - 2 * PSP - 2, h = vis })
+  local gw = clampN(finite(SET.wCur, G.gw + 2 * PSP + 2) - 2 * PSP - 2, 1, G.gw)
+  G.cv:frame({ x = f.x + PSP + 1, y = f.y + G.ct, w = gw, h = vis })
 end
 local function fadeGhost(g)
   Anim.run("setvis", "xfade", 0.24, "inout", function(e)
@@ -3139,7 +3419,7 @@ local function fadeGhost(g)
     if not G or G ~= g then return end
     e = clamp01(e)
     G.cv:alpha(1 - e)
-    G.cv:elementAttribute(1, "frame", { x = -(PSP + 1), y = -G.ct - 6 * e, w = SET.W or 1, h = G.ih })
+    G.cv:elementAttribute(1, "frame", { x = -(PSP + 1), y = -G.ct - 6 * e, w = G.iw, h = G.ih })
     syncGhost()
   end, function() if SET.ghost == g then killGhost() end end)
 end
@@ -3151,16 +3431,22 @@ renderSettings = function(opts)
   local snapSeg, snapTog = shallow(segPrev), shallow(togglePrev)
   local cvOld = settingsCanvas
   local hFrom = cvOld and clampN(finite(SET.hCur, SET.H), 40, 4000) or nil
+  local wFrom = cvOld and clampN(finite(SET.wCur, SET.W), 120, 6000) or nil
   local oldClipTop = SET.clipTop
-  if not opts.scroll then SET.H = targetHeight() end      -- altezza a misura del contenuto di questo tab
-  local els, info = layoutSettings(SET.scroll)
-  SET.maxScroll = info.maxScroll
-  if SET.scroll > info.maxScroll + 0.5 then       -- il contenuto si è accorciato: riallinea lo scroll
-    SET.scroll = info.maxScroll
-    segPrev, togglePrev = snapSeg, snapTog
-    els, info = layoutSettings(SET.scroll)
-    SET.maxScroll = info.maxScroll
+  if not opts.scroll then
+    SET.W, SET.cap = settingsGeometry()                       -- larghezza e tetto del tab corrente
+    SET.H = targetHeight()                                    -- altezza a misura del contenuto di questo tab
   end
+  local els, info = layoutSettings()
+  local fix = false
+  for i, r in pairs(SET.reg) do                               -- il contenuto si è accorciato: riallinea lo scroll
+    if r.scroll > r.max + 0.5 then SET.sc[i] = r.max; fix = true end
+  end
+  if fix then
+    segPrev, togglePrev = snapSeg, snapTog
+    els, info = layoutSettings()
+  end
+  SET.shellLast = nil
   local W, tH = SET.W, SET.H
 
   local heightAnimating = false
@@ -3169,9 +3455,10 @@ renderSettings = function(opts)
     local fx, fy
     if settingsPos then fx, fy = settingsPos.x, settingsPos.y
     else fx = sf.x + (sf.w - W) / 2; fy = sf.y + (sf.h - tH) / 2 end
+    fx = math.max(sf.x, math.min(fx, sf.x + sf.w - W))
     fy = math.max(sf.y, math.min(fy, sf.y + sf.h - tH))
     SET.frame = { x = fx, y = fy, w = W, h = tH }
-    SET.hCur = tH
+    SET.hCur = tH; SET.wCur = W
     settingsCanvas = hs.canvas.new({ x = fx, y = fy, w = W, h = tH })
     settingsCanvas:level(hs.canvas.windowLevels.overlay)
     settingsCanvas:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
@@ -3182,44 +3469,54 @@ renderSettings = function(opts)
     panelIn("setvis", settingsCanvas, fx, fy, W, tH, 18)
     startScrollTap()
   else
-    -- stessa finestra, stessa posizione: header, tab e card restano dove sono; cambia solo il corpo
-    -- (e l'altezza, con l'angolo alto-sinistra fermo). Mai alpha < 1: niente lampeggio.
+    -- stessa finestra: header, tab e card restano dove sono; cambia solo il corpo (e la misura, con il centro
+    -- orizzontale e il bordo alto fermi). Mai alpha < 1: niente lampeggio.
     local cv = cvOld
     local f = cv:frame()
-    local moveOrGrow = (not opts.scroll) and (opts.page or math.abs(tH - hFrom) > 0.5)
+    local sizeChange = math.abs(tH - hFrom) > 0.5 or math.abs(W - wFrom) > 0.5
+    local moveOrGrow = (not opts.scroll) and (opts.page or sizeChange)
     if moveOrGrow and Anim.list["setvis|vis"] then      -- entrata ancora in corso: chiudila di netto
       Anim.cancel("setvis", "vis")
       cv:alpha(1)
-      if SET.frame then cv:frame({ x = SET.frame.x, y = SET.frame.y, w = W, h = hFrom }); f = cv:frame() end
+      if SET.frame then cv:frame({ x = SET.frame.x, y = SET.frame.y, w = wFrom, h = hFrom }); f = cv:frame() end
     end
     local ghost = nil
-    if opts.page and animOn() then ghost = makeGhost(cv, hFrom, oldClipTop or SET.clipTop) else killGhost() end
+    if opts.page and animOn() then ghost = makeGhost(cv, hFrom, oldClipTop or SET.clipTop, wFrom) else killGhost() end
     cv:replaceElements(els)                -- atomico: contenuto nuovo sotto il fantasma del vecchio
-    if opts.scroll or math.abs(tH - hFrom) <= 0.5 then
+    -- posizione di arrivo: allargamento SIMMETRICO attorno al centro (clamp ai bordi con minima correzione;
+    -- se corretto, si ricorda il centro voluto per tornare lì quando la finestra si restringe); alto fermo
+    local sf = screenFrameFor(f)
+    local x0, y0, xT, yT = f.x, f.y, f.x, f.y
+    if math.abs(W - wFrom) > 0.5 then
+      local cx = SET.cxHome or (f.x + wFrom / 2)
+      xT = cx - W / 2
+      local xC = math.max(sf.x, math.min(xT, sf.x + sf.w - W))
+      if math.abs(xC - xT) > 0.5 then SET.cxHome = cx else SET.cxHome = nil end
+      xT = xC
+    end
+    if tH > hFrom + 0.5 and f.y + tH > sf.y + sf.h then yT = math.max(sf.y, sf.y + sf.h - tH) end    -- solo se uscirebbe dal bordo basso
+    if opts.scroll or not sizeChange then
       SET.hCur = (math.abs(tH - hFrom) <= 0.5) and tH or hFrom
-      applyShellH(cv, SET.hCur)
+      SET.wCur = (math.abs(W - wFrom) <= 0.5) and W or wFrom
+      applyShell(cv, SET.wCur, SET.hCur)
       if Anim.list["setvis|h"] and opts.scroll then heightAnimating = true end
-    elseif not animOn() then
-      SET.hCur = tH
-      applyShellH(cv, tH)
+    elseif not animOn() then                -- animazioni spente: cambio istantaneo e atomico (misura + posizione insieme)
+      SET.hCur, SET.wCur = tH, W
+      applyShell(cv, W, tH, xT, yT)
+      local ff = cv:frame(); SET.frame = { x = ff.x, y = ff.y, w = ff.w, h = ff.h }
     else
-      applyShellH(cv, hFrom)               -- elementi nuovi (calcolati per tH) mostrati ancora all'altezza di partenza
+      applyShell(cv, wFrom, hFrom)
       heightAnimating = true
-      -- clamp verso l'alto SOLO se crescendo uscirebbe dal bordo basso dello schermo
-      local sf = screenFrameFor(f)
-      local y0, yT = f.y, f.y
-      if tH > hFrom + 0.5 and f.y + tH > sf.y + sf.h then yT = math.max(sf.y, sf.y + sf.h - tH) end
-      local shift = math.abs(yT - y0) > 0.5
       Anim.run("setvis", "h", 0.28, "out", function(e)
         local c2 = settingsCanvas; if not c2 then return end
         e = clamp01(e)
-        SET.hCur = lerp(hFrom, tH, e)
-        applyShellH(c2, SET.hCur, shift and lerp(y0, yT, e) or nil)
+        SET.hCur = lerp(hFrom, tH, e); SET.wCur = lerp(wFrom, W, e)
+        applyShell(c2, SET.wCur, SET.hCur, lerp(x0, xT, e), lerp(y0, yT, e))
         syncGhost()
       end, function()
         local c2 = settingsCanvas; if not c2 then return end
-        SET.hCur = tH
-        applyShellH(c2, tH, shift and yT or nil)
+        SET.hCur, SET.wCur = tH, W
+        applyShell(c2, W, tH, xT, yT)
         local ff = c2:frame()
         SET.frame = { x = ff.x, y = ff.y, w = ff.w, h = ff.h }
         syncGhost()
@@ -3238,7 +3535,7 @@ openSettings = function()
   SET.K.refresh(); SET.K.armAt = 0; SET.K.tipReset(); SET.K.exp = false; SET.K.q = 0
   getAudioDevices(function(list)
     deviceCache = list; settingsDevices = list
-    if not settingsCanvas then SET.scroll = 0; SET.W, SET.cap = settingsGeometry(); SET.H = SET.cap end
+    if not settingsCanvas then SET.sc = { 0, 0 }; SET.W, SET.cap = settingsGeometry(); SET.H = SET.cap end
     renderSettings()
   end)
 end
@@ -3793,7 +4090,7 @@ function M.transcribeRecovered()
 end
 function M.settings(page)
   if page then
-    if page ~= settingsPage then SET.scroll = 0 end
+    if page ~= settingsPage then SET.sc = { 0, 0 } end
     settingsPage = page
   end
   openSettings()
