@@ -33,6 +33,7 @@ local config = {
   maxSegmentSec = 480,
   silenceWarnSec = 6,          -- nessun audio dal mic per N secondi → avviso
   silenceDb    = -70,          -- sotto questa soglia (dB RMS) conta come "nessun audio"
+  micAutoFallback = true,      -- mic Bluetooth che resta muto dopo il ritentativo -> per QUESTA registrazione usa il mic del Mac (non cambia il mic salvato)
   restoreClipboard = false,
   autoUpdate   = true,
   updateCheckHours = 24,
@@ -558,6 +559,7 @@ local function loadSettings()
   if s.cornerStyle and RADIUS_MUL[s.cornerStyle] then config.cornerStyle = s.cornerStyle end
   if s.animOn ~= nil then config.animOn = bool(s.animOn) end
   if s.layers ~= nil then config.layers = bool(s.layers) end
+  if s.micAutoFallback ~= nil then config.micAutoFallback = bool(s.micAutoFallback) end
   if s.animSpeed and SPEED_MUL[s.animSpeed] then config.animSpeed = s.animSpeed end
   if s.waveStyle then config.waveStyle = s.waveStyle end
   if s.waveColor then config.waveColor = s.waveColor end
@@ -651,11 +653,35 @@ end
 local function nBars() return (config.orientation == "vertical") and 9 or 12 end
 local function resetLevels() levels = {}; for _ = 1, nBars() do levels[#levels + 1] = 0 end end
 
-local function recoverOrphans()
+local function recoverOrphans(deferred)
   local out = hs.execute("ls -1 '" .. config.workDir .. "'/groq_seg_*.wav 2>/dev/null")
   local files = {}
   for l in (out or ""):gmatch("[^\n]+") do files[#files + 1] = l end
   if #files == 0 then return {} end
+  if deferred then
+    -- nel percorso di avvio registrazione: niente ffmpeg sincrono. I file orfani vengono solo rinominati (fuori dal pattern dei segmenti
+    -- correnti) e recuperati dopo, a registrazione partita.
+    local stamp = os.date("%Y%m%d-%H%M%S")
+    local moved = {}
+    for i, p in ipairs(files) do
+      local np = string.format("%s/groq_orph_%s_%d.wav", config.workDir, stamp, i)
+      if os.rename(p, np) then moved[#moved + 1] = np end
+    end
+    hs.timer.doAfter(2.5, function()
+      local rec = {}
+      hs.execute("mkdir -p '" .. config.recDir .. "'")
+      for i, p in ipairs(moved) do
+        if fileSize(p) > 1000 then
+          local dest = string.format("%s/recovered-%s-%d.wav", config.recDir, stamp, i)
+          hs.execute(string.format("'%s' -y -i '%s' -c copy '%s' 2>/dev/null || cp '%s' '%s'", config.ffmpeg, p, dest, p, dest))
+          rec[#rec + 1] = dest
+        end
+        os.remove(p)
+      end
+      if #rec > 0 then gwAlert("💾 Recuperato audio da una sessione interrotta:\n" .. config.recDir, 8) end
+    end)
+    return {}
+  end
   hs.execute("mkdir -p '" .. config.recDir .. "'")
   local stamp = os.date("%Y%m%d-%H%M%S")
   local recovered = {}
@@ -850,6 +876,17 @@ local ICON = {}
 -- e, dentro un timer/callback, l'errore si propaga e puo' innescare tempeste di errori. Qui si ingoia.
 function ICON.log(m) pcall(print, m) end
 function ICON.layersOn() return config.layers ~= false end
+-- La cache dei dispositivi si aggiorna SOLO a riposo (init, ~3 s dopo la registrazione, apertura impostazioni, evento del watcher audio con
+-- debounce): `ffmpeg -list_devices` in parallelo a una registrazione che parte contende AVFoundation e ritarda il mic (visto fino a ~3 s).
+function ICON.devSoon(delay)
+  if ICON.devT then ICON.devT:stop(); ICON.devT = nil end
+  ICON.devT = hs.timer.doAfter(delay or 1.5, function()
+    ICON.devT = nil
+    local mc = ICON.micS
+    if recording or busy or (mc and mc.ph and mc.ph ~= "live") then ICON.devSoon(3); return end     -- occupato: riprova dopo
+    refreshDevices()
+  end)
+end
 local function arcPts(cx, cy, r, a0, a1, n)
   local t = {}
   for i = 0, n do
@@ -2954,6 +2991,8 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
       if warn then if onWarn then onWarn() end else cv:elementAttribute(I.border, "strokeColor", I.borderCol or COL.border) end
     end
     if warn then cv:elementAttribute(I.border, "strokeColor", mix(I.borderCol or COL.border, COL.warn, 0.55 + 0.45 * math.sin(finite(t * 7, 0)))) end
+    local okw = (I.okFlash and not warn) and true or false
+    if okw ~= (I.okOn or false) then I.okOn = okw; cv:elementAttribute(I.timer, "textColor", okw and COL.ok or (warn and COL.warn or COL.fg)) end
   end)
 
   -- anelli pulsanti dietro al mic (intensità regolabile; spenti se le animazioni sono off)
@@ -3007,7 +3046,10 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
     local BH, BA = I.bh, I.ba
     for i, b in ipairs(I.bars) do
       local target = 0
-      if active and not warn then target = finite((src and src[i]) or 0, 0) end
+      if active and not warn then
+        if I.conn then target = clampN(0.16 + 0.12 * math.sin(finite(t * 3.2 - i * 0.7, 0)), 0, 1)    -- in attesa del mic: onda che respira
+        else target = finite((src and src[i]) or 0, 0) end
+      end
       local cur = finite(I.disp[i], 0)
       local rate = (target > cur) and 22 or 6
       cur = finite(cur + (target - cur) * (1 - math.exp(-rate * dt)), 0)
@@ -3582,7 +3624,11 @@ updateUI = function()
   local active = ((not paused) and (recording or I.preview)) and true or false
   local warn = (micWarned and recording and not paused) and true or false
   if I.settled and not active then return end
-  local text = warn and "NO MIC" or fmtTime(currentElapsed())
+  local mc = ICON.micS
+  local lbl = (active and not warn) and ICON.micLabel(t) or nil        -- "Mic…" finche' il mic non manda un livello vero
+  local text = warn and "NO MIC" or lbl or fmtTime(currentElapsed())
+  I.conn = (active and not warn and recording and mc and mc.ph and mc.ph ~= "live") and true or false
+  I.okFlash = (mc and mc.shown and mc.liveAt and (t - mc.liveAt) < 0.5) and true or false   -- cenno "pronto" (verde) dopo la connessione
   I.el = active and currentElapsed() or 0
   local md = hudVisuals(overlay, I, t, dt, active, warn, text, shakeHUD, I.demo or levels)
   I.settled = (not active) and (md < 0.004)
@@ -5688,6 +5734,7 @@ local function onStream(_t, _out, err)
     for m in err:gmatch("RMS_level=(%S+)") do
       local db = tonumber(m)   -- "-inf" (silenzio digitale) → nil
       lastRmsAt = now()
+      if db and db == db and ICON.micS and ICON.micS.ph and ICON.micS.ph ~= "live" then ICON.micLive() end    -- primo livello NON -inf: mic vivo
       if db and db > config.silenceDb then
         lastSoundAt = lastRmsAt
         if micWarned then micWarned = false; gwAlert("🎙️ Audio di nuovo ricevuto", 1.5) end
@@ -5696,6 +5743,63 @@ local function onStream(_t, _out, err)
     end
   end
   return true
+end
+
+-- STATO CONNESSIONE MIC. ICON.micS = { ph = "connect"|"retry"|"fallback"|"live", t0, retried, fb, liveAt, shown }
+-- Con AirPods/Bluetooth il mic manda silenzio digitale (-inf) ~1-1,3 s (cambio profilo), poi livelli veri. Fino al primo livello non -inf l'HUD mostra
+-- "Mic…" con l'onda che respira; dopo ~2,5 s senza livelli si riavvia UNA volta ffmpeg sullo stesso device; se resta muto e il device e' Bluetooth
+-- (e micAutoFallback non e' false) si passa al mic integrato solo per questa registrazione.
+function ICON.micLive()
+  local mc = ICON.micS
+  if not mc or mc.ph == "live" then return end
+  mc.ph = "live"; mc.liveAt = now()
+  if ICON.micTimer then ICON.micTimer:stop(); ICON.micTimer = nil end
+end
+function ICON.micLabel(t)             -- testo del timer mentre il mic si connette (nil = mostra il tempo)
+  local mc = ICON.micS
+  if not mc or not mc.ph or mc.ph == "live" or (t - mc.t0) < 0.35 then return nil end
+  mc.shown = true
+  return (mc.ph == "retry") and "Mic ↻" or ((mc.ph == "fallback") and "Mac…" or "Mic…")
+end
+function ICON.micIsBluetooth(name)
+  if not name then return false end
+  local ok, res = pcall(function()
+    for _, d in ipairs(hs.audiodevice.allInputDevices()) do
+      if d:name() == name then return d:transportType() == "Bluetooth" end
+    end
+    return false
+  end)
+  return ok and res or false
+end
+local startSegment, stopCurrentSegment
+function ICON.micTick()
+  local mc = ICON.micS
+  if not recording or paused or not mc or not mc.ph or mc.ph == "live" or not segStart then
+    if ICON.micTimer then ICON.micTimer:stop(); ICON.micTimer = nil end
+    return
+  end
+  local t = now()
+  if mc.restarting then return end
+  if mc.ph == "connect" and not mc.retried and t - mc.t0 >= 2.5 then
+    mc.retried = true; mc.ph = "retry"; mc.tRetry = t
+    ICON.micRestart(nil)
+  elseif mc.ph == "retry" and t - mc.tRetry >= 2.5 and not mc.fb and config.micAutoFallback ~= false and ICON.micIsBluetooth(micName) then
+    local b = builtinOrFirst()
+    if b and b.idx and b.idx ~= config.audioDevice then
+      mc.fb = true; mc.ph = "fallback"
+      micName = b.name or micName
+      gwAlert("🎙️ Il mic Bluetooth non risponde → uso il mic del Mac per questa registrazione", 3.5)
+      ICON.micRestart(b.idx)
+    end
+  end
+end
+-- riavvia ffmpeg sullo stesso segmento (o su un altro device) senza perdere i segmenti gia' registrati: l'orologio del timer e dell'avviso
+-- silenzio NON ripartono da zero
+function ICON.micRestart(newDev)
+  local mc = ICON.micS
+  if not mc or not recTask then return end
+  mc.restarting = true; mc.newDev = newDev
+  stopCurrentSegment("restart")
 end
 
 -- Avviso "non sto registrando": suono + alert + HUD rosso (resta finché l'audio non torna)
@@ -5734,14 +5838,23 @@ local function guardTick()
 end
 local function stopRotTimer() if rotTimer then rotTimer:stop(); rotTimer = nil end end
 local rotate
-local function startSegment()
-  local p = segPath(segIndex); os.remove(p); segments[#segments + 1] = p
-  lastSoundAt, lastRmsAt, micWarned = now(), now(), false
+startSegment = function(mode_)
+  local mc = ICON.micS
+  local p = segPath(segIndex); os.remove(p)
+  if mode_ ~= "restart" then segments[#segments + 1] = p end        -- il riavvio riusa lo stesso segmento
+  if mode_ == "restart" and mc then lastSoundAt, lastRmsAt, micWarned = mc.t0, mc.t0, false     -- l'avviso "nessun audio" resta ancorato all'avvio
+  else lastSoundAt, lastRmsAt, micWarned = now(), now(), false end
+  if mode_ == "fresh" then                                          -- partenza / ripresa da pausa: stato di connessione da capo
+    ICON.micS = { ph = "connect", t0 = now(), retried = false, fb = false }
+    if ICON.micTimer then ICON.micTimer:stop() end
+    ICON.micTimer = hs.timer.doEvery(0.25, function() guarded("mic", ICON.micTick) end)
+  end
   local args = { "-y", "-f", "avfoundation", "-i", config.audioDevice, "-ac", "1", "-ar", "16000",
     "-af", "asetnsamples=1600:p=0,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level", p }
   recTask = hs.task.new(config.ffmpeg, function() M._onSegmentFinished() end, onStream, args)
   if not recTask:start() then gwAlert("❌ ffmpeg non parte"); recTask = nil; return false end
-  segStart = now(); stopRotTimer()
+  if mode_ ~= "restart" or not segStart then segStart = now() end
+  stopRotTimer()
   if config.maxSegmentSec and config.maxSegmentSec > 0 then rotTimer = hs.timer.doAfter(config.maxSegmentSec, function() rotate() end) end
   return true
 end
@@ -5751,13 +5864,18 @@ function M._onSegmentFinished()
   elseif intent == "stop" then intent = nil; finalizeAndTranscribe()
   elseif intent == "cancel" then intent = nil; cleanupSegments()
   elseif intent == "rotate" then intent = nil; segIndex = segIndex + 1; startSegment()
+  elseif intent == "restart" then
+    intent = nil
+    local mc = ICON.micS
+    if mc then mc.restarting = false; if mc.newDev then config.audioDevice = mc.newDev; mc.newDev = nil end end
+    if recording and not paused then startSegment("restart") end
   elseif recording and not paused then
     -- ffmpeg uscito da solo: il microfono non c'è / si è staccato
     warnNoMic("❌ Registrazione interrotta: microfono non disponibile" .. (micName and ("\nMic: " .. micName) or "") ..
       "\nFerma per trascrivere quello che c'è")
   end
 end
-local function stopCurrentSegment(newIntent)
+stopCurrentSegment = function(newIntent)
   stopRotTimer(); intent = newIntent
   if recTask then
     local pid = recTask:pid()
@@ -5771,30 +5889,32 @@ rotate = function()
   elapsed = elapsed + (now() - (segStart or now())); segStart = nil; stopCurrentSegment("rotate")
 end
 local function start()
-  recoverOrphans(); cleanupSegments()
+  recoverOrphans(true); cleanupSegments()
   local dev, fellBack, name = resolveMic()
-  config.audioDevice = dev; micName = name; refreshDevices()
+  config.audioDevice = dev; micName = name
   elapsed = 0; segStart = nil; paused = false; segIndex = 0
   if fellBack then gwAlert("🎙️ Mic salvato non disponibile → uso “" .. (name or dev) .. "”", 3) end
   resetLevels()
-  if not startSegment() then return end
+  if not startSegment("fresh") then return end
   recording = true; showRecordingHUD()
 end
 function M.stop()
   if not recording then return end
   recording = false; stopRotTimer()
+  ICON.micS = nil; ICON.devSoon(3)
   if paused then finalizeAndTranscribe()
   else elapsed = elapsed + (now() - (segStart or now())); stopCurrentSegment("stop") end
 end
 function M.cancel()
   if not recording then hideOverlay(); cleanupSegments(); return end
   recording = false; paused = false; busy = false; stopRotTimer(); hideOverlay()
+  ICON.micS = nil; ICON.devSoon(3)
   if recTask then stopCurrentSegment("cancel") else cleanupSegments() end
 end
 function M.togglePause()
   if not recording then return end
   if paused then
-    paused = false; segIndex = segIndex + 1; startSegment()
+    paused = false; segIndex = segIndex + 1; startSegment("fresh")
     if mode == "rec" then setRecordingElements(false) end
   else
     paused = true; elapsed = elapsed + (now() - (segStart or now())); segStart = nil
@@ -6007,7 +6127,7 @@ function M.init()
     hs.timer.doAfter(2.0, function() transcribeBackup(recovered, "recuperato") end)
   end
   refreshDevices()
-  hs.audiodevice.watcher.setCallback(function() refreshDevices() end)
+  hs.audiodevice.watcher.setCallback(function() ICON.devSoon(1.5) end)
   hs.audiodevice.watcher.start()
   -- segui il tema di sistema quando themeAuto è attivo
   M._appearanceWatcher = hs.distributednotifications.new(function()
