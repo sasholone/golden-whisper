@@ -2815,9 +2815,11 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   -- annulla: piccolo badge di vetro sul bordo alto-destro
   local kx, ky, kr = ox + sc(pw) - sc(8), oy + sc(8), sc(9.5)
   pushShadow(els, kx - kr, ky - kr, 2 * kr, 2 * kr, s, kr, 0.35, true)
-  hitShape(els, map, "cancel", kx, ky, kr, { fill = COL.solid, hoverFill = mix(COL.solid, COL.warn, 0.25),
+  idx.pin0 = #els + 1                                    -- da qui: bottone annulla (cerchio + X). Sta in una canvas propria SOPRA tutti gli strati (vedi splitAnim)
+  hitShape(els, map, "cancel", kx, ky, kr, { fill = withA(COL.solid, 1), hoverFill = withA(mix(COL.solid, COL.warn, 0.25), 1),
     stroke = COL.border, hoverStroke = COL.warn, sw = 1 })
   ICON.close(els, kx, ky, sc(11), COL.fg2, 1.8)
+  idx.pin1 = #els
 
   -- easter egg: area sensibile sul timer (solo HUD in pausa; nell'anteprima del tab Tema è il badge)
   if map and isPaused and COL.fx and COL.fx.egg then
@@ -3222,6 +3224,7 @@ do
     for _, si in ipairs(I0.segs or {}) do m[si] = "w" end
     if I0.parts and I0.parts.idx then for _, i in ipairs(I0.parts.idx) do m[i] = "p" end end
     if I0.wheel then for _, i in ipairs(I0.wheel.idx) do m[i] = "c" end end
+    if I0.pin0 then for i = I0.pin0, I0.pin1 do m[i] = "k" end end
     return function(i) return m[i] or "r" end
   end
   -- frequenza massima di ridisegno (Hz) delle canvas del HUD di registrazione: onda 18, anelli/badge 12, timer 8 (cambia 1/s), particelle 16, avviso 15
@@ -3246,6 +3249,7 @@ do
         for _, k in ipairs(spec.order) do
           local g = spec.groups[k]
           g.hz = ICON.GROUP_HZ[k]
+          if k == "k" then g.cb = mouseCb end                -- bottone annulla: unico strato col mouse (il resto e' click-through)
           cv:layerApply(g, "g" .. k)
         end
       else
@@ -3429,6 +3433,7 @@ do
         if ok and sh then cv:show(); pcall(function() cv:orderAbove(base) end) end
       end
       L.cv:mouseCallback(spec.cb)          -- nil = trasparente al mouse (click-through)
+      if spec.cb then pcall(function() L.cv:clickActivating(false) end) end     -- come la base: il click non porta in primo piano Hammerspoon
       L.dx, L.dy, L.route, L.hz = b.x, b.y, spec.route, spec.hz
       L.cv:topLeft({ x = f.x + b.x, y = f.y + b.y })
     end
@@ -3602,6 +3607,7 @@ do
       if I0.badge and seen[I0.badge] and I0.icon0 and I0.icon1 then
         for i = I0.icon0, I0.icon1 do seen[i] = true; if seenHot[I0.badge] then seenHot[i] = true end end   -- l'icona sta SOPRA il badge
       end
+      if I0.pin0 and grp then for i = I0.pin0, I0.pin1 do seen[i] = true; seenHot[i] = true end end        -- elementi "fissati in cima" (annulla): sempre in canvas propria
       local classify = grp and grp(I0) or nil
       local G = {}                                   -- chiave -> { ids = {}, x0.. }
       local function grow(g, i, e)
@@ -3624,7 +3630,8 @@ do
       table.sort(idxs)
       for _, i in ipairs(idxs) do
         local e = els0[i]
-        if e and not (e.trackMouseUp or e.trackMouseDown or e.trackMouseEnterExit or e.trackMouseMove or e.id) and e.type ~= "image" and e.action ~= "clip" then
+        local pinned = I0.pin0 and grp and i >= I0.pin0 and i <= I0.pin1
+        if e and (pinned or not (e.trackMouseUp or e.trackMouseDown or e.trackMouseEnterExit or e.trackMouseMove or e.id)) and e.type ~= "image" and e.action ~= "clip" then
           local key = "a"
           if classify then key = seenHot[i] and classify(i) or "x" end
           local g = G[key]; if not g then g = { ids = {} }; G[key] = g end
@@ -3646,7 +3653,7 @@ do
           end
           for i in pairs(route) do orig[i] = els[i]; els[i] = ICON.skipEl() end
           if #A > 0 then
-            groups[key] = { els = A, route = route, box = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 }, minIdx = g.ids[1] }
+            groups[key] = { els = A, route = route, box = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 }, minIdx = (key == "k") and 1e9 or g.ids[1] }     -- "k" (annulla) sempre in cima
             order[#order + 1] = key
           end
         end
