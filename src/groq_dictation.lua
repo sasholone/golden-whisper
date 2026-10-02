@@ -473,7 +473,7 @@ local function applyTheme()
   local fam = FAMILIES[config.style] or FAMILIES.gold
   local base = fam[resolveMode()]
   COL = base
-  if type(config.glassOpacity) == "number" then
+  if type(config.glassOpacity) == "number" and finite(config.glassOpacity, 0) > 0 then   -- <= 0 / nil = default del tema
     -- opacità del vetro personalizzata: copia del tema con alpha dei due toni sovrascritto
     local c = {}
     for k, v in pairs(base) do c[k] = v end
