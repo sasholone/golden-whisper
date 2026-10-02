@@ -358,7 +358,9 @@ end
 local ROWS = {
   -- Pop-culture (nomi-nod, palette + motivi generici: nessun marchio/personaggio)
   { "bluerush", "Blue Rush", "pp", "0B1A52 050C2B 3D8BFF 3D8BFF 00C2FF FFC832", "F4F8FF DCE8FF 1458D6 1458D6 0A8ED8 D99A00", { icon = "ring" } },
-  { "blocky", "Blocky", "pp", "23301A 11160C 7CBD3A 8FD14A 5B9A2E 8A5A33", "F3F7E8 DDE8C4 4C8A1F 4C8A1F 3E7A2A 8A5A33", { icon = "pixmic", bar = "pixel" } },
+  { "blocky", "Blocky", "pp", "23301A 11160C 7CBD3A 8FD14A 5B9A2E 8A5A33", "F3F7E8 DDE8C4 4C8A1F 4C8A1F 3E7A2A 8A5A33",
+    { icon = "blockmic", bar = "pixel", shape = "block", body = "block", part = "chips", proc = "mine", done = "pixel", egg = "block",
+      barCol = { dark = "F4F1D6", light = "2A1C0E" } } },
   { "turbo", "Turbo Ball", "pp", "1B1630 0A0716 FF8A1F FFB02E FF7A1A 1E8CFF", "FFF8F0 FFE6D2 E8650A E8650A D84A1A 1F6FE0", { icon = "ball", bar = "square" } },
   { "quahog", "Quahog", "pp", "14284A 0A1428 4A9BFF 4A9BFF 4CC35F FF9A2E FFDD3C", "F6FBFF DDEBFA 2A6FD0 2A6FD0 2E9A3F E87A10 C9A200", { icon = "sofa" } },
   { "quest", "Quest", "pp", "1B2A18 0B130A E8C14A 7BD35A E8C14A 3FA67A", "FBF7E6 EAE2BC 5E8F2E 4C9A2A B8901A 2F8F6F", { icon = "shield" } },
@@ -1724,6 +1726,240 @@ function ICON.meterTick(cv, I, lv, active, warn, t, dt)
   local mt = ICON.meters[COL.fx and COL.fx.meter]
   if mt and mt.tick then mt.tick(cv, I, m, lv, active, warn, t, dt) end
   return m.v or 0
+end
+
+------------------------------------------------------------------------
+-- PACK "Blocky" (blocchi): card squadrata erba sopra / terra sotto con texture a pixel e bevel da slot inventario,
+-- schegge che cadono e rimbalzano, spinner "blocco che si scava", spunta a pixel, easter egg (faccina a blocchi / diamante).
+-- Tutto disegnato da zero con rettangoli: nessun personaggio o logo.
+------------------------------------------------------------------------
+ICON.u = {}                 -- helper condivisi dai pack
+function ICON.u.box(els, x, y, w, h, fill, rad, stroke, sw)
+  local e = { type = "rectangle", action = stroke and (fill and "strokeAndFill" or "stroke") or "fill", frame = { x = x, y = y, w = w, h = h } }
+  if fill then e.fillColor = fill end
+  if stroke then e.strokeColor = stroke; e.strokeWidth = sw or 1 end
+  if rad and rad > 0 then e.roundedRectRadii = { xRadius = rad, yRadius = rad } end
+  els[#els + 1] = e
+  return #els
+end
+function ICON.u.hz(i, k) local v = math.sin(i * 127.1 + k * 311.7) * 43758.5453; return v - math.floor(v) end     -- pseudo-casuale deterministico 0..1
+function ICON.u.copy(o) local c = {}; for k, v in pairs(o or {}) do c[k] = v end return c end
+function ICON.u.poly(els, pts, fill, stroke, sw)
+  els[#els + 1] = { type = "segments", action = stroke and (fill and "strokeAndFill" or "stroke") or "fill", closed = true,
+    fillColor = fill, strokeColor = stroke, strokeWidth = sw or 1, strokeJoinStyle = "round", coordinates = pts }
+  return #els
+end
+do
+local U = ICON.u
+local BL = {
+  dark  = { top = "3E7C23", bot = "5A3B22", edge = "10130A" },
+  light = { top = "86C84A", bot = "B07C4C", edge = "3A2A18" },
+}
+local function pal() return BL[COL.dark and "dark" or "light"] end
+local function g(T, i) return T.grad[math.min(i, #T.grad)] or T.accent end
+ICON.shapes.block = { r = 0.1, btn = 0.14 }
+
+ICON.bodies.block = function(els, x, y, w, h, s, r, o, kind)
+  local P = pal()
+  local o2 = U.copy(o); o2.sheenA = 0
+  local _, body = pushGlass(els, x, y, w, h, r, o2)
+  local q = 3.5 * s
+  local seam = y + math.floor(h * 0.5 / q + 0.5) * q
+  local top, bot, edge = hex(P.top), hex(P.bot), hex(P.edge)
+  U.box(els, x, y, w, seam - y, top, 0)
+  U.box(els, x, seam, w, y + h - seam, bot, 0)
+  local lite = o.lite
+  local cols = lite and 7 or 12
+  local cw = w / cols
+  for c = 0, cols - 1 do                                   -- frangia d'erba che pende sulla terra
+    U.box(els, x + c * cw, seam, cw + 0.5, (1 + math.floor(U.hz(c, 1) * 2.99)) * q, top, 0)
+  end
+  local gx = math.max(1, math.floor(w / q) - 1)
+  local rt = math.max(1, math.floor((seam - y) / q) - 1)
+  local rb = math.max(1, math.floor((y + h - seam) / q) - 2)
+  local hiT, loT, hiB, loB = mix(top, hex("FFFFFF"), 0.2), mix(top, hex("000000"), 0.22), mix(bot, hex("FFFFFF"), 0.16), mix(bot, hex("000000"), 0.28)
+  for i = 1, (lite and 5 or 10) do                         -- rumore a pixel quantizzato (statico)
+    U.box(els, x + math.floor(U.hz(i, 2) * gx) * q + q * 0.5, y + math.floor(U.hz(i, 3) * rt) * q + q * 0.5, q, q, (i % 2 == 0) and hiT or loT, 0)
+    U.box(els, x + math.floor(U.hz(i, 4) * gx) * q + q * 0.5, seam + math.floor(U.hz(i, 5) * rb) * q + q, q, q, (i % 2 == 0) and hiB or loB, 0)
+  end
+  local bw, bv = 3 * s, 1.6 * s                            -- bevel stile slot: luce in alto/sinistra, ombra in basso/destra
+  U.box(els, x + bw, y + bw, w - 2 * bw, bv, withA(hex("FFFFFF"), 0.38), 0)
+  U.box(els, x + bw, y + bw, bv, h - 2 * bw, withA(hex("FFFFFF"), 0.26), 0)
+  U.box(els, x + bw, y + h - bw - bv, w - 2 * bw, bv, withA(hex("000000"), 0.34), 0)
+  U.box(els, x + w - bw - bv, y + bw, bv, h - 2 * bw, withA(hex("000000"), 0.3), 0)
+  local border = U.box(els, x + bw / 2, y + bw / 2, w - bw, h - bw, nil, r, edge, bw)      -- bordo scuro spesso
+  return border, body, edge
+end
+
+function ICON.c.blockmic(els, cx, cy, sz, col, T)         -- microfono a pixel: testa in accento, piede color terra
+  local u = sz / 16; local px = 1.9 * u
+  local rows = { "..###..", "..###..", "..###..", "#.###.#", "#.....#", ".#...#.", "..###..", "...#...", ".#####." }
+  local x0, y0 = cx - 3.5 * px, cy - 4.5 * px
+  for r, row in ipairs(rows) do
+    for c = 1, 7 do
+      if row:sub(c, c) == "#" then
+        els[#els + 1] = { type = "rectangle", action = "fill", fillColor = (r == 1 and c == 3) and g(T, 2) or ((r <= 5) and col or g(T, 3)),
+          frame = { x = x0 + (c - 1) * px, y = y0 + (r - 1) * px, w = px + 0.35, h = px + 0.35 } }
+      end
+    end
+  end
+end
+
+-- schegge: quadratini che cadono, rimbalzano e svaniscono; piu' parlato = piu' schegge (max 9, solo se registra)
+local CHIP = { "FFD25A", "6DBB3A", "9A6A3C", "C9CDBF" }
+ICON.parts.chips = {
+  build = function(els, ox, oy, w, h, s, lite)
+    local R = { kind = "chips", idx = {}, ox = ox, oy = oy, w = w, h = h, s = s, c = {} }
+    for i = 1, (lite and 5 or 9) do
+      els[#els + 1] = { type = "rectangle", action = "fill", fillColor = withA(CLEAR, 0), frame = { x = ox, y = oy, w = 2.8 * s, h = 2.8 * s } }
+      R.idx[i] = #els
+    end
+    return R
+  end,
+  tick = function(cv, R, t, visible)
+    if not visible then
+      if not R.hidden then
+        R.hidden = true; R.c = {}
+        for _, ix in ipairs(R.idx) do cv:elementAttribute(ix, "fillColor", withA(CLEAR, 0)) end
+      end
+      return
+    end
+    R.hidden = false
+    local s, w, h, C = R.s, R.w, R.h, R.c
+    local lv = clampN(ICON.lv or 0, 0, 1)
+    local n = #R.idx
+    local nAct = math.ceil(n * (0.5 + 0.5 * math.min(1, lv * 1.5)))
+    local q = 1.4 * s
+    for i, ix in ipairs(R.idx) do
+      local X, Y, a = 0, 0, 0
+      if i <= nAct then
+        local seed = (i * 0.6180339887) % 1
+        local u = (t / (2.4 + 1.6 * ((i * 0.37) % 1)) + seed) % 1
+        local x0 = 8 * s + ((i * 0.7548776662 + 0.13) % 1) * math.max(1, w - 16 * s)
+        local floorY, top = h - 6 * s, 3 * s
+        local x, y
+        if u < 0.6 then local v = u / 0.6; y = top + (floorY - top) * v * v; x = x0
+        else local b = (u - 0.6) / 0.4; y = floorY - math.sin(b * math.pi) * h * 0.2 * (1 - b); x = x0 + b * 9 * s * ((i % 2 == 0) and 1 or -1) end
+        a = math.min(1, u * 10) * ((u > 0.88) and (1 - u) / 0.12 or 1)
+        if i % 4 == 0 then a = a * (0.55 + 0.45 * math.abs(math.sin(finite(t * 9 + i, 0)))) end       -- scintilla di torcia che sfarfalla
+        X, Y = R.ox + math.floor(x / q + 0.5) * q, R.oy + math.floor(y / q + 0.5) * q
+        a = clampN(a, 0, 1)
+      end
+      local L = C[i]
+      if not L or math.abs(X - L.x) > 0.45 or math.abs(Y - L.y) > 0.45 or math.abs(a - L.a) > 0.04 then
+        cv:elementAttribute(ix, "frame", { x = X, y = Y, w = 2.8 * s, h = 2.8 * s })
+        cv:elementAttribute(ix, "fillColor", withA(hex(CHIP[(i - 1) % 4 + 1]), a))
+        C[i] = { x = X, y = Y, a = a }
+      end
+    end
+  end,
+}
+
+-- spinner: blocco di terra che si crepa a stadi e perde due schegge, poi ricomincia
+ICON.proc.mine = {
+  build = function(els, cx, cy, s)
+    local P = pal()
+    local st = { all = {}, cr = {}, last = -1 }
+    local x, y, sz = cx - 8 * s, cy - 8 * s, 16 * s
+    st.all[#st.all + 1] = { U.box(els, x, y, sz, sz, hex(P.bot), 0, hex(P.edge), 1.6 * s), "b" }
+    st.all[#st.all + 1] = { U.box(els, x, y, sz, 4.5 * s, hex(P.top), 0), "f" }
+    for i = 1, 3 do st.all[#st.all + 1] = { U.box(els, x + (2 + i * 3.3) * s, y + (6 + (i % 2) * 5) * s, 2.4 * s, 2.4 * s, withA(hex(P.edge), 0.55), 0), "f" } end
+    local cr = { { -1, -6, 1, -1 }, { 1, -1, 5, 1.5 }, { 1, -1, -3, 3.5 }, { -3, 3.5, -4.5, 7 } }
+    for k, c in ipairs(cr) do
+      els[#els + 1] = { type = "segments", action = "stroke", strokeColor = withA(hex(P.edge), 0), strokeWidth = 1.5 * s, strokeCapStyle = "square",
+        coordinates = { { x = cx + c[1] * s, y = cy + c[2] * s }, { x = cx + c[3] * s, y = cy + c[4] * s } } }
+      st.cr[k] = #els; st.all[#st.all + 1] = { #els, "s" }
+    end
+    st.cx, st.cy, st.s, st.edge = cx, cy, s, hex(P.edge)
+    st.ch = {}
+    for i = 1, 2 do st.ch[i] = U.box(els, cx, cy, 2.4 * s, 2.4 * s, withA(hex(P.bot), 0), 0); st.all[#st.all + 1] = { st.ch[i], "f" } end
+    return st
+  end,
+  tick = function(cv, st, t)
+    local ph = (t * 0.75) % 1
+    local stage = math.floor(ph * 5)
+    local f = ph * 5 - stage
+    if stage ~= st.last then
+      st.last = stage
+      for k, ix in ipairs(st.cr) do cv:elementAttribute(ix, "strokeColor", withA(st.edge, k <= stage and 0.9 or 0)) end
+    end
+    local s = st.s
+    for i, ix in ipairs(st.ch) do
+      local on = stage >= 2
+      cv:elementAttribute(ix, "frame", { x = st.cx + (i == 1 and -3 or 2) * s + f * (i == 1 and -4 or 4) * s, y = st.cy + 7 * s + f * 9 * s, w = 2.4 * s, h = 2.4 * s })
+      cv:elementAttribute(ix, "fillColor", withA(hex(pal().bot), on and (1 - f) or 0))
+    end
+  end,
+  hide = function(cv, st)
+    for _, e in ipairs(st.all) do
+      if e[2] ~= "s" then cv:elementAttribute(e[1], "fillColor", withA(CLEAR, 0)) end
+      if e[2] ~= "f" then cv:elementAttribute(e[1], "strokeColor", withA(CLEAR, 0)) end
+    end
+  end,
+}
+
+-- spunta finale: check a pixel che si compone cella per cella
+ICON.done.pixel = {
+  build = function(els, cx, cy, s)
+    local st = { cells = {} }
+    local px = 2.3 * s
+    st.bg = U.box(els, cx - 12 * s, cy - 12 * s, 24 * s, 24 * s, withA(COL.ok, 0), 0)
+    for k, c in ipairs({ { 0, 2 }, { 1, 3 }, { 2, 4 }, { 3, 3 }, { 4, 2 }, { 5, 1 }, { 6, 0 } }) do
+      st.cells[k] = U.box(els, cx + (c[1] - 3) * px - px / 2, cy + (c[2] - 2) * px - px / 2, px + 0.3, px + 0.3, withA(COL.ok, 0), 0)
+    end
+    return st
+  end,
+  anim = function(cv, st, e)
+    cv:elementAttribute(st.bg, "fillColor", withA(COL.ok, 0.2 * clamp01(e)))
+    for k, ix in ipairs(st.cells) do cv:elementAttribute(ix, "fillColor", withA(COL.ok, clamp01(e * 8 - (k - 1)))) end
+  end,
+}
+
+-- easter egg: faccina a blocchi che spunta dal bordo e lampeggia, oppure un diamante pixel con toast.
+-- Scatta: 1 registrazione su 25 (dopo 3s) oppure ogni registrazione che supera 60s; 5 clic sul timer in pausa / badge nell'anteprima.
+ICON.eggs.block = {
+  dur = 1.8,
+  build = function(els, E, ox, oy, w, h, s)
+    E.sp = {}
+    for k = 1, 6 do E.sp[k] = U.box(els, ox, oy, 1, 1, withA(CLEAR, 0), 0) end
+    E.fx0 = ox + w * 0.64
+  end,
+  pick = function() return (ICON.rng() < 0.5) and 1 or 2 end,
+  cond = function(I, E)
+    local el = I.el or 0
+    if E.luck == nil then E.luck = (ICON.rng() < 1 / 25) end
+    if E.luck and el >= 3 and not E.f1 then E.f1 = true; return 1 end
+    if el >= 60 and not E.f2 then E.f2 = true; return 2 end
+  end,
+  start = function(cv, I, E, var) E.sig = nil end,
+  run = function(cv, I, E, p, var)
+    local s = E.s
+    local q = 2.8 * s * (var == 2 and 1.5 or 1)
+    local rise = math.min(1, p * 6)
+    local x, y = E.fx0, E.oy - 2 * s - 11.5 * s * rise
+    local on = (p < 0.2) or (math.floor(p * 14) % 2 == 0)
+    local sig = math.floor(rise * 10) * 2 + (on and 1 or 0)
+    if sig ~= E.sig then
+      E.sig = sig
+      local A = on and 1 or 0.3
+      local function Rr(k, rx, ry, rw, rh, col, a)
+        cv:elementAttribute(E.sp[k], "frame", { x = x + rx * q, y = y + ry * q, w = rw * q, h = rh * q })
+        cv:elementAttribute(E.sp[k], "fillColor", withA(hex(col), a))
+      end
+      if var == 1 then
+        Rr(1, 0, 0, 5, 5, "56B02E", A); Rr(2, 1, 1, 1, 1, "10130A", A); Rr(3, 3, 1, 1, 1, "10130A", A)
+        Rr(4, 2, 2.2, 1, 1.2, "10130A", A); Rr(5, 1, 3.2, 1, 1.4, "10130A", A); Rr(6, 3, 3.2, 1, 1.4, "10130A", A)
+      else
+        Rr(1, 0, 1, 3, 1, "4DF0E4", A); Rr(2, 1, 0, 1, 1, "4DF0E4", A); Rr(3, 1, 2, 1, 1, "4DF0E4", A)
+        Rr(4, 1, 1, 1, 1, "FFFFFF", A); Rr(5, 0, 0, 0.01, 0.01, "000000", 0); Rr(6, 0, 0, 0.01, 0.01, "000000", 0)
+      end
+    end
+    ICON.toast(cv, I, var == 2 and "Diamanti!" or nil, var == 2 and math.min(1, p * 8) * math.min(1, (1 - p) * 6) or 0)
+  end,
+  clear = function(cv, I, E)
+    for _, ix in ipairs(E.sp) do cv:elementAttribute(ix, "fillColor", withA(CLEAR, 0)) end
+  end,
+}
 end
 
 -- avviso "NO MIC": scossa orizzontale smorzata della card
