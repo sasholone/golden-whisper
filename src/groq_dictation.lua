@@ -362,7 +362,8 @@ local ROWS = {
   { "blocky", "Blocky", "pp", "23301A 11160C 7CBD3A 8FD14A 5B9A2E 8A5A33", "F3F7E8 DDE8C4 4C8A1F 4C8A1F 3E7A2A 8A5A33",
     { icon = "blockmic", bar = "pixel", shape = "block", body = "block", part = "chips", proc = "mine", done = "pixel", egg = "block",
       barCol = { dark = "F4F1D6", light = "2A1C0E" } } },
-  { "turbo", "Turbo Ball", "pp", "1B1630 0A0716 FF8A1F FFB02E FF7A1A 1E8CFF", "FFF8F0 FFE6D2 E8650A E8650A D84A1A 1F6FE0", { icon = "ball", bar = "square" } },
+  { "turbo", "Turbo Ball", "pp", "1B1630 0A0716 FF8A1F FFB02E FF7A1A 1E8CFF", "FFF8F0 FFE6D2 E8650A E8650A D84A1A 1F6FE0",
+    { icon = "ball", bar = "square", body = "sport", meter = "boost", part = "boost", proc = "wheel", done = "goal", egg = "turbo" } },
   { "quahog", "Quahog", "pp", "14284A 0A1428 4A9BFF 4A9BFF 4CC35F FF9A2E FFDD3C", "F6FBFF DDEBFA 2A6FD0 2A6FD0 2E9A3F E87A10 C9A200", { icon = "sofa" } },
   { "quest", "Quest", "pp", "1B2A18 0B130A E8C14A 7BD35A E8C14A 3FA67A", "FBF7E6 EAE2BC 5E8F2E 4C9A2A B8901A 2F8F6F", { icon = "shield" } },
   { "zap", "Zap", "pp", "2A2208 120D02 FFD21F FFE14D FFC400 FF5A3C", "FFFCEB FFF0B8 D9A800 D9A800 E88A00 D0352A", { icon = "bolt" } },
@@ -2183,6 +2184,216 @@ ICON.eggs.rush = {
 }
 end
 
+------------------------------------------------------------------------
+-- PACK "Turbo Ball" (arena): card scura con bordo a doppio colore arancio/blu e strisce livrea, onda con indicatore di BOOST
+-- (barra che si riempie col volume + fiamma in testa), scintille di boost dal lato, spinner a ruota boost,
+-- spunta con coriandoli blu/arancio, easter egg palla che rimbalza + "Che parata!" a fine registrazione lunga.
+-- Tutto disegnato da zero con primitive: nessuna auto o logo.
+------------------------------------------------------------------------
+do
+local U = ICON.u
+local function orange() return COL.grad[2] or COL.accent end
+local function blue() return COL.grad[3] or COL.accent2 or COL.accent end
+local function yellow() return COL.grad[1] or COL.accent end
+local function g2(T) return T.grad[2] or T.accent end
+
+function ICON.c.ball(els, cx, cy, sz, col, T)           -- palla con pentagono, cuciture e scia di boost
+  local u = sz / 16; local bx, by = cx + 1.6 * u, cy - 1 * u
+  U.poly(els, { { x = cx - 3.2 * u, y = cy + 0.2 * u }, { x = cx - 8 * u, y = cy + 7.6 * u }, { x = cx - 0.6 * u, y = cy + 3.6 * u } }, g2(T))
+  U.poly(els, { { x = cx - 3.8 * u, y = cy + 1.2 * u }, { x = cx - 6 * u, y = cy + 5.2 * u }, { x = cx - 2.2 * u, y = cy + 3 * u } }, withA(T.fgWhite, 0.55))
+  U.disc(els, bx, by, 5.3 * u, nil, col, 1.7 * u)
+  local pent = {}
+  for i = 0, 4 do
+    local a = math.rad(i * 72 - 90)
+    pent[#pent + 1] = { x = bx + 2 * u * math.cos(a), y = by + 2 * u * math.sin(a) }
+    line(els, bx + 2 * u * math.cos(a), by + 2 * u * math.sin(a), bx + 4.6 * u * math.cos(a), by + 4.6 * u * math.sin(a), col, 1 * u)
+  end
+  U.poly(els, pent, col)
+end
+
+ICON.bodies.sport = function(els, x, y, w, h, s, r, o, kind)
+  local border, body = pushGlass(els, x, y, w, h, r, o)
+  local r2 = math.max(1, math.min(r, h / 2, w / 2))
+  if w > h then                                              -- strisce livrea alle estremita' (solo orizzontale)
+    local sk = h * 0.3
+    local x0 = x + w * 0.1
+    U.poly(els, { { x = x0, y = y + h - 1 }, { x = x0 + sk, y = y + 1 }, { x = x0 + sk + w * 0.04, y = y + 1 }, { x = x0 + w * 0.04, y = y + h - 1 } }, withA(orange(), 0.16))
+    local x1 = x + w * 0.9
+    U.poly(els, { { x = x1, y = y + 1 }, { x = x1 - sk, y = y + h - 1 }, { x = x1 - sk - w * 0.04, y = y + h - 1 }, { x = x1 - w * 0.04, y = y + 1 } }, withA(blue(), 0.16))
+  end
+  local sw = 2.4 * s
+  local L, Rr = {}, {}                                       -- bordo: meta' sinistra arancio, meta' destra blu
+  Rr[1] = { x = x + w / 2, y = y + 0.5 }; L[1] = { x = x + w / 2, y = y + 0.5 }
+  for _, p in ipairs(arcPts(x + r2, y + r2, r2 - 0.5, 270, 180, 10)) do L[#L + 1] = p end
+  for _, p in ipairs(arcPts(x + r2, y + h - r2, r2 - 0.5, 180, 90, 10)) do L[#L + 1] = p end
+  L[#L + 1] = { x = x + w / 2, y = y + h - 0.5 }
+  for _, p in ipairs(arcPts(x + w - r2, y + r2, r2 - 0.5, 270, 360, 10)) do Rr[#Rr + 1] = p end
+  for _, p in ipairs(arcPts(x + w - r2, y + h - r2, r2 - 0.5, 0, 90, 10)) do Rr[#Rr + 1] = p end
+  Rr[#Rr + 1] = { x = x + w / 2, y = y + h - 0.5 }
+  seg(els, L, orange(), sw); seg(els, Rr, blue(), sw)
+  return border, body
+end
+
+-- indicatore di boost: pista sotto le barre (orizzontale) o a destra (verticale), si riempie col volume, fiamma in testa
+ICON.meters.boost = {
+  build = function(els, I, ox, oy, s, vertical)
+    local D = dens()
+    local m = { horiz = not vertical, s = s, v = 0, lastLen = -1, lastT = 0 }
+    local th = 4 * s
+    if vertical then m.x, m.y, m.len = ox + 47 * s, oy + 82 * s, (8 * D.vp + 3.2) * s; m.w, m.h = th, m.len
+    else m.x, m.y, m.len = ox + 120 * s, oy + 46.5 * s, (11 * D.pitch + 3.2) * s; m.w, m.h = m.len, th end
+    m.track = U.box(els, m.x, m.y, m.w, m.h, withA(COL.fg, 0.14), 2 * s)
+    m.fill = U.box(els, m.x, m.y, 0.01, 0.01, orange(), 2 * s)
+    els[m.fill].fillGradient = "linear"; els[m.fill].fillGradientAngle = vertical and 90 or 0; els[m.fill].fillGradientColors = { orange(), yellow() }
+    m.flame = U.poly(els, { { x = m.x, y = m.y }, { x = m.x + 1, y = m.y }, { x = m.x, y = m.y + 1 } }, withA(yellow(), 0))
+    return m
+  end,
+  tick = function(cv, I, m, lv, active, warn, t, dt)
+    local target = (active and not warn) and clampN(lv * 1.15, 0, 1) or 0
+    m.v = finite(m.v + (target - m.v) * (1 - math.exp(-9 * dt)), 0)
+    if m.v < 0.004 then m.v = 0 end
+    local L, s = m.len * m.v, m.s
+    local boost = m.v > 0.82
+    if math.abs(L - m.lastLen) > 0.45 or boost ~= m.lastBoost then
+      m.lastLen = L
+      if m.horiz then cv:elementAttribute(m.fill, "frame", { x = m.x, y = m.y, w = math.max(0.01, L), h = m.h })
+      else cv:elementAttribute(m.fill, "frame", { x = m.x, y = m.y + m.len - L, w = m.w, h = math.max(0.01, L) }) end
+      if boost ~= m.lastBoost then m.lastBoost = boost; cv:elementAttribute(m.fill, "fillGradientColors", boost and { yellow(), blue() } or { orange(), yellow() }) end
+    end
+    local on = m.v > 0.06
+    if (on or m.flameOn) and (t - m.lastT > 0.05 or on ~= m.flameOn) then
+      m.lastT = t; m.flameOn = on
+      local fl = (3 + 9 * m.v) * s * (0.7 + 0.3 * math.sin(finite(t * 38, 0)))
+      local pts
+      if m.horiz then local xe, ym = m.x + L, m.y + m.h / 2; pts = { { x = xe, y = m.y - 0.8 * s }, { x = xe + fl, y = ym }, { x = xe, y = m.y + m.h + 0.8 * s } }
+      else local ye, xm = m.y + m.len - L, m.x + m.w / 2; pts = { { x = m.x - 0.8 * s, y = ye }, { x = xm, y = ye - fl }, { x = m.x + m.w + 0.8 * s, y = ye } } end
+      cv:elementAttribute(m.flame, "coordinates", pts)
+      cv:elementAttribute(m.flame, "fillColor", withA(boost and blue() or yellow(), on and 0.9 or 0))
+    end
+  end,
+}
+
+-- scintille di boost: righe che escono dal lato sinistro della card, piu' lunghe e numerose col volume (max 9)
+ICON.parts.boost = {
+  build = function(els, ox, oy, w, h, s, lite)
+    local R = { kind = "boost", idx = {}, ox = ox, oy = oy, w = w, h = h, s = s, c = {} }
+    for i = 1, (lite and 4 or 9) do
+      els[#els + 1] = { type = "segments", action = "stroke", strokeColor = withA(CLEAR, 0), strokeWidth = 1.5 * s, strokeCapStyle = "round",
+        coordinates = { { x = ox, y = oy }, { x = ox + 1, y = oy } } }
+      R.idx[i] = #els
+    end
+    return R
+  end,
+  tick = function(cv, R, t, visible)
+    if not visible then
+      if not R.hidden then R.hidden = true; R.c = {}; for _, ix in ipairs(R.idx) do cv:elementAttribute(ix, "strokeColor", withA(CLEAR, 0)) end end
+      return
+    end
+    R.hidden = false
+    local s, h, C = R.s, R.h, R.c
+    local lv = clampN(ICON.lv or 0, 0, 1)
+    local nAct = math.ceil(#R.idx * (0.4 + 0.6 * math.min(1, lv * 1.4)))
+    for i, ix in ipairs(R.idx) do
+      local x, y, x2, a = 0, 0, 0, 0
+      if i <= nAct then
+        local seed = (i * 0.6180339887) % 1
+        local u = (t / (0.7 + 0.25 * ((i * 0.37) % 1)) + seed) % 1
+        x = R.ox + 6 * s - u * 34 * s * (0.6 + 0.4 * ((i * 0.43) % 1))
+        y = R.oy + h * (0.15 + 0.7 * ((i * 0.7548776662 + 0.13) % 1)) + (seed - 0.5) * u * 10 * s
+        x2 = x + (4 + 7 * lv) * s * (1 - 0.5 * u)
+        a = math.min(1, u * 6) * (1 - u) * (0.35 + 0.6 * lv)
+      end
+      local L = C[i]
+      if not L or math.abs(x - L.x) > 0.6 or math.abs(y - L.y) > 0.6 or math.abs(a - L.a) > 0.04 then
+        cv:elementAttribute(ix, "coordinates", { { x = x, y = y }, { x = x2, y = y } })
+        cv:elementAttribute(ix, "strokeColor", withA((i % 2 == 0) and orange() or blue(), clampN(a, 0, 1)))
+        C[i] = { x = x, y = y, a = a }
+      end
+    end
+  end,
+}
+
+-- spinner: ruota boost a 8 raggi arancio/blu che si accendono in sequenza
+ICON.proc.wheel = {
+  build = function(els, cx, cy, s)
+    local st = { sp = {} }
+    for k = 1, 8 do
+      local a = (k - 1) / 8 * 2 * math.pi - math.pi / 2
+      els[#els + 1] = { type = "segments", action = "stroke", strokeColor = withA((k % 2 == 0) and blue() or orange(), 0.2), strokeWidth = 2.3 * s, strokeCapStyle = "round",
+        coordinates = { { x = cx + 5.2 * s * math.cos(a), y = cy + 5.2 * s * math.sin(a) }, { x = cx + 10 * s * math.cos(a), y = cy + 10 * s * math.sin(a) } } }
+      st.sp[k] = #els
+    end
+    st.disc = U.disc(els, cx, cy, 2.6 * s, withA(COL.fg, 0.85))
+    return st
+  end,
+  tick = function(cv, st, t)
+    local head = (t * 1.3) % 1
+    for k, ix in ipairs(st.sp) do
+      local d = (head - (k - 1) / 8) % 1
+      cv:elementAttribute(ix, "strokeColor", withA((k % 2 == 0) and blue() or orange(), 0.14 + 0.86 * spow(1 - d, 2.2)))
+    end
+  end,
+  hide = function(cv, st)
+    for _, ix in ipairs(st.sp) do cv:elementAttribute(ix, "strokeColor", withA(CLEAR, 0)) end
+    cv:elementAttribute(st.disc, "fillColor", withA(CLEAR, 0))
+  end,
+}
+
+-- spunta finale "gol": check standard + 10 coriandoli blu/arancio/bianchi che esplodono (0.9s, 30fps)
+ICON.done.goal = {
+  std = true,
+  build = function(els, cx, cy, s)
+    local st = { cf = {}, cx = cx, cy = cy, s = s }
+    for k = 1, 10 do st.cf[k] = U.box(els, cx, cy, 3 * s, 2 * s, withA(CLEAR, 0), 0.6 * s) end
+    return st
+  end,
+  start = function(cv, st)
+    local cols = { orange(), blue(), hex("FFFFFF") }
+    Anim.run("egg", "burst", 0.9, "out", function(e, p)
+      local tk = math.floor(p * 30)
+      if tk == st.tk then return end
+      st.tk = tk
+      for k, ix in ipairs(st.cf) do
+        local an = k / 10 * 2 * math.pi + 0.3
+        local d = (7 + (18 + 6 * ((k * 0.37) % 1)) * e) * st.s
+        cv:elementAttribute(ix, "frame", { x = st.cx + d * math.cos(an) - 1.5 * st.s, y = st.cy + d * math.sin(an) + 9 * st.s * p * p - st.s, w = 3 * st.s, h = 2 * st.s })
+        cv:elementAttribute(ix, "fillColor", withA(cols[k % 3 + 1], clampN(1 - p * p, 0, 1)))
+      end
+    end, function() for _, ix in ipairs(st.cf) do cv:elementAttribute(ix, "fillColor", withA(CLEAR, 0)) end end)
+  end,
+  anim = function() end,
+}
+
+-- easter egg: palla che rimbalza nell'HUD. Scatta: a 90s di registrazione ("Che parata!"); 5 clic sul timer in pausa / badge anteprima ("Gol!").
+-- A fine registrazione lunga (>= 45s) il testo di fine diventa "Che parata!" (doneText).
+ICON.eggs.turbo = {
+  dur = 1.7,
+  build = function(els, E, ox, oy, w, h, s)
+    E.ball = U.disc(els, ox, oy, 5 * s, withA(hex("FFFFFF"), 0), withA(orange(), 0), 1.6 * s)
+  end,
+  pick = function(why) return (why == "click") and 2 or 1 end,
+  cond = function(I, E) if (I.el or 0) >= 90 and not E.f1 then E.f1 = true; return 1 end end,
+  run = function(cv, I, E, p, var)
+    local tk = math.floor(p * 30)
+    if tk ~= E.tk then
+      E.tk = tk
+      local s = E.s
+      local env = math.min(1, p * 10, (1 - p) * 6)
+      local x = E.ox + E.w * (0.16 + 0.68 * p)
+      local y = E.oy + E.h - 9 * s - math.abs(math.sin(p * math.pi * 3)) * (E.h - 18 * s) * (1 - 0.5 * p)
+      cv:elementAttribute(E.ball, "center", { x = x, y = y })
+      cv:elementAttribute(E.ball, "fillColor", withA(hex("FFFFFF"), 0.95 * env)); cv:elementAttribute(E.ball, "strokeColor", withA(orange(), env))
+    end
+    ICON.toast(cv, I, var == 2 and "Gol!" or "Che parata!", math.min(1, p * 8) * math.min(1, (1 - p) * 6))
+  end,
+  clear = function(cv, I, E)
+    E.tk = nil
+    cv:elementAttribute(E.ball, "fillColor", withA(CLEAR, 0)); cv:elementAttribute(E.ball, "strokeColor", withA(CLEAR, 0))
+  end,
+  doneText = function(text) if (ICON.lastDur or 0) >= 45 then return "✓  Che parata!" end return text end,
+}
+end
+
 -- avviso "NO MIC": scossa orizzontale smorzata della card
 local function shakeHUD()
   if not overlay or not finalFrame or dragTap then return end
@@ -2380,7 +2591,7 @@ setRecordingElements = function(isPaused)
   local P = 40 * s   -- margine attorno alla card (ombra + badge)
   local els = {}
   hoverMap = {}
-  Anim.cancel("hudhv"); Anim.cancel("hudtip"); Anim.cancel("egg", "hud")
+  Anim.cancel("hudhv"); Anim.cancel("hudtip"); Anim.cancel("egg")
   local vertical = (config.orientation == "vertical")
   local pw, ph = recDims(vertical)
   placeCanvas(pw * s + 2 * P, ph * s + 2 * P)
@@ -2399,7 +2610,7 @@ setProcessingElements = function(text)
   local function sc(v) return v * s end
   local P = sc(40)
   hoverMap = {}
-  Anim.cancel("hudhv"); Anim.cancel("egg", "hud")
+  Anim.cancel("hudhv"); Anim.cancel("egg")
   local pw, ph = 236, 52
   placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
   local els = {}
