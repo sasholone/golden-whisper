@@ -2153,6 +2153,7 @@ closeSettings = function()
   if not cv then return end
   settingsCanvas = nil; settingsPos = nil
   stopPreview(); stopScrollTap(); killGhost()
+  SET.K.msg = nil; SET.K.armAt = 0; SET.K.tipReset()
   SET.frame = nil; SET.W = nil; SET.H = nil; SET.cap = nil; SET.hCur = nil; SET.scroll = 0; SET.maxScroll = 0
   Anim.cancel("sethv"); Anim.cancel("setui"); Anim.cancel("setvis"); Anim.cancel("setsb")
   panelOut(cv)
@@ -2232,8 +2233,14 @@ local function startSlider(id)
 end
 
 settingsMouse = function(_c, msg, id)
-  if msg == "mouseEnter" then hoverTo(settingsCanvas, sHoverMap, "sethv", id, true); return
-  elseif msg == "mouseExit" then hoverTo(settingsCanvas, sHoverMap, "sethv", id, false); return
+  if msg == "mouseEnter" then
+    hoverTo(settingsCanvas, sHoverMap, "sethv", id, true)
+    if id == "key_info" then SET.K.tipHover = true; SET.K.tipFade() end
+    return
+  elseif msg == "mouseExit" then
+    hoverTo(settingsCanvas, sHoverMap, "sethv", id, false)
+    if id == "key_info" then SET.K.tipHover = false; SET.K.tipFade() end
+    return
   elseif msg == "mouseDown" then
     if id == "s_drag" then
       dragCanvas(settingsCanvas, false, function(f) settingsPos = { x = f.x, y = f.y }; SET.frame = { x = f.x, y = f.y, w = f.w, h = f.h } end)
@@ -2246,6 +2253,10 @@ settingsMouse = function(_c, msg, id)
   if not settingsCanvas then return end
 
   if id == "s_close" then closeSettings(); return end
+  if id == "key_paste" then SET.K.paste(); return end
+  if id == "key_open" then SET.K.open(); return end
+  if id == "key_remove" then SET.K.remove(); return end
+  if id == "key_info" then SET.K.tipPin = not SET.K.tipPin; SET.K.tipFade(); return end
   if id == "tg_shadow" then setLook("shadowOn", not (config.shadowOn ~= false)); rebuildHUD(); renderSettings(); return end
   if id == "tg_glow" then setLook("glowOn", not (config.glowOn == true)); rebuildHUD(); renderSettings(); return end
   if id == "tg_anim" then setLook("animOn", not animOn()); renderSettings(); return end
@@ -2265,7 +2276,7 @@ settingsMouse = function(_c, msg, id)
   if not kind then return end
   local pageChange = false
   if kind == "tab" then
-    if settingsPage ~= val then settingsPage = val; SET.scroll = 0; pageChange = true end
+    if settingsPage ~= val then settingsPage = val; SET.scroll = 0; pageChange = true; SET.K.tipReset() end
   elseif kind == "mic" then
     local d = settingsDevices[tonumber(val)]
     if d then config.audioDevice = d.idx; config.micName = d.name; persist("micDevice", d.idx); persist("micName", d.name) end
@@ -2319,6 +2330,100 @@ local function startPreview()
   previewTimer = hs.timer.doEvery(1 / 20, function() guarded("preview", previewTick) end)
 end
 
+------------------------------------------------------------------------
+-- CHIAVE GROQ (tab Generale). Mai in console/log/alert/history: l'unica copia è il file keyPath (permessi 600).
+-- Flusso: incolla dal clipboard -> controllo formato -> prova a costo zero (GET /openai/v1/models) ->
+-- salva SOLO se Groq risponde 200. readKey() rilegge il file ogni volta: nessun riavvio.
+------------------------------------------------------------------------
+local K = { has = false, mask = nil, msg = nil, msgId = 0, armAt = 0, busy = false, tipA = 0, tipPin = false, tipHover = false, tipEls = {} }
+SET.K = K
+local KEY_STEPS = { "1) Premi «Prendi / crea la chiave»: si apre il sito Groq.",
+  "2) Registrati (è gratis: bastano Google o email, nessuna carta).",
+  "3) Premi «Create API Key», dai un nome qualsiasi e conferma.",
+  "4) Copia la chiave (inizia con gsk_).",
+  "5) Torna qui e premi «Incolla chiave»." }
+function K.refresh()
+  local k = readKey()
+  if k then
+    K.has = true
+    K.mask = (#k >= 12) and (k:sub(1, 4) .. "…" .. k:sub(-4)) or "chiave salvata"
+  else K.has = false; K.mask = nil end
+  k = nil
+end
+function K.setMsg(kind, text)
+  K.msgId = K.msgId + 1
+  local id = K.msgId
+  K.msg = { kind = kind, text = text }
+  if kind ~= "busy" then
+    hs.timer.doAfter(9, function()
+      if K.msgId == id and K.msg and settingsCanvas then K.msg = nil; pcall(renderSettings, { scroll = true }) end
+    end)
+  end
+  if settingsCanvas then pcall(renderSettings, { scroll = true }) end
+end
+function K.paste()
+  if K.busy then return end
+  local raw = hs.pasteboard.getContents()
+  local clip = trim(type(raw) == "string" and raw or "")
+  raw = nil
+  if clip == "" then K.setMsg("err", "Negli appunti non c'è niente da incollare"); return end
+  if not (clip:match("^gsk_[%w_%-]+$") and #clip >= 30 and #clip <= 120) then
+    K.setMsg("err", "Non è una chiave Groq (inizia con gsk_)"); return
+  end
+  K.busy = true
+  K.setMsg("busy", "Controllo la chiave con Groq…")
+  local key = clip
+  local function done(kind, text) K.busy = false; key = nil; K.setMsg(kind, text) end
+  local t = hs.task.new(config.curl, function(code, out)
+    local st = tonumber(trim(out or "")) or 0
+    if code ~= 0 or st == 0 then done("err", "Nessuna rete: riprova tra poco"); return end
+    if st == 200 then
+      local dir = config.keyPath:match("^(.*)/[^/]+$") or "."
+      hs.execute("umask 077; mkdir -p '" .. dir .. "'; : > '" .. config.keyPath .. "'")
+      local f = io.open(config.keyPath, "w")
+      local okw = false
+      if f then okw = f:write(key) and true or false; f:close() end
+      hs.execute("chmod 600 '" .. config.keyPath .. "'")
+      if okw and readKey() == key then K.refresh(); done("ok", "Chiave valida: salvata")
+      else done("err", "Non riesco a salvare la chiave") end
+    elseif st == 401 then done("err", "Chiave non valida: Groq l'ha rifiutata")
+    elseif st == 403 then done("err", "Groq ha rifiutato la richiesta (403): riprova")
+    else done("err", "Groq non risponde (codice " .. tostring(st) .. "): riprova") end
+  end, { "-s", "-S", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "12",
+         "-H", "Authorization: Bearer " .. key, "https://api.groq.com/openai/v1/models" })
+  if not (t and t:start()) then done("err", "Nessuna rete: riprova tra poco") end
+end
+function K.remove()
+  if K.armAt > 0 and (now() - K.armAt) < 3 then
+    K.armAt = 0
+    os.remove(config.keyPath)
+    K.refresh(); K.setMsg("info", "Chiave rimossa")
+  else
+    K.armAt = now()
+    hs.timer.doAfter(3.1, function()
+      if K.armAt > 0 and (now() - K.armAt) >= 3 then K.armAt = 0; if settingsCanvas then pcall(renderSettings, { scroll = true }) end end
+    end)
+    if settingsCanvas then pcall(renderSettings, { scroll = true }) end
+  end
+end
+function K.open()
+  local ok = pcall(hs.urlevent.openURL, "https://console.groq.com/keys")
+  if not ok then hs.execute("open 'https://console.groq.com/keys'") end
+  K.setMsg("info", "Ho aperto il sito di Groq nel browser")
+end
+-- popover (i): elementi già nel canvas, a trasparenza animata (nessun ridisegno al passaggio del mouse)
+function K.tipApply()
+  local cv = settingsCanvas; if not cv then return end
+  for _, e in ipairs(K.tipEls) do cv:elementAttribute(e[1], e[2], withA(e[3], (e[3].alpha or 1) * K.tipA)) end
+end
+function K.tipFade()
+  local target = (K.tipPin or K.tipHover) and 1 or 0
+  local from = K.tipA
+  if from == target then return end
+  Anim.run("settip", "fade", 0.16, "out", function(e) K.tipA = clamp01(lerp(from, target, e)); K.tipApply() end)
+end
+function K.tipReset() K.tipPin = false; K.tipHover = false; K.tipA = 0; Anim.cancel("settip") end
+
 -- costruisce tutti gli elementi per un dato offset di scroll. Ritorna (els, info)
 local function layoutSettings(scroll)
   local W, H = SET.W, SET.H
@@ -2334,7 +2439,7 @@ local function layoutSettings(scroll)
   local GAP = 18 * gapK()
   local els = {}
   sHoverMap = {}
-  SET.sliders = {}; SET.sbIdx = nil
+  SET.sliders = {}; SET.sbIdx = nil; SET.keyTip = nil
   PREV = nil
   for i = 1, NCARD do els[i] = placeholder() end     -- slot per ombra + vetro (riempiti a fine layout)
   local function add(el) els[#els + 1] = el; return #els end
@@ -2477,6 +2582,53 @@ local function layoutSettings(scroll)
   local trail = GAP          -- spazio vuoto in coda al contenuto (tolto dal calcolo dell'altezza naturale)
 
   if settingsPage == "general" then
+    -- CHIAVE GROQ
+    do
+      txt(els, "CHIAVE GROQ", pad + 2, y, IW, 14, 10.5, COL.fg3, { font = "bold" })
+      local bx, by = pad + 92, y + 7
+      hitCircle(els, sHoverMap, "key_info", bx, by, 8.5, { fill = COL.rowBg, hoverFill = COL.accentSoft, stroke = COL.fg3, hoverStroke = COL.accent, sw = 1.2 })
+      add({ type = "circle", action = "fill", fillColor = COL.fg2, center = { x = bx, y = by - 3.1 }, radius = 1 })
+      line(els, bx, by - 0.7, bx, by + 3.4, COL.fg2, 1.5)
+      y = y + 20
+      local bh = 148
+      box(pad, y, IW, bh)
+      local sy = y + 12
+      add({ type = "circle", action = "fill", fillColor = withA(K.has and COL.ok or COL.warn, 0.22), center = { x = pad + 22, y = sy + 9 }, radius = 8 })
+      add({ type = "circle", action = "fill", fillColor = K.has and COL.ok or COL.warn, center = { x = pad + 22, y = sy + 9 }, radius = 4.4 })
+      txt(els, K.has and K.mask or "Nessuna chiave", pad + 38, sy, IW - 38 - 140, 18, 13, COL.fg, { font = K.has and "mono" or "semi" })
+      local m = K.msg
+      local l2, l2c = nil, COL.fg3
+      if m then
+        l2 = m.text
+        l2c = (m.kind == "ok") and COL.ok or ((m.kind == "err") and COL.warn or COL.fg2)
+      else
+        l2 = K.has and "Salvata su questo Mac · incolla per sostituirla" or "Serve per trascrivere · gratis su Groq"
+      end
+      txt(els, l2, pad + 38, sy + 20, IW - 38 - 12, 15, 11, l2c, { lb = "clip" })
+      if K.has then
+        local armed = K.armAt > 0 and (now() - K.armAt) < 3
+        local rw = armed and 132 or 64
+        hitRect(els, sHoverMap, "key_remove", pad + IW - 12 - rw, sy - 1, rw, 20, R(10), { fill = armed and withA(COL.warn, 0.14) or withA(COL.rowBg, 0),
+          hoverFill = armed and withA(COL.warn, 0.22) or COL.accentSoft, stroke = armed and COL.warn or COL.divider, hoverStroke = armed and COL.warn or COL.borderSoft })
+        txt(els, armed and "Sicuro? Tocca ancora" or "Rimuovi", pad + IW - 12 - rw, sy + 2, rw, 15, 10.5, armed and COL.warn or COL.fg2,
+          { font = "semi", align = "center", lb = "clip" })
+      end
+      local py = y + 54
+      add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(12), yRadius = R(12) },
+        frame = { x = pad + 12, y = py, w = IW - 24, h = 38 }, fillGradient = "linear", fillGradientAngle = COL.multi and 0 or 90, fillGradientColors = COL.grad })
+      hitRect(els, sHoverMap, "key_paste", pad + 12, py, IW - 24, 38, R(12), { fill = withA(COL.fgWhite, K.busy and 0.3 or 0), hoverFill = withA(COL.fgWhite, 0.2) })
+      ICON.copy(els, pad + IW / 2 - 78, py + 19, 14, COL.accentText)
+      txt(els, K.busy and "Controllo…" or "Incolla chiave dal clipboard", pad + IW / 2 - 64, py + 11, 180, 16, 12.5, COL.accentText, { font = "semi", lb = "clip" })
+      local oy = py + 46
+      hitRect(els, sHoverMap, "key_open", pad + 12, oy, IW - 24, 36, R(12), { fill = COL.rowBg, hoverFill = COL.accentSoft, stroke = COL.borderSoft, hoverStroke = COL.border })
+      local ax, ay = pad + IW / 2 - 92, oy + 18          -- freccia "apri nel browser" (↗)
+      line(els, ax - 3.5, ay + 3.5, ax + 3.5, ay - 3.5, COL.accentInk, 1.6)
+      seg(els, { { x = ax - 0.5, y = ay - 3.5 }, { x = ax + 3.5, y = ay - 3.5 }, { x = ax + 3.5, y = ay + 0.5 } }, COL.accentInk, 1.6)
+      txt(els, "Prendi / crea la chiave su Groq", pad + IW / 2 - 80, oy + 10, 200, 16, 12.5, COL.accentInk, { font = "semi", lb = "clip" })
+      SET.keyTip = { y = y + 2 }
+      y = y + bh + GAP
+    end
+
     -- MICROFONO
     sec("MICROFONO")
     local nDev = math.max(1, #settingsDevices)
@@ -2712,6 +2864,19 @@ local function layoutSettings(scroll)
     y = y - 12
     trail = GAP - 12
   end
+  -- popover (i) della chiave Groq: sopra tutto il corpo, trasparenza animata da K.tipA
+  K.tipEls = {}
+  if settingsPage == "general" and SET.keyTip then
+    local tx, ty, tw, th = pad, SET.keyTip.y, IW, 212
+    local function reg(ix, attr) K.tipEls[#K.tipEls + 1] = { ix, attr, els[ix][attr] }; els[ix][attr] = withA(els[ix][attr], (els[ix][attr].alpha or 1) * K.tipA) end
+    local bg = add({ type = "rectangle", action = "strokeAndFill", fillColor = withA(mix(COL.solid, COL.accent, 0.07), 0.99), strokeColor = COL.border,
+      strokeWidth = 1, roundedRectRadii = { xRadius = R(14), yRadius = R(14) }, frame = { x = tx, y = ty, w = tw, h = th } })
+    reg(bg, "fillColor"); reg(bg, "strokeColor")
+    local tt = txt(els, "Come ottenere la chiave", tx + 14, ty + 12, tw - 28, 18, 12.5, COL.fg, { font = "bold", lb = "clip" })
+    reg(tt, "textColor")
+    local st = txt(els, table.concat(KEY_STEPS, "\n"), tx + 14, ty + 36, tw - 28, th - 44, 11.5, COL.fg2, { lb = "wordWrap" })
+    reg(st, "textColor")
+  end
   add({ type = "resetClip" })
 
   -- lunghezza del contenuto = dal primo titolo all'ultimo controllo + 16px d'aria (la coda vuota non conta):
@@ -2926,6 +3091,7 @@ end
 
 openSettings = function()
   segPrev = {}; togglePrev = {}; resetArmAt = 0
+  SET.K.refresh(); SET.K.armAt = 0; SET.K.tipReset()
   getAudioDevices(function(list)
     deviceCache = list; settingsDevices = list
     if not settingsCanvas then SET.scroll = 0; SET.W, SET.cap = settingsGeometry(); SET.H = SET.cap end
