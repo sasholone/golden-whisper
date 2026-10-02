@@ -781,7 +781,7 @@ local function hoverTo(cv, map, group, id, entering)
   end)
 end
 
-local fonts
+local fonts, fontsOf
 do
 -- Font di sistema con fallback sicuri. Tre famiglie per il testo UI (sf / rounded / mono) e
 -- tre per il timer; ogni set è risolto una volta sola e messo in cache.
@@ -824,6 +824,7 @@ local function fontFamilyOf(kind)
 end
 -- mono "vero" (etichette dei tasti, timer in modalità mono): invariato rispetto all'originale
 local MONO_FIXED = nil
+fontsOf = function(kind) return fontFamilyOf(kind) end        -- famiglia di font per nome (per i pack)
 fonts = function()
   local ck = tostring(config.uiFont) .. "|" .. tostring(config.timerFont)
   if FONTCACHE[ck] then return FONTCACHE[ck] end
@@ -1624,7 +1625,7 @@ function ICON.barCol() local f = COL.fx; local b = f and f.barCol; if not b then
 function ICON.packFont(slot)
   local f = COL.fx
   if not (f and f.font) then return nil end
-  local ok, F = pcall(fontFamilyOf, f.font)
+  local ok, F = pcall(fontsOf, f.font)
   return ok and F and F[slot] or nil
 end
 
@@ -2517,7 +2518,7 @@ ICON.done.pop = {
     local y0 = pick(nil, 4)
     st.y0 = y0
     st.star = U.poly(els, { { x = cx, y = cy }, { x = cx + 1, y = cy }, { x = cx, y = cy + 1 } }, withA(y0, 0), withA(ink(), 0), 1.8 * s)
-    ICON.check(els, cx, cy, 15 * s, withA(ink(), 0), 2.6 * s); st.chk = #els
+    ICON.check(els, cx, cy, 15 * s, withA(ink(), 0), 2.6); st.chk = #els
     return st
   end,
   anim = function(cv, st, e)
