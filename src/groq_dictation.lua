@@ -2322,8 +2322,12 @@ local function startSlider(id)
   local sl, def = SET.sliders[id], SLIDER_DEFS[id]
   if not sl or not def or not settingsCanvas or not sl.tw or sl.tw <= 0 then return end
   if dragTap then dragTap:stop(); dragTap = nil end
+  local lastT = 0
   local function apply(commit)
     local cv = settingsCanvas; if not cv then return end
+    local tn = now()
+    if not commit and tn - lastT < 0.016 then return end          -- max ~60 aggiornamenti/s mentre si trascina
+    lastT = tn
     local f = cv:frame()
     local rel = clampN((hs.mouse.absolutePosition().x - f.x - sl.tx) / sl.tw, 0, 1)
     local sty = sl.ty - (SET.dy[sl.reg or 1] or 0)
@@ -3050,17 +3054,19 @@ local function layoutSettings()
       SET.hero = { bg = hbg, name = hn, sub = hs, mode = mode, shown = config.style, hover = false }
 
       -- categorie (con conteggio)
+      local cpitch = clampN(math.floor((clipBot - leftTop) / #cats), 24, 36)      -- finestre basse: righe più fitte
+      local crh = cpitch - 4
       for i, c in ipairs(cats) do
-        local ry = leftTop + (i - 1) * 36
+        local ry = leftTop + (i - 1) * cpitch
         local on = (c[1] == curCat)
         if on then
           add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(10), yRadius = R(10) },
-            frame = { x = pad0, y = ry, w = catW, h = 32 }, fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = COL.grad })
+            frame = { x = pad0, y = ry, w = catW, h = crh }, fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = COL.grad })
         end
-        hitRect(els, sHoverMap, "cat:" .. c[1], pad0, ry, catW, 32, R(10),
+        hitRect(els, sHoverMap, "cat:" .. c[1], pad0, ry, catW, crh, R(10),
           { fill = on and withA(COL.fgWhite, 0) or withA(COL.rowBg, 0), hoverFill = on and withA(COL.fgWhite, 0.16) or COL.rowHover })
-        txt(els, c[2], pad0 + 12, ry + 8, catW - 44, 16, 12, on and COL.accentText or COL.fg2, { font = "semi", lb = "clip" })
-        txt(els, tostring(counts[c[1]] or 0), pad0 + catW - 34, ry + 9, 24, 14, 10.5, on and withA(COL.accentText, 0.75) or COL.fg3, { align = "right", lb = "clip" })
+        txt(els, c[2], pad0 + 12, ry + (crh - 16) / 2, catW - 44, 16, 12, on and COL.accentText or COL.fg2, { font = "semi", lb = "clip" })
+        txt(els, tostring(counts[c[1]] or 0), pad0 + catW - 34, ry + (crh - 14) / 2 + 1, 24, 14, 10.5, on and withA(COL.accentText, 0.75) or COL.fg3, { align = "right", lb = "clip" })
       end
     end
 
