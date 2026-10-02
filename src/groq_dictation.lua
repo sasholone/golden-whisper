@@ -357,7 +357,8 @@ end
 -- Per aggiungere uno stile: una riga qui sotto (+ eventuale icona in ICON.c). Nient'altro.
 local ROWS = {
   -- Pop-culture (nomi-nod, palette + motivi generici: nessun marchio/personaggio)
-  { "bluerush", "Blue Rush", "pp", "0B1A52 050C2B 3D8BFF 3D8BFF 00C2FF FFC832", "F4F8FF DCE8FF 1458D6 1458D6 0A8ED8 D99A00", { icon = "ring" } },
+  { "bluerush", "Blue Rush", "pp", "0B1A52 050C2B 3D8BFF 3D8BFF 00C2FF FFC832", "F4F8FF DCE8FF 1458D6 1458D6 0A8ED8 D99A00",
+    { icon = "ring", body = "speed", part = "rush", proc = "spin", done = "ring", egg = "rush" } },
   { "blocky", "Blocky", "pp", "23301A 11160C 7CBD3A 8FD14A 5B9A2E 8A5A33", "F3F7E8 DDE8C4 4C8A1F 4C8A1F 3E7A2A 8A5A33",
     { icon = "blockmic", bar = "pixel", shape = "block", body = "block", part = "chips", proc = "mine", done = "pixel", egg = "block",
       barCol = { dark = "F4F1D6", light = "2A1C0E" } } },
@@ -1743,6 +1744,11 @@ function ICON.u.box(els, x, y, w, h, fill, rad, stroke, sw)
   return #els
 end
 function ICON.u.hz(i, k) local v = math.sin(i * 127.1 + k * 311.7) * 43758.5453; return v - math.floor(v) end     -- pseudo-casuale deterministico 0..1
+function ICON.u.disc(els, x, y, r, fill, stroke, sw)
+  els[#els + 1] = { type = "circle", action = stroke and (fill and "strokeAndFill" or "stroke") or "fill", fillColor = fill, strokeColor = stroke,
+    strokeWidth = sw or 1, center = { x = x, y = y }, radius = r }
+  return #els
+end
 function ICON.u.copy(o) local c = {}; for k, v in pairs(o or {}) do c[k] = v end return c end
 function ICON.u.poly(els, pts, fill, stroke, sw)
   els[#els + 1] = { type = "segments", action = stroke and (fill and "strokeAndFill" or "stroke") or "fill", closed = true,
@@ -1958,6 +1964,221 @@ ICON.eggs.block = {
   end,
   clear = function(cv, I, E)
     for _, ix in ipairs(E.sp) do cv:elementAttribute(ix, "fillColor", withA(CLEAR, 0)) end
+  end,
+}
+end
+
+------------------------------------------------------------------------
+-- PACK "Blue Rush" (velocita'): card blu elettrico con bande oblique, scie di velocita' che scorrono, anelli dorati che
+-- ruotano/rimbalzano e sciamano quando parli forte, spinner a palla che gira, spunta con scintilla d'anello,
+-- easter egg "troppo veloce" (livello audio altissimo per 3s: scia extra + HUD che trema) con contatore di "anelli".
+-- Tutto disegnato da zero con primitive: nessun personaggio o logo.
+------------------------------------------------------------------------
+do
+local U = ICON.u
+local function g(T, i) return T.grad[math.min(i, #T.grad)] or T.accent end
+local function gold() return COL.grad[3] or COL.accent end
+
+function ICON.c.ring(els, cx, cy, sz, col, T)          -- anello dorato con lucido, scintilla e scie di velocita'
+  local u = sz / 16; local rx = cx + 2.2 * u
+  line(els, cx - 7.6 * u, cy - 3.4 * u, cx - 3.8 * u, cy - 3.4 * u, col, 1.4 * u)
+  line(els, cx - 8 * u, cy, cx - 2.6 * u, cy, col, 1.4 * u)
+  line(els, cx - 7.6 * u, cy + 3.4 * u, cx - 3.8 * u, cy + 3.4 * u, col, 1.4 * u)
+  U.disc(els, rx, cy, 4.6 * u, nil, g(T, 3), 2.7 * u)
+  seg(els, arcPts(rx, cy, 4.6 * u, 205, 285, 8), withA(T.fgWhite, 0.8), 1 * u)
+  local sx, sy = cx + 7.2 * u, cy - 6 * u
+  U.poly(els, { { x = sx, y = sy - 2.4 * u }, { x = sx + 0.7 * u, y = sy - 0.7 * u }, { x = sx + 2.4 * u, y = sy }, { x = sx + 0.7 * u, y = sy + 0.7 * u },
+    { x = sx, y = sy + 2.4 * u }, { x = sx - 0.7 * u, y = sy + 0.7 * u }, { x = sx - 2.4 * u, y = sy }, { x = sx - 0.7 * u, y = sy - 0.7 * u } }, withA(T.fgWhite, 0.95))
+end
+
+-- corpo: vetro blu + tre bande oblique "velocita'" (solo orizzontale: in verticale sarebbe rumore)
+ICON.bodies.speed = function(els, x, y, w, h, s, r, o, kind)
+  local border, body = pushGlass(els, x, y, w, h, r, o)
+  if w > h then
+    local r2 = math.max(1, math.min(r, h / 2, w / 2))
+    local sk = h * 0.45
+    local cols = { withA(hex("FFFFFF"), COL.dark and 0.05 or 0.35), withA(COL.grad[2] or COL.accent, 0.11), withA(gold(), 0.09) }
+    for k = 1, 3 do
+      local bx = x + r2 + w * (0.12 + 0.24 * (k - 1))
+      U.poly(els, { { x = bx + sk, y = y + 1 }, { x = bx + sk + w * 0.07, y = y + 1 }, { x = bx + w * 0.07, y = y + h - 1 }, { x = bx, y = y + h - 1 } }, cols[k])
+    end
+  end
+  return border, body
+end
+
+-- particelle: 8 anelli che ruotano e rimbalzano (piu' ne compaiono col volume) + 4 scie orizzontali, max 12, ~16Hz
+ICON.parts.rush = {
+  build = function(els, ox, oy, w, h, s, lite)
+    local R = { kind = "rush", idx = {}, rings = {}, streaks = {}, ox = ox, oy = oy, w = w, h = h, s = s, c = {} }
+    for i = 1, (lite and 4 or 8) do
+      els[#els + 1] = { type = "segments", action = "stroke", closed = true, strokeColor = withA(gold(), 0), strokeWidth = 1.5 * s, strokeJoinStyle = "round",
+        coordinates = { { x = ox, y = oy }, { x = ox + 1, y = oy }, { x = ox + 1, y = oy + 1 } } }
+      R.rings[i] = #els; R.idx[#R.idx + 1] = #els
+    end
+    for i = 1, (lite and 2 or 4) do
+      els[#els + 1] = { type = "segments", action = "stroke", strokeColor = withA(CLEAR, 0), strokeWidth = 1.3 * s, strokeCapStyle = "round",
+        coordinates = { { x = ox, y = oy }, { x = ox + 1, y = oy } } }
+      R.streaks[i] = #els; R.idx[#R.idx + 1] = #els
+    end
+    return R
+  end,
+  tick = function(cv, R, t, visible)
+    if not visible then
+      if not R.hidden then
+        R.hidden = true; R.c = {}
+        for _, ix in ipairs(R.idx) do cv:elementAttribute(ix, "strokeColor", withA(CLEAR, 0)) end
+      end
+      return
+    end
+    R.hidden = false
+    local s, w, h, C = R.s, R.w, R.h, R.c
+    local lv = clampN(ICON.lv or 0, 0, 1)
+    local gc = gold()
+    local nAct = math.ceil(#R.rings * (0.25 + 0.75 * math.min(1, lv * 1.6)))
+    local rr = 3.1 * s
+    for i, ix in ipairs(R.rings) do
+      local x, y, a, rw = 0, 0, 0, 1
+      if i <= nAct then
+        local seed = (i * 0.6180339887) % 1
+        local u = (t / (2.2 + 1.2 * ((i * 0.31) % 1)) + seed) % 1
+        local x0 = 10 * s + ((i * 0.7548776662 + 0.13) % 1) * math.max(1, w - 20 * s)
+        x = R.ox + x0 + (u - 0.5) * 22 * s * ((i % 2 == 0) and 1 or -1)
+        y = R.oy + h - 7 * s - math.abs(math.sin(u * math.pi * 2.5)) * (1 - u) * (h - 14 * s)        -- rimbalza e si smorza
+        a = clampN(math.min(u * 6, (1 - u) * 3, 1), 0, 1) * 0.9
+        rw = 0.25 + 0.75 * math.abs(math.cos(finite(t * 6 + seed * 9, 0)))                          -- rotazione
+      end
+      local L = C[i]
+      if not L or math.abs(x - L.x) > 0.5 or math.abs(y - L.y) > 0.5 or math.abs(a - L.a) > 0.04 or math.abs(rw - L.w) > 0.05 then
+        local pts = {}
+        for k = 0, 9 do local an = k / 10 * 2 * math.pi; pts[#pts + 1] = { x = x + rr * rw * math.cos(an), y = y + rr * math.sin(an) } end
+        cv:elementAttribute(ix, "coordinates", pts)
+        cv:elementAttribute(ix, "strokeColor", withA(gc, a))
+        C[i] = { x = x, y = y, a = a, w = rw }
+      end
+    end
+    local sc = COL.dark and hex("FFFFFF") or COL.accent
+    for i, ix in ipairs(R.streaks) do
+      local k = #R.rings + i
+      local u = (t / (0.8 + 0.12 * i) + i * 0.27) % 1
+      local len = (12 + 10 * lv) * s
+      local xh = R.ox + w + len - u * (w + 2 * len)
+      local yy = R.oy + h * (0.16 + 0.22 * (i - 1))
+      local a = (0.12 + 0.3 * lv) * math.min(1, u * 5, (1 - u) * 5)
+      local L = C[k]
+      if not L or math.abs(xh - L.x) > 0.8 or math.abs(a - L.a) > 0.03 then
+        cv:elementAttribute(ix, "coordinates", { { x = xh, y = yy }, { x = xh + len, y = yy } })
+        cv:elementAttribute(ix, "strokeColor", withA(sc, a))
+        C[k] = { x = xh, y = yy, a = a }
+      end
+    end
+  end,
+}
+
+-- spinner: palla blu che rotola con spirale che gira (spin dash) e scie dietro
+ICON.proc.spin = {
+  build = function(els, cx, cy, s)
+    local st = { arms = {}, cx = cx, cy = cy, s = s }
+    st.disc = U.disc(els, cx, cy, 9.5 * s, COL.grad[1] or COL.accent, COL.grad[2] or COL.accent, 1.3 * s)
+    for k = 1, 3 do
+      els[#els + 1] = { type = "segments", action = "stroke", strokeColor = withA(hex("FFFFFF"), 0.85), strokeWidth = 1.5 * s, strokeCapStyle = "round",
+        strokeJoinStyle = "round", coordinates = { { x = cx, y = cy }, { x = cx + 1, y = cy } } }
+      st.arms[k] = #els
+    end
+    line(els, cx - 16 * s, cy - 3.5 * s, cx - 11.5 * s, cy - 3.5 * s, withA(gold(), 0.8), 1.5 * s); st.l1 = #els
+    line(els, cx - 17 * s, cy + 1.5 * s, cx - 11.5 * s, cy + 1.5 * s, withA(gold(), 0.8), 1.5 * s); st.l2 = #els
+    return st
+  end,
+  tick = function(cv, st, t)
+    local s = st.s
+    for k, ix in ipairs(st.arms) do
+      local pts = {}
+      for j = 0, 6 do
+        local a = t * 9 + (k - 1) * 2.0944 + j * 0.5
+        local rr = (1.2 + j * 1.15) * s
+        pts[#pts + 1] = { x = st.cx + rr * math.cos(a), y = st.cy + rr * math.sin(a) }
+      end
+      cv:elementAttribute(ix, "coordinates", pts)
+    end
+    local pa = 0.45 + 0.4 * math.sin(finite(t * 14, 0))
+    cv:elementAttribute(st.l1, "strokeColor", withA(gold(), pa)); cv:elementAttribute(st.l2, "strokeColor", withA(gold(), 0.85 - pa * 0.5))
+  end,
+  hide = function(cv, st)
+    cv:elementAttribute(st.disc, "fillColor", withA(CLEAR, 0)); cv:elementAttribute(st.disc, "strokeColor", withA(CLEAR, 0))
+    for _, ix in ipairs(st.arms) do cv:elementAttribute(ix, "strokeColor", withA(CLEAR, 0)) end
+    cv:elementAttribute(st.l1, "strokeColor", withA(CLEAR, 0)); cv:elementAttribute(st.l2, "strokeColor", withA(CLEAR, 0))
+  end,
+}
+
+-- spunta finale: anello d'oro che si espande con raggi di scintilla + check
+ICON.done.ring = {
+  build = function(els, cx, cy, s)
+    local st = { cx = cx, cy = cy, s = s, rays = {} }
+    els[#els + 1] = { type = "circle", action = "stroke", strokeColor = withA(gold(), 0), strokeWidth = 2.2 * s, center = { x = cx, y = cy }, radius = 4 * s }
+    st.ring = #els
+    for k = 1, 6 do
+      els[#els + 1] = { type = "segments", action = "stroke", strokeColor = withA(gold(), 0), strokeWidth = 1.5 * s, strokeCapStyle = "round",
+        coordinates = { { x = cx, y = cy }, { x = cx + 1, y = cy } } }
+      st.rays[k] = #els
+    end
+    ICON.check(els, cx, cy, 17 * s, withA(COL.ok, 0), 2.1); st.chk = #els
+    return st
+  end,
+  anim = function(cv, st, e)
+    local a, s = clamp01(e), st.s
+    local fade = 1 - clamp01((e - 0.55) / 0.45)
+    cv:elementAttribute(st.ring, "radius", (4 + 8 * clampN(e, 0, 1.1)) * s)
+    cv:elementAttribute(st.ring, "strokeColor", withA(gold(), a * (0.35 + 0.65 * fade)))
+    for k, ix in ipairs(st.rays) do
+      local an = math.rad(k * 60 - 90)
+      local r0, r1 = (7 + 4 * e) * s, (10 + 8 * e) * s
+      cv:elementAttribute(ix, "coordinates", { { x = st.cx + r0 * math.cos(an), y = st.cy + r0 * math.sin(an) }, { x = st.cx + r1 * math.cos(an), y = st.cy + r1 * math.sin(an) } })
+      cv:elementAttribute(ix, "strokeColor", withA(gold(), a * fade))
+    end
+    cv:elementAttribute(st.chk, "strokeColor", withA(COL.ok, a))
+  end,
+}
+
+-- easter egg "troppo veloce": livello audio alto (media barre > ~0.48) per 3s di fila -> 4 scie veloci + HUD che trema + toast
+-- con il contatore di anelli (registrazioni completate in sessione). Cooldown 4s; 5 clic sul timer in pausa / badge anteprima.
+ICON.eggs.rush = {
+  dur = 1.6,
+  build = function(els, E, ox, oy, w, h, s)
+    E.sp = {}; E.hot = 0
+    for k = 1, 4 do
+      els[#els + 1] = { type = "segments", action = "stroke", strokeColor = withA(CLEAR, 0), strokeWidth = 1.6 * s, strokeCapStyle = "round",
+        coordinates = { { x = ox, y = oy }, { x = ox + 1, y = oy } } }
+      E.sp[k] = #els
+    end
+  end,
+  cond = function(I, E, t, dt)
+    if (I.lv or 0) > 0.72 then E.hot = E.hot + dt else E.hot = math.max(0, E.hot - dt * 2) end
+    if E.hot >= 3 then E.hot = 0; return 1 end
+  end,
+  run = function(cv, I, E, p, var)
+    local tk = math.floor(p * 30)
+    if tk == E.tk then return end
+    E.tk = tk
+    local s = E.s
+    local env = math.min(1, p * 8, (1 - p) * 5)
+    local sc = COL.dark and hex("FFFFFF") or COL.accent
+    for k, ix in ipairs(E.sp) do
+      local u = (p * 3.2 + k * 0.23) % 1
+      local len = 30 * s
+      local xr = E.ox + E.w + len - u * (E.w + 2 * len)
+      local yy = E.oy + E.h * (0.15 + 0.23 * (k - 1))
+      cv:elementAttribute(ix, "coordinates", { { x = xr, y = yy }, { x = xr + len, y = yy } })
+      cv:elementAttribute(ix, "strokeColor", withA(sc, 0.8 * env))
+    end
+    if cv == overlay and finalFrame and not dragTap and not animBusy then
+      local f = finalFrame
+      cv:frame({ x = f.x + math.sin(p * 70) * 1.6 * s * (1 - p), y = f.y, w = f.w, h = f.h })
+    end
+    ICON.toast(cv, I, (ICON.stat.n > 0) and ("Veloce! " .. ICON.stat.n .. " anelli") or "Troppo veloce!", env)
+  end,
+  clear = function(cv, I, E)
+    E.tk = nil
+    for _, ix in ipairs(E.sp) do cv:elementAttribute(ix, "strokeColor", withA(CLEAR, 0)) end
+    if cv == overlay and finalFrame and not dragTap and not animBusy then cv:frame(finalFrame) end
   end,
 }
 end
