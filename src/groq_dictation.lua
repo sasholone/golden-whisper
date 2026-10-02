@@ -3381,7 +3381,7 @@ showRecordingHUD = function()
   if uiTimer then uiTimer:stop() end
   HUDA = 1
   -- tick protetto: un errore non ferma timer/onda/pulsazione (lezione del bug NaN)
-  uiTimer = hs.timer.new(1 / 45, function() guarded("updateUI", updateUI) end); uiTimer:start()
+  uiTimer = hs.timer.new(1 / 30, function() guarded("updateUI", updateUI) end); uiTimer:start()
 end
 stopUITimer = function() if uiTimer then uiTimer:stop(); uiTimer = nil end end
 function hideOverlay() stopUITimer(); mode = nil; RECIDX = nil; PROC = nil; hideAnimated() end
@@ -3608,9 +3608,9 @@ local function scrollBy(d, i)
   if ns == r.scroll then return end
   r.scroll = ns; SET.sc[i] = ns
   SET.lastScroll = now()
-  if not SET.pending then            -- coalescing: ~40 aggiornamenti/s al massimo, qualunque sia la frequenza degli eventi
+  if not SET.pending then            -- coalescing: ~30 aggiornamenti/s al massimo, qualunque sia la frequenza degli eventi
     SET.pending = true
-    hs.timer.doAfter(0.024, function()
+    hs.timer.doAfter(0.033, function()
       SET.pending = false
       if settingsCanvas then
         local ok, err = pcall(SET.applyScroll)
@@ -3758,12 +3758,18 @@ settingsMouse = function(_c, msg, id)
   renderSettings({ page = pageChange })
 end
 
--- anteprima viva: ~12 aggiornamenti/s del mini-HUD del tab Tema, in pausa durante scroll / resize / crossfade
+-- anteprima viva: ~8 aggiornamenti/s del mini-HUD del tab Tema; in pausa durante scroll / resize / crossfade, con il mouse fuori dalla finestra o fermo da 3 s
 local function previewTick()
   local cv, P = settingsCanvas, PREV
   if not cv or not P or settingsPage ~= "theme" then return end
   local t = now()
   if t - (SET.lastScroll or 0) < 0.25 then return end
+  -- fermo se nessuno guarda: mouse fuori dalla finestra, oppure immobile da 3 s (riparte al primo movimento) -> CPU ~0 a riposo
+  local m = hs.mouse.absolutePosition()
+  local f = cv:frame()
+  if m.x < f.x or m.x > f.x + f.w or m.y < f.y or m.y > f.y + f.h then return end
+  if not P.m or m.x ~= P.m.x or m.y ~= P.m.y then P.m = { x = m.x, y = m.y }; P.mt = t end
+  if t - (P.mt or t) > 3 then return end
   if Anim.list["setvis|h"] or Anim.list["setvis|xfade"] or Anim.list["setvis|vis"] then return end
   local I = P.I
   local dt = clampN(I.last and (t - I.last) or 0.08, 0.001, 0.12)
@@ -3781,7 +3787,7 @@ local function previewTick()
 end
 local function startPreview()
   if previewTimer then return end
-  previewTimer = hs.timer.doEvery(1 / 12, function() guarded("preview", previewTick) end)
+  previewTimer = hs.timer.doEvery(1 / 8, function() guarded("preview", previewTick) end)
 end
 
 -- hero degli stili: mostra lo stile sotto il mouse (o quello attuale); aggiornamento a pochi attributi
@@ -4471,7 +4477,7 @@ local function layoutSettings()
           return e0, buildRecCard(e0, ox, oy, s, false, false, nil, false)
         end, { x = 0, y = 0, w = SET.W, h = SET.H }, off)
         I.preview = true
-        PREV = { I = I, top = y, bot = y + bh, t0 = now(), bgA = COL.bg.alpha }
+        PREV = { I = I, top = y, bot = y + bh, t0 = now(), bgA = COL.bg.alpha, mt = now() }
         Anim.cancel("egg", "prev")
         if I.egg then
           hitRect(els, sHoverMap, "pv_badge", ox + 14 * s, oy + 11 * s, 34 * s, 34 * s, 4, { fill = withA(COL.fgWhite, 0), hoverFill = withA(COL.fgWhite, 0) })
