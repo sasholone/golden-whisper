@@ -3100,88 +3100,113 @@ do
     return v
   end
 
+  -- placeholder invisibile (action "skip": non costa nulla in disegno) che tiene stabili gli indici della base
+  function ICON.skipEl() return { type = "rectangle", action = "skip", frame = { x = 0, y = 0, w = 1, h = 1 } } end
+
+  -- proxy multi-strato: layers[key] = { cv, dx, dy, w, h, route }. Un indice della base instradato in uno strato viene scritto li'
+  -- (coordinate traslate); gli altri vanno alla base. Finestra (frame/alpha/show/...) propagata a tutti gli strati.
+  ICON.shiftEl = shiftEl
   function ICON.wrap(base)
     local P = {}
-    local curA = nil                 -- canvas A attuale (upvalue: niente campi sul proxy, il suo __index inoltra alla canvas vera)
-    local function eachA(fn) local A = curA; if A and A.cv then pcall(fn, A.cv, A) end end
-    function P:layerClear()
-      local A = curA; curA = nil
-      if A and A.cv then pcall(function() A.cv:delete() end) end
+    local layers = {}               -- upvalue: niente campi sul proxy (il suo __index inoltra alla canvas vera)
+    local function each(fn) for k, L in pairs(layers) do if L.cv then pcall(fn, L.cv, L, k) end end end
+    function P:layerClear(key)
+      if key == nil then
+        for k, L in pairs(layers) do if L.cv then pcall(function() L.cv:delete() end) end; layers[k] = nil end
+      else
+        local L = layers[key]; layers[key] = nil
+        if L and L.cv then pcall(function() L.cv:delete() end) end
+      end
     end
-    -- spec = { els = {...}, route = { [indiceBase] = indiceA }, box = {x,y,w,h} in coordinate della base }
-    function P:layerApply(spec)
-      if not spec or not spec.els or #spec.els == 0 or not spec.box then P:layerClear(); return end
+    -- spec = { els = {...}, route = { [indiceBase] = indiceStrato }, box = {x,y,w,h} in coordinate della base, cb = mouseCallback | nil }
+    function P:layerApply(spec, key)
+      key = key or "a"
+      if not spec or not spec.els or #spec.els == 0 or not spec.box then P:layerClear(key); return end
       local b = spec.box
       local f = base:frame()
-      local A = curA
-      if A and A.cv and A.w == b.w and A.h == b.h then
-        A.cv:replaceElements(spec.els)
+      local L = layers[key]
+      if L and L.cv and L.w == b.w and L.h == b.h then
+        L.cv:replaceElements(spec.els)
       else
-        P:layerClear()
+        P:layerClear(key)
         local cv = hs.canvas.new({ x = f.x + b.x, y = f.y + b.y, w = b.w, h = b.h })
         pcall(function() cv:level(base:level()); cv:behavior(base:behavior()) end)
         cv:replaceElements(spec.els)
         cv:alpha(base:alpha())
-        A = { cv = cv, w = b.w, h = b.h }
-        curA = A
+        L = { cv = cv, w = b.w, h = b.h }
+        layers[key] = L
         local ok, sh = pcall(function() return base:isShowing() end)
         if ok and sh then cv:show(); pcall(function() cv:orderAbove(base) end) end
       end
-      A.dx, A.dy, A.route = b.x, b.y, spec.route
-      A.cv:topLeft({ x = f.x + b.x, y = f.y + b.y })
+      L.cv:mouseCallback(spec.cb)          -- nil = trasparente al mouse (click-through)
+      L.dx, L.dy, L.route = b.x, b.y, spec.route
+      L.cv:topLeft({ x = f.x + b.x, y = f.y + b.y })
     end
-    function P:layerImage()          -- istantanea di A (per il fantasma del cambio pagina): immagine + offset rispetto alla base
-      local A = curA
-      if not A or not A.cv then return nil end
-      local ok, img = pcall(function() return A.cv:imageFromCanvas() end)
-      if ok and img then return img, A.dx, A.dy, A.w, A.h end
+    function P:layerSize(key, w, h)         -- ritaglio dinamico (altezza della finestra in animazione)
+      local L = layers[key]
+      if not L or not L.cv then return end
+      w, h = math.max(1, w), math.max(1, h)
+      if L.w == w and L.h == h then return end
+      L.w, L.h = w, h
+      L.cv:size({ w = w, h = h })
     end
-    function P:layerCount() return (curA and curA.cv) and 1 or 0 end
+    function P:layerImages()                -- istantanee degli strati (per il fantasma del cambio pagina): { {img, x, y, w, h}, ... }
+      local out = {}
+      for k, L in pairs(layers) do
+        if L.cv then
+          local ok, img = pcall(function() return L.cv:imageFromCanvas() end)
+          if ok and img then out[#out + 1] = { img = img, x = L.dx, y = L.dy, w = L.w, h = L.h } end
+        end
+      end
+      return out
+    end
+    function P:layerCount() local n = 0; for _, L in pairs(layers) do if L.cv then n = n + 1 end end return n end
     function P:frame(fr)
       if fr == nil then return base:frame() end
       base:frame(fr)
-      eachA(function(cv, A) cv:topLeft({ x = fr.x + A.dx, y = fr.y + A.dy }) end)
+      each(function(cv, L) cv:topLeft({ x = fr.x + L.dx, y = fr.y + L.dy }) end)
       return P
     end
     function P:topLeft(p)
       if p == nil then return base:topLeft() end
       base:topLeft(p)
-      eachA(function(cv, A) cv:topLeft({ x = p.x + A.dx, y = p.y + A.dy }) end)
+      each(function(cv, L) cv:topLeft({ x = p.x + L.dx, y = p.y + L.dy }) end)
       return P
     end
     function P:alpha(a)
       if a == nil then return base:alpha() end
-      base:alpha(a); eachA(function(cv) cv:alpha(a) end)
+      base:alpha(a); each(function(cv) cv:alpha(a) end)
       return P
     end
     function P:show()
       base:show()
-      eachA(function(cv) cv:show(); cv:orderAbove(base) end)
+      each(function(cv) cv:show(); cv:orderAbove(base) end)
       return P
     end
-    function P:hide() base:hide(); eachA(function(cv) cv:hide() end); return P end
+    function P:hide() base:hide(); each(function(cv) cv:hide() end); return P end
     function P:orderAbove(c2)
       base:orderAbove(c2)
-      eachA(function(cv) cv:orderAbove(base) end)
+      each(function(cv) cv:orderAbove(base) end)
       return P
     end
     function P:level(l)
       if l == nil then return base:level() end
-      base:level(l); eachA(function(cv) cv:level(l) end)
+      base:level(l); each(function(cv) cv:level(l) end)
       return P
     end
     function P:behavior(bh)
       if bh == nil then return base:behavior() end
-      base:behavior(bh); eachA(function(cv) cv:behavior(bh) end)
+      base:behavior(bh); each(function(cv) cv:behavior(bh) end)
       return P
     end
     function P:delete() P:layerClear(); base:delete() end
     function P:elementAttribute(i, k, v)
-      local A = curA
-      local j = A and A.route and A.route[i]
-      if j then
-        A.cv:elementAttribute(j, k, shiftVal(k, v, A.dx, A.dy))
-        return P
+      for _, L in pairs(layers) do
+        local j = L.route and L.route[i]
+        if j then
+          L.cv:elementAttribute(j, k, shiftVal(k, v, L.dx, L.dy))
+          return P
+        end
       end
       base:elementAttribute(i, k, v)
       return P
@@ -3272,7 +3297,7 @@ do
         local e = els[i + off]
         if e then A[#A + 1] = shiftEl(e, x0, y0); route[i + off] = #A end
       end
-      for i in pairs(route) do els[i] = { type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = 0, y = 0, w = 1, h = 1 } } end
+      for i in pairs(route) do els[i] = ICON.skipEl() end
       return { els = A, route = route, box = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 } }
     end)
     if not ok then print("[GW] strati: " .. tostring(spec)); return nil end
@@ -3495,7 +3520,7 @@ closeSettings = function()
   local cv = settingsCanvas
   if not cv then return end
   settingsCanvas = nil; settingsPos = nil
-  stopPreview(); stopScrollTap(); killGhost()
+  stopPreview(); stopScrollTap(); killGhost(); SET.hvKill()
   SET.K.msg = nil; SET.K.armAt = 0; SET.K.tipReset(); SET.K.exp = false; SET.K.q = 0; Anim.cancel("setvis", "kx")
   SET.frame = nil; SET.W = nil; SET.H = nil; SET.cap = nil; SET.hCur = nil; SET.wCur = nil; SET.sc = { 0, 0 }; SET.reg = nil; SET.dy = {}
   SET.pill = {}; SET.tog = {}; SET.cxHome = nil; SET.shellLast = nil; SET.hero = nil
@@ -3559,6 +3584,7 @@ end
 function SET.applyScroll()
   local cv = settingsCanvas
   if not cv or not SET.reg then return end
+  SET.hvHide()
   local need, changed = false, {}
   for _, r in pairs(SET.reg) do
     if r.scroll ~= r.shown then
@@ -3652,18 +3678,19 @@ end
 
 settingsMouse = function(_c, msg, id)
   if msg == "mouseEnter" then
-    hoverTo(settingsCanvas, sHoverMap, "sethv", id, true)
+    SET.hover(id, true)
     if id == "key_info" then SET.K.tipHover = true; SET.K.tipFade() end
     local sk = tostring(id):match("^style:(.+)$")
     if sk then SET.heroSet(sk) end
     return
   elseif msg == "mouseExit" then
-    hoverTo(settingsCanvas, sHoverMap, "sethv", id, false)
+    SET.hover(id, false)
     if id == "key_info" then SET.K.tipHover = false; SET.K.tipFade() end
     if tostring(id):match("^style:") then SET.heroSet(nil) end
     return
   elseif msg == "mouseDown" then
     if id == "s_drag" then
+      SET.hvHide()
       dragCanvas(settingsCanvas, false, function(f) settingsPos = { x = f.x, y = f.y }; SET.frame = { x = f.x, y = f.y, w = f.w, h = f.h }; SET.cxHome = nil end)
     else
       local sid = tostring(id):match("^sl_(.+)$")
@@ -4350,7 +4377,8 @@ local function layoutSettings()
       local catNm = ""
       for _, c in ipairs(cats) do if c[1] == FH.cat then catNm = c[2] end end
       local hs = txt(els, "Stile attuale · " .. catNm, pad0 + 16, bodyTop + 35, Lw - 150, 16, 10.5, withA(TH.accentText, 0.82), { lb = "clip" })
-      SET.hero = { bg = hbg, name = hn, sub = hs, mode = mode, shown = config.style, hover = false }
+      SET.hero = { bg = hbg, name = hn, sub = hs, mode = mode, shown = config.style, hover = false,
+        i0 = hbg, i1 = hs, box = { x = pad0, y = bodyTop, w = Lw, h = heroH } }
 
       -- categorie (con conteggio)
       local cpitch = clampN(math.floor((clipBot - leftTop) / #cats), 24, 36)      -- finestre basse: righe più fitte
@@ -4667,6 +4695,138 @@ local function screenFrameFor(f)
   return hs.screen.mainScreen():frame()
 end
 
+-- STRATI DELLE IMPOSTAZIONI: le colonne scorrevoli e l'hero sono canvas separate sopra la base (che resta statica: ridisegnata solo
+-- a cambio pagina / stile / misura). Scroll e aggiornamenti dell'hero toccano solo la canvas piccola; la logica esistente
+-- continua a scrivere sugli stessi indici: il proxy li instrada. Le colonne hanno il mouse (stessa callback), l'hero e'
+-- trasparente al mouse. Elementi spostati = segnaposto "skip" nella base (indici invariati).
+function SET.buildLayers(els)
+  local specs = {}
+  SET.elsO = {}
+  for i = 1, #els do SET.elsO[i] = els[i] end              -- riferimenti originali (geometria per l'overlay hover)
+  local clipBot = SET.clipBot or ((SET.H or 300) - PSP - 8)
+  local function take(key, box, idxs, cb, dragHit)
+    local list, route = {}, {}
+    if dragHit then
+      list[1] = { type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = 0, y = 0, w = box.w, h = box.h }, trackMouseDown = true, id = "s_drag" }
+    end
+    for _, i in ipairs(idxs) do
+      local e = els[i]
+      if e then list[#list + 1] = ICON.shiftEl(e, box.x, box.y); route[i] = #list end
+    end
+    for i in pairs(route) do els[i] = ICON.skipEl() end
+    specs[key] = { els = list, route = route, box = box, cb = cb }
+  end
+  for i, r in pairs(SET.reg or {}) do
+    local idxs = {}
+    for k = r.i0, r.i1 do idxs[#idxs + 1] = k end
+    if r.sbIdx then idxs[#idxs + 1] = r.sbIdx end            -- anche la scrollbar (la sua dissolvenza non deve ridisegnare la base)
+    take("r" .. i, { x = r.cx0, y = r.top, w = r.cx1 - r.cx0, h = math.max(1, clipBot - r.top) }, idxs, settingsMouse, true)
+  end
+  local Hh = SET.hero
+  if Hh and Hh.box and Hh.i0 and Hh.i1 then
+    local idxs = {}
+    for k = Hh.i0, Hh.i1 do idxs[#idxs + 1] = k end
+    take("hero", Hh.box, idxs, nil, false)
+  end
+  if SET.pvSpec then specs.pv = SET.pvSpec end
+  return specs
+end
+function SET.applyLayers(cv, specs)
+  for _, key in ipairs({ "r1", "r2", "hero", "pv" }) do cv:layerApply(specs and specs[key] or nil, key) end
+end
+
+-- HOVER: un solo rettangolo su una canvas piccola (pool di 2) che si sposta sull'elemento sotto il mouse. Niente attributi sulla base
+-- (ogni scrittura ridisegnerebbe tutta la canvas). Dissolvenza = alpha della finestra (gratis). Colore compensato: l'alpha
+-- dell'overlay e' scelta in modo che base + overlay ~ colore di hover originale.
+SET.hv = { pool = {} }
+function SET.hvGeom(h)
+  local el = SET.elsO and SET.elsO[h.idx]
+  if not el then return nil end
+  local x, y, w, ht, r
+  if el.frame then
+    x, y, w, ht = el.frame.x, el.frame.y, el.frame.w, el.frame.h
+    r = el.roundedRectRadii and el.roundedRectRadii.xRadius or 0
+  elseif el.center and el.radius then
+    x, y, w, ht, r = el.center.x - el.radius, el.center.y - el.radius, 2 * el.radius, 2 * el.radius, el.radius
+  else return nil end
+  local rg
+  for _, g in pairs(SET.reg or {}) do
+    if h.idx >= g.i0 and h.idx <= g.i1 then y = y - (SET.dy[g.i] or 0); rg = g end
+  end
+  local x0, y0, x1, y1 = x, y, x + w, y + ht
+  if rg then x0 = math.max(x0, rg.cx0); x1 = math.min(x1, rg.cx1); y0 = math.max(y0, rg.top); y1 = math.min(y1, SET.clipBot or y1) end
+  if x1 - x0 < 1 or y1 - y0 < 1 then return nil end
+  return { x = x0, y = y0, w = x1 - x0, h = y1 - y0, ex = x - x0, ey = y - y0, ew = w, eh = ht, r = r, circle = (el.center ~= nil), sw = el.strokeWidth or 1 }
+end
+function SET.hvHide()
+  Anim.cancel("sethv")
+  for _, p in ipairs(SET.hv.pool) do
+    if p.cv then pcall(function() p.cv:hide() end) end
+    p.id = nil
+  end
+end
+function SET.hvKill()
+  Anim.cancel("sethv")
+  for _, p in ipairs(SET.hv.pool) do if p.cv then pcall(function() p.cv:delete() end) end end
+  SET.hv.pool = {}
+end
+function SET.hover(id, entering)
+  local cv = settingsCanvas
+  local h = sHoverMap[id]
+  if not cv or not h then return end
+  local pool = SET.hv.pool
+  if not entering then
+    for n, p in ipairs(pool) do
+      if p.id == id and p.cv then
+        p.id = nil
+        local a0 = p.a or 1
+        Anim.run("sethv", "ov" .. n, 0.16, "out", function(e) p.a = a0 * (1 - e); p.cv:alpha(p.a) end, function() p.a = 0; p.cv:hide() end)
+      end
+    end
+    return
+  end
+  for _, p in ipairs(pool) do if p.id == id then return end end
+  if not h.hoverFill and not h.hoverStroke then return end
+  local g = SET.hvGeom(h)
+  if not g then return end
+  local p
+  for _, q in ipairs(pool) do if not q.id and (not p or (q.a or 0) < (p.a or 0)) then p = q end end
+  if not p then
+    if #pool >= 2 then return end
+    p = { n = #pool + 1 }
+    pool[#pool + 1] = p
+  end
+  p.id = id
+  local f = cv:frame()
+  local base, hov = h.fill, h.hoverFill
+  local fill = nil
+  if hov then
+    local aF, aH = (base and base.alpha) or 0, hov.alpha or 1
+    local ao = clampN(1 - (1 - aH) / math.max(0.001, 1 - aF), 0, 1)
+    fill = { red = hov.red, green = hov.green, blue = hov.blue, alpha = ao }
+  end
+  local stroke = h.hoverStroke
+  local el
+  if g.circle then
+    el = { type = "circle", action = stroke and (fill and "strokeAndFill" or "stroke") or "fill", fillColor = fill, strokeColor = stroke, strokeWidth = g.sw,
+      center = { x = g.ex + g.ew / 2, y = g.ey + g.eh / 2 }, radius = g.ew / 2 }
+  else
+    el = { type = "rectangle", action = stroke and (fill and "strokeAndFill" or "stroke") or "fill", fillColor = fill, strokeColor = stroke, strokeWidth = g.sw,
+      roundedRectRadii = { xRadius = g.r, yRadius = g.r }, frame = { x = g.ex, y = g.ey, w = g.ew, h = g.eh } }
+  end
+  local fr = { x = f.x + g.x, y = f.y + g.y, w = g.w, h = g.h }
+  if not p.cv then
+    p.cv = hs.canvas.new(fr)
+    pcall(function() p.cv:level(cv:level()); p.cv:behavior(cv:behavior()) end)
+  else
+    p.cv:frame(fr)
+  end
+  p.cv:replaceElements({ el })
+  p.a = 0; p.cv:alpha(0); p.cv:show()
+  Anim.cancel("sethv", "ov" .. p.n)
+  Anim.run("sethv", "ov" .. p.n, 0.16, "out", function(e) if p.id == id then p.a = clamp01(e); p.cv:alpha(p.a) end end, function() if p.id == id then p.a = 1; p.cv:alpha(1) end end)
+end
+
 -- Porta alla nuova misura (w, h) TUTTO ciò che ne dipende, in un colpo solo (stessa passata del run loop):
 -- finestra (nx/ny se dati), ombra/vetro/bordo (aggiornati solo se la misura è cambiata), ritagli delle regioni
 -- e schermo-maniglia in basso. Il contenuto resta lo stesso: nessun ridisegno.
@@ -4687,6 +4847,7 @@ local function applyShell(cv, w, h, nx, ny)
     local clipBot = h - PSP - 8
     for _, r in pairs(SET.reg or {}) do
       cv:elementAttribute(r.clipIdx, "frame", { x = r.cx0, y = r.top, w = r.cx1 - r.cx0, h = math.max(1, clipBot - r.top) })
+      cv:layerSize("r" .. r.i, r.cx1 - r.cx0, math.max(1, clipBot - r.top))        -- il ritaglio della colonna segue l'altezza animata
     end
     if SET.botIdx then
       cv:elementAttribute(SET.botIdx, "frame", { x = PSP, y = clipBot, w = SET.W - 2 * PSP, h = math.max(1, h - PSP - clipBot) })
@@ -4713,11 +4874,12 @@ local function makeGhost(cv, hFrom, ct, wFrom)
     gc:level(hs.canvas.windowLevels.overlay)
     gc:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
     gc:appendElements({ type = "image", image = img, imageScaling = "scaleToFit", frame = { x = -(PSP + 1), y = -ct, w = wFrom, h = hFrom } })
-    local aimg, adx, ady, aw, ah = cv:layerImage()           -- la canvas animata (anteprima) e' una finestra a parte: va nel fantasma
-    local ga = nil
-    if aimg then
-      ga = { x = adx - (PSP + 1), y = ady - ct, w = aw, h = ah }
-      gc:appendElements({ type = "image", image = aimg, imageScaling = "scaleToFit", frame = ga })
+    -- gli strati (colonne scorrevoli, hero, anteprima) sono finestre a parte: le loro istantanee vanno nel fantasma
+    local ga = {}
+    for _, L in ipairs(cv:layerImages()) do
+      local fr = { x = L.x - (PSP + 1), y = L.y - ct, w = L.w, h = L.h }
+      gc:appendElements({ type = "image", image = L.img, imageScaling = "scaleToFit", frame = fr })
+      ga[#ga + 1] = fr
     end
     gc:alpha(1)
     gc:show()
@@ -4741,7 +4903,7 @@ local function fadeGhost(g)
     e = clamp01(e)
     G.cv:alpha(1 - e)
     G.cv:elementAttribute(1, "frame", { x = -(PSP + 1), y = -G.ct - 6 * e, w = G.iw, h = G.ih })
-    if G.a then G.cv:elementAttribute(2, "frame", { x = G.a.x, y = G.a.y - 6 * e, w = G.a.w, h = G.a.h }) end
+    for k, fr in ipairs(G.a or {}) do G.cv:elementAttribute(k + 1, "frame", { x = fr.x, y = fr.y - 6 * e, w = fr.w, h = fr.h }) end
     syncGhost()
   end, function() if SET.ghost == g then killGhost() end end)
 end
@@ -4749,7 +4911,7 @@ end
 renderSettings = function(opts)
   opts = opts or {}
   if not SET.W then SET.W, SET.cap = settingsGeometry(); SET.H = SET.cap end
-  Anim.cancel("sethv"); Anim.cancel("setui")
+  SET.hvHide(); Anim.cancel("setui")
   local snapSeg, snapTog = shallow(segPrev), shallow(togglePrev)
   local cvOld = settingsCanvas
   local hFrom = cvOld and clampN(finite(SET.hCur, SET.H), 40, 4000) or nil
@@ -4770,6 +4932,7 @@ renderSettings = function(opts)
   end
   SET.shellLast = nil
   local W, tH = SET.W, SET.H
+  local layerSpecs = SET.buildLayers(els)                     -- colonne scorrevoli + hero -> canvas separate (base statica)
 
   local heightAnimating = false
   if not cvOld then
@@ -4787,7 +4950,7 @@ renderSettings = function(opts)
     settingsCanvas:mouseCallback(settingsMouse)
     settingsCanvas:replaceElements(els)
     settingsCanvas:alpha(0)
-    settingsCanvas:layerApply(settingsPage == "theme" and SET.pvSpec or nil)
+    SET.applyLayers(settingsCanvas, layerSpecs)
     settingsCanvas:show()
     panelIn("setvis", settingsCanvas, fx, fy, W, tH, 18)
     startScrollTap()
@@ -4806,7 +4969,7 @@ renderSettings = function(opts)
     local ghost = nil
     if opts.page and animOn() then ghost = makeGhost(cv, hFrom, oldClipTop or SET.clipTop, wFrom) else killGhost() end
     cv:replaceElements(els)                -- atomico: contenuto nuovo sotto il fantasma del vecchio
-    cv:layerApply(settingsPage == "theme" and SET.pvSpec or nil)
+    SET.applyLayers(cv, layerSpecs)
     -- posizione di arrivo: allargamento SIMMETRICO attorno al centro (clamp ai bordi con minima correzione;
     -- se corretto, si ricorda il centro voluto per tornare lì quando la finestra si restringe); alto fermo
     local sf = screenFrameFor(f)
