@@ -2041,7 +2041,7 @@ local settingsPos = nil        -- posizione scelta trascinando (nil = centrato)
 -- stato delle impostazioni: finestra a dimensione FISSA, contenuto scorrevole
 -- H = altezza TARGET (a misura del tab, tetto = cap); hCur = altezza visibile durante l'animazione
 local SET = { scroll = 0, maxScroll = 0, sliders = {}, sbA = 0, W = nil, H = nil, cap = nil, minH = 300, hCur = nil,
-  frame = nil, pending = false, ghost = nil, clipIdx = nil, botIdx = nil }
+  frame = nil, pending = false, ghost = nil, clipIdx = nil, botIdx = nil, pill = {}, tog = {}, trial = false }
 local scrollTap, previewTimer, PREV = nil, nil, nil
 local resetArmAt = 0
 
@@ -2154,7 +2154,7 @@ closeSettings = function()
   settingsCanvas = nil; settingsPos = nil
   stopPreview(); stopScrollTap(); killGhost()
   SET.K.msg = nil; SET.K.armAt = 0; SET.K.tipReset()
-  SET.frame = nil; SET.W = nil; SET.H = nil; SET.cap = nil; SET.hCur = nil; SET.scroll = 0; SET.maxScroll = 0
+  SET.frame = nil; SET.W = nil; SET.H = nil; SET.cap = nil; SET.hCur = nil; SET.scroll = 0; SET.maxScroll = 0; SET.pill = {}; SET.tog = {}
   Anim.cancel("sethv"); Anim.cancel("setui"); Anim.cancel("setvis"); Anim.cancel("setsb")
   panelOut(cv)
 end
@@ -2468,58 +2468,78 @@ local function layoutSettings(scroll)
     local pillIdx = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(ph / 2 - 2), yRadius = R(ph / 2 - 2) },
       frame = { x = pillX(sel), y = y0 + inset, w = ow, h = ph },
       fillGradient = "linear", fillGradientAngle = COL.multi and 0 or 90, fillGradientColors = COL.grad })
+    -- posizione VISIBILE della pillola (frazionaria, 1..n): ogni render riparte da lì, mai dal punto "finale"
+    -- del click precedente → click ravvicinati = movimento continuo, zero scatti
+    local st = SET.pill
+    local cur = (not SET.trial) and st[prefix] or nil
+    local pos0, doAnim = sel, false
+    if cur and cur.n == n and math.abs(cur.pos - sel) > 0.004 and animOn() then pos0 = cur.pos; doAnim = true end
+    local selCol, unCol = COL.accentText, COL.fg2
+    local function onness(pos, i) return clamp01(1 - math.abs(pos - i)) end
+    local function pxAt(p) return x0 + inset + (p - 1) * ow end
+    els[pillIdx].frame.x = pxAt(pos0)
     local labels, icons = {}, {}
     for i, opt in ipairs(options) do
       local ox = pillX(i)
       local on = (i == sel)
+      local col = lerpC(unCol, selCol, onness(pos0, i))
       hitRect(els, sHoverMap, prefix .. ":" .. opt.val, ox, y0 + inset, ow, ph, R(ph / 2 - 2),
         { fill = withA(COL.rowHover, 0), hoverFill = on and withA(COL.rowHover, 0) or COL.rowHover })
       local tx, tw = ox, ow
       if opt.icon then
         local from = #els + 1
-        opt.icon(els, ox + 15, y0 + h / 2, 15, on and COL.accentText or COL.fg2)
+        opt.icon(els, ox + 15, y0 + h / 2, 15, col)
         icons[i] = { from, #els }
         tx, tw = ox + 20, ow - 20
       end
-      labels[i] = txt(els, opt.label, tx, y0 + (h - size * 1.25) / 2, tw, size * 1.4, size, on and COL.accentText or COL.fg2,
+      labels[i] = txt(els, opt.label, tx, y0 + (h - size * 1.25) / 2, tw, size * 1.4, size, col,
         { font = "semi", align = "center", lb = "clip" })
     end
-    local prev = segPrev[prefix]
     segPrev[prefix] = sel
-    if prev and prev ~= sel and prev <= n then
-      local fx, tx = pillX(prev), pillX(sel)
-      local selCol, unCol = COL.accentText, COL.fg2
-      els[pillIdx].frame.x = fx
-      els[labels[prev]].textColor = selCol
-      els[labels[sel]].textColor = unCol
-      -- le icone seguono lo stesso tween di colore delle etichette (tutti gli elementi dell'icona)
-      local function tint(i, col)
-        local r = icons[i]; if not r then return end
-        for k = r[1], r[2] do
-          local el = els[k]
-          if el then
-            if el.strokeColor then el.strokeColor = col end
-            if el.fillColor then el.fillColor = col end
-          end
-        end
-      end
-      tint(prev, selCol); tint(sel, unCol)
-      Anim.run("setui", "pill:" .. prefix, 0.26, "out", function(e)
-        local cv = settingsCanvas; if not cv then return end
-        cv:elementAttribute(pillIdx, "frame", { x = lerp(fx, tx, e), y = y0 + inset, w = ow, h = ph })
-        local cs, cp = lerpC(unCol, selCol, e), lerpC(selCol, unCol, e)
-        cv:elementAttribute(labels[sel], "textColor", cs)
-        cv:elementAttribute(labels[prev], "textColor", cp)
-        for _, pair in ipairs({ { sel, cs }, { prev, cp } }) do
-          local r = icons[pair[1]]
-          if r then
-            for k = r[1], r[2] do
-              if els[k].strokeColor then cv:elementAttribute(k, "strokeColor", pair[2]) end
-              if els[k].fillColor then cv:elementAttribute(k, "fillColor", pair[2]) end
+    if not SET.trial then
+      st[prefix] = { pos = sel, n = n }
+      if doAnim then
+        -- molla critica con velocità persistente: ogni nuovo click continua dal punto e dalla velocità correnti
+        local rec = st[prefix]; rec.pos = pos0; rec.v = cur.v or 0
+        local key = "pill:" .. prefix
+        local tl = nowT()
+        local function paint(p)
+          local cv = settingsCanvas; if not cv then return end
+          cv:elementAttribute(pillIdx, "frame", { x = pxAt(p), y = y0 + inset, w = ow, h = ph })
+          for i = 1, n do
+            local o1 = onness(p, i)
+            if rec.last == nil or o1 ~= onness(rec.last, i) then
+              local c2 = lerpC(unCol, selCol, o1)
+              cv:elementAttribute(labels[i], "textColor", c2)
+              local r = icons[i]
+              if r then
+                for k = r[1], r[2] do
+                  if els[k].strokeColor then cv:elementAttribute(k, "strokeColor", c2) end
+                  if els[k].fillColor then cv:elementAttribute(k, "fillColor", c2) end
+                end
+              end
             end
           end
+          rec.last = p
         end
-      end)
+        Anim.run("setui", key, 1.5, "linear", function()
+          local t = nowT()
+          local dt = clampN(t - tl, 0.001, 0.05); tl = t
+          local w = 24 / (SPEED_MUL[config.animSpeed] or 1)
+          local x, v = rec.pos - sel, rec.v or 0
+          local ex = math.exp(-w * dt)
+          local nx = (x + (v + w * x) * dt) * ex
+          local nv = (v - (v + w * x) * w * dt) * ex
+          rec.pos, rec.v = finite(sel + nx, sel), finite(nv, 0)
+          if math.abs(nx) < 0.004 and math.abs(nv) < 0.03 then
+            rec.pos, rec.v = sel, 0
+            paint(sel)
+            Anim.cancel("setui", key)
+          else
+            paint(rec.pos)
+          end
+        end, nil, true)
+      end
     end
   end
 
@@ -2529,26 +2549,32 @@ local function layoutSettings(scroll)
     txt(els, label, pad + 16, ry + 13, IW - 90, 18, 13, COL.fg, { font = "semi" })
     local tw, th = 42, 24
     local tx0, ty0 = pad + IW - 16 - tw, ry + 10
+    -- progresso VISIBILE 0..1 dell'interruttore: ogni render riparte da lì (click ravvicinati = nessuno scatto)
+    local target = on and 1 or 0
+    local cur = (not SET.trial) and SET.tog[id] or nil
+    local q0, doAnim = target, false
+    if cur and math.abs(cur.q - target) > 0.004 and animOn() then q0 = cur.q; doAnim = true end
+    local kxOn, kxOff = tx0 + tw - th / 2, tx0 + th / 2
     add({ type = "rectangle", action = "fill", fillColor = COL.track, roundedRectRadii = { xRadius = R(th / 2), yRadius = R(th / 2) },
       frame = { x = tx0, y = ty0, w = tw, h = th } })
-    local onIdx = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, on and 1 or 0),
+    local onIdx = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, clamp01(q0)),
       roundedRectRadii = { xRadius = R(th / 2), yRadius = R(th / 2) }, frame = { x = tx0, y = ty0, w = tw, h = th },
-      fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = gradA(COL, on and 1 or 0) })
-    local kxOn, kxOff = tx0 + tw - th / 2, tx0 + th / 2
+      fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = gradA(COL, clamp01(q0)) })
     local knobIdx = add({ type = "circle", action = "strokeAndFill", fillColor = COL.fgWhite, strokeColor = { red = 0, green = 0, blue = 0, alpha = 0.16 },
-      strokeWidth = 1, center = { x = on and kxOn or kxOff, y = ty0 + th / 2 }, radius = th / 2 - 2.5 })
-    local prev = togglePrev[id]
+      strokeWidth = 1, center = { x = lerp(kxOff, kxOn, q0), y = ty0 + th / 2 }, radius = th / 2 - 2.5 })
     togglePrev[id] = on
-    if prev ~= nil and prev ~= on then
-      local fromX, toX = on and kxOff or kxOn, on and kxOn or kxOff
-      local fromA, toA = on and 0 or 1, on and 1 or 0
-      els[knobIdx].center.x = fromX
-      els[onIdx].fillGradientColors = gradA(COL, fromA)
-      Anim.run("setui", "toggle:" .. id, 0.26, "spring", function(e, p)
-        local cv = settingsCanvas; if not cv then return end
-        cv:elementAttribute(knobIdx, "center", { x = lerp(fromX, toX, e), y = ty0 + th / 2 })
-        cv:elementAttribute(onIdx, "fillGradientColors", gradA(COL, lerp(fromA, toA, clamp01(p * 1.4))))
-      end)
+    if not SET.trial then
+      local rec = { q = target }
+      SET.tog[id] = rec
+      if doAnim then
+        rec.q = q0
+        Anim.run("setui", "toggle:" .. id, 0.26, "spring", function(e, p)
+          local cv = settingsCanvas; if not cv then return end
+          local q = lerp(q0, target, e); rec.q = q
+          cv:elementAttribute(knobIdx, "center", { x = lerp(kxOff, kxOn, q), y = ty0 + th / 2 })
+          cv:elementAttribute(onIdx, "fillGradientColors", gradA(COL, clamp01(lerp(q0, target, clamp01(p * 1.4)))))
+        end, function() rec.q = target end)
+      end
     end
   end
 
@@ -2919,9 +2945,10 @@ local function targetHeight()
   local oldH = SET.H
   local sS, sT = shallow(segPrev), shallow(togglePrev)
   SET.H = SET.cap
+  SET.trial = true                        -- prova a secco: nessuna animazione avviata, nessuno stato toccato
   local ok, _, info = pcall(layoutSettings, 0)
+  SET.trial = false
   segPrev, togglePrev = sS, sT
-  Anim.cancel("setui")
   SET.H = oldH
   if not ok or type(info) ~= "table" then return SET.cap end
   return clampN(finite(info.bodyTop, 0) + finite(info.contentLen, 0) + PSP + 8, SET.minH, SET.cap)
@@ -3090,7 +3117,7 @@ renderSettings = function(opts)
 end
 
 openSettings = function()
-  segPrev = {}; togglePrev = {}; resetArmAt = 0
+  segPrev = {}; togglePrev = {}; resetArmAt = 0; SET.pill = {}; SET.tog = {}
   SET.K.refresh(); SET.K.armAt = 0; SET.K.tipReset()
   getAudioDevices(function(list)
     deviceCache = list; settingsDevices = list
