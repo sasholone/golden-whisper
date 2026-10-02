@@ -3230,9 +3230,18 @@ do
   -- frequenza massima di ridisegno (Hz) delle canvas del HUD di registrazione: onda 18, anelli/badge 12, timer 8 (cambia 1/s), particelle 16, avviso 15
   ICON.GROUP_HZ = { w = 18, r = 12, t = 8, p = 16, x = 15, c = 15 }
   function ICON.skipEl() return { type = "rectangle", action = "skip", frame = { x = 0, y = 0, w = 1, h = 1 } } end
+  -- livello di finestra = quello di cv + n (numerico): gli strati stanno SOPRA la base per livello, non solo per ordine (un click sulla base
+  -- porta la base in primo piano nel suo livello, ma non oltre il livello degli strati); hover/fantasma + 2 stanno sopra gli strati
+  function ICON.lvlUp(cv, n)
+    local ok, l = pcall(function() return cv:level() end)
+    if ok and type(l) == "number" then return l + n end
+    return ok and l or nil
+  end
   -- cv = proxy ICON.wrap; later = anche una volta differita (se la finestra viene portata avanti dopo il callback)
   function ICON.relayer(cv, later)
     if not cv then return end
+    local okS, sh = pcall(function() return cv:isShowing() end)
+    if okS and not sh then return end                        -- finestra nascosta: niente (orderAbove la mostrerebbe)
     pcall(function() if cv.layerCount and cv:layerCount() > 0 then cv:relayer() end end)
     if later then
       hs.timer.doAfter(0.04, function() pcall(function() if cv.layerCount and cv:layerCount() > 0 then cv:relayer() end end) end)
@@ -3287,6 +3296,14 @@ do
       if L.ft then pcall(function() L.ft:stop() end); L.ft = nil end
       if L.cv then pcall(function() L.cv:delete() end) end
       if L.vc then pcall(function() L.vc:delete() end) end
+    end
+    -- un click (down/up) su una canvas del gruppo la porta davanti alle altre: dopo ogni click gli strati tornano sopra
+    local function wrapCb(f)
+      if not f then return nil end
+      return function(c, msg, ...)
+        if msg == "mouseDown" or msg == "mouseUp" then ICON.relayer(P, true) end
+        return f(c, msg, ...)
+      end
     end
     function P:layerClear(key)
       if key == nil then
@@ -3370,7 +3387,7 @@ do
         local fcv = hs.canvas.new({ x = -30000, y = 0, w = fc.w, h = fc.h })     -- mai mostrata
         fcv:replaceElements(spec.els)
         local vc = hs.canvas.new({ x = f.x + b.x, y = f.y + b.y, w = b.w, h = b.h })
-        pcall(function() vc:level(base:level()); vc:behavior(base:behavior()) end)
+        pcall(function() vc:level(ICON.lvlUp(base, 1)); vc:behavior(base:behavior()) end)
         vc:replaceElements({ surf, spec.sbEl or ICON.skipEl() })
         vc:alpha(base:alpha())
         L = { raster = true, cv = fcv, vc = vc, win = vc, fw = fc.w, fh = fc.h, w = b.w, h = b.h, tiles = {} }
@@ -3380,7 +3397,7 @@ do
       end
       L.dx, L.dy, L.wx, L.wy, L.route, L.sbIdx = fc.dx, fc.dy, b.x, b.y, spec.route, spec.sbIdx
       L.yOff, L.scroll = spec.yOff or 0, spec.scroll or 0
-      L.vc:mouseCallback(spec.cb)
+      L.vc:mouseCallback(wrapCb(spec.cb))
       L.vc:topLeft({ x = f.x + b.x, y = f.y + b.y })
       if L.w ~= b.w or L.h ~= b.h then L.w, L.h = b.w, b.h; L.vc:size({ w = b.w, h = b.h }) end
       surf.frame = { x = 0, y = 0, w = b.w, h = b.h }
@@ -3423,7 +3440,7 @@ do
       else
         P:layerClear(key)
         local cv = hs.canvas.new({ x = f.x + b.x, y = f.y + b.y, w = b.w, h = b.h })
-        pcall(function() cv:level(base:level()); cv:behavior(base:behavior()) end)
+        pcall(function() cv:level(ICON.lvlUp(base, 1)); cv:behavior(base:behavior()) end)
         cv:replaceElements(spec.els)
         cv:alpha(base:alpha())
         seqN = seqN + 1
@@ -3432,7 +3449,7 @@ do
         local ok, sh = pcall(function() return base:isShowing() end)
         if ok and sh then cv:show(); pcall(function() cv:orderAbove(base) end) end
       end
-      L.cv:mouseCallback(spec.cb)          -- nil = trasparente al mouse (click-through)
+      L.cv:mouseCallback(wrapCb(spec.cb))          -- nil = trasparente al mouse (click-through)
       if spec.cb then pcall(function() L.cv:clickActivating(false) end) end     -- come la base: il click non porta in primo piano Hammerspoon
       L.dx, L.dy, L.route, L.hz = b.x, b.y, spec.route, spec.hz
       L.cv:topLeft({ x = f.x + b.x, y = f.y + b.y })
@@ -3494,12 +3511,17 @@ do
       return P
     end
     function P:relayer()                    -- rimette gli strati sopra la base (un click sulla base la porta in primo piano nel suo livello)
-      each(function(cv) cv:orderAbove(base) end, true)
+      local a = base:alpha()
+      each(function(cv) cv:alpha(a); cv:orderAbove(base) end, true)    -- (e li riallinea alla trasparenza della base: mai strati a mezza alpha)
+      return P
+    end
+    function P:mouseCallback(f)
+      base:mouseCallback(wrapCb(f))
       return P
     end
     function P:level(l)
       if l == nil then return base:level() end
-      base:level(l); each(function(cv) cv:level(l) end)
+      base:level(l); local lv = ICON.lvlUp(base, 1); each(function(cv) cv:level(lv) end)
       return P
     end
     function P:behavior(bh)
@@ -5231,6 +5253,7 @@ function SET.applyLayers(cv, specs, els)
     for i, r in pairs(SET.reg or {}) do SET.dy[i] = r.scroll end
     SET.applyScroll()
   end
+  ICON.relayer(cv)                       -- strati riusati: restano sopra la base e alla sua stessa alpha dopo ogni render
 end
 
 -- HOVER: un solo rettangolo su una canvas piccola (pool di 2) che si sposta sull'elemento sotto il mouse. Niente attributi sulla base
@@ -5316,7 +5339,7 @@ function SET.hover(id, entering)
   local fr = { x = f.x + g.x, y = f.y + g.y, w = g.w, h = g.h }
   if not p.cv then
     p.cv = hs.canvas.new(fr)
-    pcall(function() p.cv:level(cv:level()); p.cv:behavior(cv:behavior()) end)
+    pcall(function() p.cv:level(ICON.lvlUp(cv, 2)); p.cv:behavior(cv:behavior()) end)
   else
     p.cv:frame(fr)
   end
@@ -5370,7 +5393,7 @@ local function makeGhost(cv, hFrom, ct, wFrom)
     local gh = clampN(hFrom - PSP - 8 - ct, 1, 4000)
     local gw = clampN(wFrom - 2 * PSP - 2, 1, 6000)
     local gc = hs.canvas.new({ x = f.x + PSP + 1, y = f.y + ct, w = gw, h = gh })
-    gc:level(hs.canvas.windowLevels.overlay)
+    gc:level(ICON.lvlUp(cv, 2) or hs.canvas.windowLevels.overlay)
     gc:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
     gc:appendElements({ type = "image", image = img, imageScaling = "scaleToFit", frame = { x = -(PSP + 1), y = -ct, w = wFrom, h = hFrom } })
     -- gli strati (colonne scorrevoli, hero, anteprima) sono finestre a parte: le loro istantanee vanno nel fantasma
@@ -5384,7 +5407,11 @@ local function makeGhost(cv, hFrom, ct, wFrom)
     gc:show()
     return { cv = gc, ct = ct, gh = gh, gw = gw, ih = hFrom, iw = wFrom, a = ga }
   end)
-  if ok and g then SET.ghost = g; return g end
+  if ok and g then
+    SET.ghost = g
+    hs.timer.doAfter(0.7, function() if SET.ghost == g then killGhost() end end)      -- rete di sicurezza: il fantasma non sopravvive mai alla dissolvenza (0,24 s)
+    return g
+  end
   return nil
 end
 local function syncGhost()
