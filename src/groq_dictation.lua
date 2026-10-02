@@ -3023,17 +3023,18 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
   -- ruota di connessione <-> timer: dissolvenza incrociata ~0.25 s, nessun cambio di colore. Spenta = anelli di puntini a alpha 0.
   guarded("wheel", function()
     local W = I.wheel
-    if not W then return end
-    local on = ((I.wheelOn or I.probeConn) and not warn) and true or false
+    local on = (W and (I.wheelOn or I.probeConn) and not warn) and true or false
     local tgt = on and 1 or 0
     local wa = I.wA or 0
-    if wa == tgt and not on then return end
+    local base = active and 1 or 0.7                       -- in pausa il timer e' attenuato ma leggibile
+    if wa == tgt and not on and I.tA == base then return end
     if animOn() then wa = wa + (tgt - wa) * (1 - math.exp(-14 * clampN(dt, 0.001, 0.1))); if math.abs(wa - tgt) < 0.02 then wa = tgt end else wa = tgt end
     I.wA = wa
-    local ta = clampN(1 - wa, 0, 1)
-    if math.abs(ta - (I.tA or 1)) > 0.015 or (ta == 1 and (I.tA or 1) ~= 1) or (ta == 0 and (I.tA or 1) ~= 0) then
+    local ta = clampN((1 - wa) * base, 0, 1)
+    if I.tA == nil or math.abs(ta - I.tA) > 0.015 or (ta == base and I.tA ~= base) or (ta == 0 and I.tA ~= 0) then
       I.tA = ta; cv:elementAttribute(I.timer, "textColor", withA(warn and COL.warn or COL.fg, ta))
     end
+    if not W then return end
     local head = animOn() and ((t * (I.wheelSpd or 1.1)) % 1) or 0.3
     local N = W.n
     for i = 1, N do
@@ -3113,11 +3114,11 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
       -- colore: accento oppure gradiente del tema lungo l'onda
       local c
       if warn then c = COL.warn
-      elseif I.barCol then c = active and I.barCol or mix(I.barCol, COL.solid, 0.5)       -- colore fisso del pack
-      elseif I.wgrad then c = active and b.col or mix(b.col, COL.solid, 0.5)
+      elseif I.barCol then c = active and I.barCol or mix(I.barCol, COL.solid, 0.3)       -- colore fisso del pack
+      elseif I.wgrad then c = active and b.col or mix(b.col, COL.solid, 0.3)
       else c = active and COL.accent or COL.accentDim end
       local fade = 0.5 + 0.5 * i / n
-      local a = active and ((0.42 + 0.58 * math.min(1, lv * 1.4)) * fade) or 0.8
+      local a = active and ((0.42 + 0.58 * math.min(1, lv * 1.4)) * fade) or 0.9
       if bm.ghost then a = a * clampN(0.62 + 0.38 * math.sin(finite(t * 1.9 + i * 0.9, 0)), 0, 1) end     -- barre "spettrali": sfarfallio
       local col = withA(c, a)
       if styleLine then
