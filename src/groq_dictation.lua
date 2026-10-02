@@ -1562,7 +1562,9 @@ local PSP = 36                 -- margine attorno al pannello (ombra + bordo non
 local segPrev, togglePrev = {}, {}   -- memoria per le animazioni (pillola che scivola, interruttori)
 local settingsPos = nil        -- posizione scelta trascinando (nil = centrato)
 -- stato delle impostazioni: finestra a dimensione FISSA, contenuto scorrevole
-local SET = { scroll = 0, maxScroll = 0, sliders = {}, sbA = 0, W = nil, H = nil, frame = nil, pending = false }
+-- H = altezza TARGET (a misura del tab, tetto = cap); hCur = altezza visibile durante l'animazione
+local SET = { scroll = 0, maxScroll = 0, sliders = {}, sbA = 0, W = nil, H = nil, cap = nil, minH = 300, hCur = nil,
+  frame = nil, pending = false, ghost = nil, clipIdx = nil, botIdx = nil }
 local scrollTap, previewTimer, PREV = nil, nil, nil
 local resetArmAt = 0
 
@@ -1662,6 +1664,10 @@ local function settingsGeometry()
   return W, H
 end
 
+local function killGhost()
+  local G = SET.ghost; SET.ghost = nil
+  if G and G.cv then pcall(function() G.cv:delete() end) end
+end
 local function stopPreview() if previewTimer then previewTimer:stop(); previewTimer = nil end; PREV = nil end
 local function stopScrollTap() if scrollTap then scrollTap:stop(); scrollTap = nil end end
 
@@ -1669,8 +1675,8 @@ closeSettings = function()
   local cv = settingsCanvas
   if not cv then return end
   settingsCanvas = nil; settingsPos = nil
-  stopPreview(); stopScrollTap()
-  SET.frame = nil; SET.W = nil; SET.H = nil; SET.scroll = 0; SET.maxScroll = 0
+  stopPreview(); stopScrollTap(); killGhost()
+  SET.frame = nil; SET.W = nil; SET.H = nil; SET.cap = nil; SET.hCur = nil; SET.scroll = 0; SET.maxScroll = 0
   Anim.cancel("sethv"); Anim.cancel("setui"); Anim.cancel("setvis"); Anim.cancel("setsb")
   panelOut(cv)
 end
@@ -1963,9 +1969,10 @@ local function layoutSettings(scroll)
   ----------------------------------------------------------------------
   -- CORPO (scorrevole, ritagliato)
   ----------------------------------------------------------------------
-  add({ type = "rectangle", action = "clip", frame = { x = PSP + 1, y = clipTop, w = W - 2 * PSP - 2, h = clipBot - clipTop } })
+  SET.clipIdx = add({ type = "rectangle", action = "clip", frame = { x = PSP + 1, y = clipTop, w = W - 2 * PSP - 2, h = clipBot - clipTop } })
   y = bodyTop - scroll
   local contentStart = y
+  local trail = GAP          -- spazio vuoto in coda al contenuto (tolto dal calcolo dell'altezza naturale)
 
   if settingsPage == "general" then
     -- MICROFONO
@@ -2137,6 +2144,7 @@ local function layoutSettings(scroll)
     txt(els, armed and "Sicuro? Tocca ancora" or "Reset look", rx + 34, y + 11, bw - 40, 16, armed and 11.5 or 12.5,
       armed and COL.warn or COL.accentInk, { font = "semi", lb = "clip" })
     y = y + 38 + 10
+    trail = 10
   else
     -- TASTI: una card per tasto [tasto] [gesto] [elimina]
     local function bindings(actionKey, list, gestures)
@@ -2168,10 +2176,13 @@ local function layoutSettings(scroll)
     sec("PAUSA")
     bindings("pause", config.pauseBindings, { { label = "1 tap", val = "single" }, { label = "2 tap", val = "double" } })
     y = y - 12
+    trail = GAP - 12
   end
   add({ type = "resetClip" })
 
-  local contentLen = (y + 10) - contentStart
+  -- lunghezza del contenuto = dal primo titolo all'ultimo controllo + 16px d'aria (la coda vuota non conta):
+  -- è anche l'altezza "naturale" del tab (vedi targetHeight)
+  local contentLen = math.max(0, (y - trail) - contentStart) + 16
   local maxScroll = math.max(0, contentLen - viewH)
 
   ----------------------------------------------------------------------
@@ -2180,7 +2191,7 @@ local function layoutSettings(scroll)
   ----------------------------------------------------------------------
   add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = PSP, y = PSP, w = W - 2 * PSP, h = clipTop - PSP },
     trackMouseDown = true, trackMouseUp = true, trackMouseEnterExit = true, id = "s_drag" })
-  add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = PSP, y = clipBot, w = W - 2 * PSP, h = H - PSP - clipBot },
+  SET.botIdx = add({ type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = PSP, y = clipBot, w = W - 2 * PSP, h = H - PSP - clipBot },
     trackMouseDown = true, trackMouseUp = true, trackMouseEnterExit = true, id = "s_drag" })
   if scroll > 0.5 then       -- filo sotto i tab quando il contenuto è scorso
     add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad, y = clipTop, w = IW, h = 1 } })
@@ -2200,15 +2211,106 @@ local function layoutSettings(scroll)
     { label = "Tema", val = "theme", icon = ICON.palette } }, settingsPage, { y = y, h = 36, size = 12.5 })
 
   fillShell(els, W, H, "s_drag")
-  return els, { maxScroll = maxScroll, contentLen = contentLen }
+  return els, { maxScroll = maxScroll, contentLen = contentLen, bodyTop = bodyTop }
+end
+
+-- Altezza naturale del tab corrente: layout di prova al tetto (senza effetti collaterali sulle animazioni),
+-- poi H = intestazione+tab (bodyTop) + contenuto + margini. Mai sotto minH, mai sopra il tetto (cap).
+local function targetHeight()
+  local oldH = SET.H
+  local sS, sT = shallow(segPrev), shallow(togglePrev)
+  SET.H = SET.cap
+  local ok, _, info = pcall(layoutSettings, 0)
+  segPrev, togglePrev = sS, sT
+  Anim.cancel("setui")
+  SET.H = oldH
+  if not ok or type(info) ~= "table" then return SET.cap end
+  return clampN(finite(info.bodyTop, 0) + finite(info.contentLen, 0) + PSP + 8, SET.minH, SET.cap)
+end
+
+-- schermo che contiene la finestra (per il clamp verso l'alto del bordo basso)
+local function screenFrameFor(f)
+  local ok, sf = pcall(function()
+    local cx, cy = f.x + f.w / 2, f.y + f.h / 2
+    for _, s in ipairs(hs.screen.allScreens()) do
+      local r = s:frame()
+      if cx >= r.x and cx <= r.x + r.w and cy >= r.y and cy <= r.y + r.h then return r end
+    end
+  end)
+  if ok and sf then return sf end
+  return hs.screen.mainScreen():frame()
+end
+
+-- Porta alla nuova altezza h TUTTO ciò che ne dipende, in un colpo solo (stessa passata del run loop):
+-- finestra (angolo alto-sinistra fermo, salvo ny), ombra/vetro/bordo (ricalcolati con pushGlass),
+-- ritaglio del corpo e schermo-maniglia in basso. Il contenuto resta lo stesso: nessun ridisegno.
+local function applyShellH(cv, h, ny)
+  if not cv or not SET.W then return end
+  h = clampN(h, 40, 4000)
+  local W = SET.W
+  local head = {}
+  pushGlass(head, PSP, PSP, W - 2 * PSP, h - 2 * PSP, R(20), { s = 1, sheenH = 58, sheenA = 0.6, shadowMul = 1.25 })
+  for i = 1, math.min(#head, NCARD) do
+    local e = head[i]
+    if e.frame then cv:elementAttribute(i, "frame", e.frame) end
+  end
+  local clipBot = h - PSP - 8
+  if SET.clipIdx and SET.clipTop then
+    cv:elementAttribute(SET.clipIdx, "frame", { x = PSP + 1, y = SET.clipTop, w = W - 2 * PSP - 2, h = math.max(1, clipBot - SET.clipTop) })
+  end
+  if SET.botIdx then
+    cv:elementAttribute(SET.botIdx, "frame", { x = PSP, y = clipBot, w = W - 2 * PSP, h = h - PSP - clipBot })
+  end
+  local f = cv:frame()
+  cv:frame({ x = f.x, y = (ny ~= nil) and finite(ny, f.y) or f.y, w = W, h = h })
+end
+
+-- fantasma del corpo uscente: istantanea della canvas, in una finestra sottile sopra (ritagliata al corpo)
+local function makeGhost(cv, hFrom, ct)
+  killGhost()
+  local ok, g = pcall(function()
+    local img = cv:imageFromCanvas()
+    if not img then return nil end
+    local f, W = cv:frame(), SET.W
+    local gh = clampN(hFrom - PSP - 8 - ct, 1, 4000)
+    local gc = hs.canvas.new({ x = f.x + PSP + 1, y = f.y + ct, w = W - 2 * PSP - 2, h = gh })
+    gc:level(hs.canvas.windowLevels.overlay)
+    gc:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
+    gc:appendElements({ type = "image", image = img, imageScaling = "scaleToFit", frame = { x = -(PSP + 1), y = -ct, w = W, h = hFrom } })
+    gc:alpha(1)
+    gc:show()
+    return { cv = gc, ct = ct, gh = gh, ih = hFrom }
+  end)
+  if ok and g then SET.ghost = g; return g end
+  return nil
+end
+local function syncGhost()
+  local G, cv = SET.ghost, settingsCanvas
+  if not G or not cv or not SET.W then return end
+  local f = cv:frame()
+  local vis = clampN(finite(SET.hCur, G.gh + G.ct + PSP + 8) - PSP - 8 - G.ct, 1, G.gh)
+  G.cv:frame({ x = f.x + PSP + 1, y = f.y + G.ct, w = SET.W - 2 * PSP - 2, h = vis })
+end
+local function fadeGhost(g)
+  Anim.run("setvis", "xfade", 0.24, "inout", function(e)
+    local G = SET.ghost
+    if not G or G ~= g then return end
+    e = clamp01(e)
+    G.cv:alpha(1 - e)
+    G.cv:elementAttribute(1, "frame", { x = -(PSP + 1), y = -G.ct - 6 * e, w = SET.W or 1, h = G.ih })
+    syncGhost()
+  end, function() if SET.ghost == g then killGhost() end end)
 end
 
 renderSettings = function(opts)
   opts = opts or {}
-  if not SET.W then SET.W, SET.H = settingsGeometry() end
-  local W, H = SET.W, SET.H
+  if not SET.W then SET.W, SET.cap = settingsGeometry(); SET.H = SET.cap end
   Anim.cancel("sethv"); Anim.cancel("setui")
   local snapSeg, snapTog = shallow(segPrev), shallow(togglePrev)
+  local cvOld = settingsCanvas
+  local hFrom = cvOld and clampN(finite(SET.hCur, SET.H), 40, 4000) or nil
+  local oldClipTop = SET.clipTop
+  if not opts.scroll then SET.H = targetHeight() end      -- altezza a misura del contenuto di questo tab
   local els, info = layoutSettings(SET.scroll)
   SET.maxScroll = info.maxScroll
   if SET.scroll > info.maxScroll + 0.5 then       -- il contenuto si è accorciato: riallinea lo scroll
@@ -2217,35 +2319,74 @@ renderSettings = function(opts)
     els, info = layoutSettings(SET.scroll)
     SET.maxScroll = info.maxScroll
   end
+  local W, tH = SET.W, SET.H
 
-  local isNew = (settingsCanvas == nil)
-  if isNew then
+  local heightAnimating = false
+  if not cvOld then
     local sf = hs.screen.mainScreen():frame()
     local fx, fy
     if settingsPos then fx, fy = settingsPos.x, settingsPos.y
-    else fx = sf.x + (sf.w - W) / 2; fy = sf.y + (sf.h - H) / 2 end
-    fy = math.max(sf.y, math.min(fy, sf.y + sf.h - H))
-    SET.frame = { x = fx, y = fy, w = W, h = H }
-    settingsCanvas = hs.canvas.new({ x = fx, y = fy, w = W, h = H })
+    else fx = sf.x + (sf.w - W) / 2; fy = sf.y + (sf.h - tH) / 2 end
+    fy = math.max(sf.y, math.min(fy, sf.y + sf.h - tH))
+    SET.frame = { x = fx, y = fy, w = W, h = tH }
+    SET.hCur = tH
+    settingsCanvas = hs.canvas.new({ x = fx, y = fy, w = W, h = tH })
     settingsCanvas:level(hs.canvas.windowLevels.overlay)
     settingsCanvas:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
     settingsCanvas:mouseCallback(settingsMouse)
     settingsCanvas:replaceElements(els)
     settingsCanvas:alpha(0)
     settingsCanvas:show()
-    panelIn("setvis", settingsCanvas, fx, fy, W, H, 18)
+    panelIn("setvis", settingsCanvas, fx, fy, W, tH, 18)
     startScrollTap()
   else
-    -- stessa finestra, stessa posizione, stessa dimensione: cambia solo il contenuto
-    settingsCanvas:replaceElements(els)
-    if opts.page then
-      local cv = settingsCanvas
+    -- stessa finestra, stessa posizione: header, tab e card restano dove sono; cambia solo il corpo
+    -- (e l'altezza, con l'angolo alto-sinistra fermo). Mai alpha < 1: niente lampeggio.
+    local cv = cvOld
+    local f = cv:frame()
+    local moveOrGrow = (not opts.scroll) and (opts.page or math.abs(tH - hFrom) > 0.5)
+    if moveOrGrow and Anim.list["setvis|vis"] then      -- entrata ancora in corso: chiudila di netto
       Anim.cancel("setvis", "vis")
-      if SET.frame then cv:frame(SET.frame) end
-      Anim.run("setvis", "page", 0.22, "out", function(e) cv:alpha(0.4 + 0.6 * clamp01(e)) end, function() cv:alpha(1) end)
+      cv:alpha(1)
+      if SET.frame then cv:frame({ x = SET.frame.x, y = SET.frame.y, w = W, h = hFrom }); f = cv:frame() end
     end
+    local ghost = nil
+    if opts.page and animOn() then ghost = makeGhost(cv, hFrom, oldClipTop or SET.clipTop) else killGhost() end
+    cv:replaceElements(els)                -- atomico: contenuto nuovo sotto il fantasma del vecchio
+    if opts.scroll or math.abs(tH - hFrom) <= 0.5 then
+      SET.hCur = (math.abs(tH - hFrom) <= 0.5) and tH or hFrom
+      applyShellH(cv, SET.hCur)
+      if Anim.list["setvis|h"] and opts.scroll then heightAnimating = true end
+    elseif not animOn() then
+      SET.hCur = tH
+      applyShellH(cv, tH)
+    else
+      applyShellH(cv, hFrom)               -- elementi nuovi (calcolati per tH) mostrati ancora all'altezza di partenza
+      heightAnimating = true
+      -- clamp verso l'alto SOLO se crescendo uscirebbe dal bordo basso dello schermo
+      local sf = screenFrameFor(f)
+      local y0, yT = f.y, f.y
+      if tH > hFrom + 0.5 and f.y + tH > sf.y + sf.h then yT = math.max(sf.y, sf.y + sf.h - tH) end
+      local shift = math.abs(yT - y0) > 0.5
+      Anim.run("setvis", "h", 0.28, "out", function(e)
+        local c2 = settingsCanvas; if not c2 then return end
+        e = clamp01(e)
+        SET.hCur = lerp(hFrom, tH, e)
+        applyShellH(c2, SET.hCur, shift and lerp(y0, yT, e) or nil)
+        syncGhost()
+      end, function()
+        local c2 = settingsCanvas; if not c2 then return end
+        SET.hCur = tH
+        applyShellH(c2, tH, shift and yT or nil)
+        local ff = c2:frame()
+        SET.frame = { x = ff.x, y = ff.y, w = ff.w, h = ff.h }
+        syncGhost()
+        pokeScrollbar()
+      end)
+    end
+    if ghost then syncGhost(); fadeGhost(ghost) end
   end
-  if opts.scroll or opts.page or isNew then pokeScrollbar() end
+  if (opts.scroll or opts.page or not cvOld) and not heightAnimating then pokeScrollbar() end
   if settingsPage == "theme" then startPreview() else stopPreview() end
 end
 
@@ -2253,7 +2394,7 @@ openSettings = function()
   segPrev = {}; togglePrev = {}; resetArmAt = 0
   getAudioDevices(function(list)
     deviceCache = list; settingsDevices = list
-    if not settingsCanvas then SET.scroll = 0; SET.W, SET.H = settingsGeometry() end
+    if not settingsCanvas then SET.scroll = 0; SET.W, SET.cap = settingsGeometry(); SET.H = SET.cap end
     renderSettings()
   end)
 end
