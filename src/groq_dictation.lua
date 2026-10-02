@@ -1559,16 +1559,25 @@ mouseCb = function(_c, msg, id)
   if msg == "mouseEnter" then hoverTo(overlay, hoverMap, "hudhv", id, true); showTip(id, true); return
   elseif msg == "mouseExit" then hoverTo(overlay, hoverMap, "hudhv", id, false); showTip(id, false); return
   elseif msg == "mouseDown" then
+    ICON.relayer(overlay, true)           -- il click porta la base sopra gli strati: li rimette sopra
     if id == "drag" then startDrag() end
     return
   elseif msg == "mouseUp" then
-    if id == "pause" then M.togglePause()
-    elseif id == "stop" then M.stop()
-    elseif id == "settings" then openSettings()
-    elseif id == "cancel" then M.cancel()
-    elseif id == "egg" then ICON.eggClick(overlay, RECIDX)
-    elseif id == "close" then hideOverlay() end
+    ICON.relayer(overlay, true)
+    -- l'azione parte DOPO il callback: ricostruire/cancellare canvas dentro il callback mouse della canvas stessa e' fragile
+    hs.timer.doAfter(0.01, function()
+      local ok, err = pcall(ICON.hudAction, id)
+      if not ok then ICON.log("[GW] azione HUD " .. tostring(id) .. ": " .. tostring(err)) end
+    end)
   end
+end
+function ICON.hudAction(id)
+  if id == "pause" then M.togglePause()
+  elseif id == "stop" then M.stop()
+  elseif id == "settings" then openSettings()
+  elseif id == "cancel" then M.cancel()
+  elseif id == "egg" then ICON.eggClick(overlay, RECIDX)
+  elseif id == "close" then hideOverlay() end
 end
 
 placeCanvas = function(w, h)
@@ -2836,6 +2845,7 @@ setRecordingElements = function(isPaused)
   end, { x = 0, y = 0, w = pw * s + 2 * P, h = ph * s + 2 * P }, 0, nil, ICON.recGroup)
   overlay:replaceElements(els)
   ICON.safeLayers(overlay, els, spec)
+  ICON.relayer(overlay)                   -- strati riusati (stessa dimensione) restano dov'erano: sopra la base, sempre
   RECIDX = idx
   PROC = nil
   mode = "rec"
@@ -2895,7 +2905,7 @@ setProcessingElements = function(text)
   local function sc(v) return v * s end
   local P = sc(40)
   hoverMap = {}
-  Anim.cancel("hudhv"); Anim.cancel("egg")
+  Anim.cancel("hudhv"); Anim.cancel("hudtip"); Anim.cancel("egg")
   local pw, ph = 236, 52
   placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
   local els = {}
@@ -3173,6 +3183,14 @@ do
   -- frequenza massima di ridisegno (Hz) delle canvas del HUD di registrazione: onda 18, anelli/badge 12, timer 8 (cambia 1/s), particelle 16, avviso 15
   ICON.GROUP_HZ = { w = 18, r = 12, t = 8, p = 16, x = 15 }
   function ICON.skipEl() return { type = "rectangle", action = "skip", frame = { x = 0, y = 0, w = 1, h = 1 } } end
+  -- cv = proxy ICON.wrap; later = anche una volta differita (se la finestra viene portata avanti dopo il callback)
+  function ICON.relayer(cv, later)
+    if not cv then return end
+    pcall(function() if cv.layerCount and cv:layerCount() > 0 then cv:relayer() end end)
+    if later then
+      hs.timer.doAfter(0.04, function() pcall(function() if cv.layerCount and cv:layerCount() > 0 then cv:relayer() end end) end)
+    end
+  end
   -- applica gli strati; se QUALCOSA fallisce torna a canvas singola (ripristina gli elementi spostati) invece di lasciare l'HUD a meta'
   function ICON.safeLayers(cv, els, spec)
     if not spec then pcall(function() cv:layerClear() end); return end
@@ -3423,6 +3441,10 @@ do
     function P:hide() base:hide(); each(function(cv) cv:hide() end); return P end
     function P:orderAbove(c2)
       base:orderAbove(c2)
+      each(function(cv) cv:orderAbove(base) end, true)
+      return P
+    end
+    function P:relayer()                    -- rimette gli strati sopra la base (un click sulla base la porta in primo piano nel suo livello)
       each(function(cv) cv:orderAbove(base) end, true)
       return P
     end
@@ -5798,6 +5820,8 @@ end
 function ICON.micRestart(newDev)
   local mc = ICON.micS
   if not mc or not recTask then return end
+  mc.nRestart = (mc.nRestart or 0) + 1
+  if mc.nRestart > 3 then return end                        -- tetto: al massimo 3 riavvii di ffmpeg per registrazione
   mc.restarting = true; mc.newDev = newDev
   stopCurrentSegment("restart")
 end
@@ -5851,8 +5875,22 @@ startSegment = function(mode_)
   end
   local args = { "-y", "-f", "avfoundation", "-i", config.audioDevice, "-ac", "1", "-ar", "16000",
     "-af", "asetnsamples=1600:p=0,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level", p }
-  recTask = hs.task.new(config.ffmpeg, function() M._onSegmentFinished() end, onStream, args)
-  if not recTask:start() then gwAlert("❌ ffmpeg non parte"); recTask = nil; return false end
+  -- il callback di uscita puo' scattare DENTRO start() (ffmpeg che muore subito): in quel caso lo si rimanda a dopo, cosi' _onSegmentFinished
+  -- non rientra mai in startSegment/start/togglePause (niente ricorsione sincrona)
+  local mine
+  ICON.starting = true
+  mine = hs.task.new(config.ffmpeg, function()
+    if ICON.starting then ICON.deadAtStart = true; return end
+    M._onSegmentFinished()
+  end, onStream, args)
+  recTask = mine
+  local okS = mine:start()
+  ICON.starting = false
+  if not okS then gwAlert("❌ ffmpeg non parte"); recTask = nil; ICON.deadAtStart = false; return false end
+  if ICON.deadAtStart then
+    ICON.deadAtStart = false
+    hs.timer.doAfter(0, function() if recTask == mine then M._onSegmentFinished() end end)
+  end
   if mode_ ~= "restart" or not segStart then segStart = now() end
   stopRotTimer()
   if config.maxSegmentSec and config.maxSegmentSec > 0 then rotTimer = hs.timer.doAfter(config.maxSegmentSec, function() rotate() end) end
@@ -5913,6 +5951,9 @@ function M.cancel()
 end
 function M.togglePause()
   if not recording then return end
+  local tp = now()
+  if tp - (ICON.pauseAt or -9) < 0.25 then return end      -- antirimbalzo: pausa/riprendi non si ripetono piu' di ~4 volte/s (doppio click, tasto che rimbalza)
+  ICON.pauseAt = tp
   if paused then
     paused = false; segIndex = segIndex + 1; startSegment("fresh")
     if mode == "rec" then setRecordingElements(false) end
