@@ -2153,7 +2153,7 @@ closeSettings = function()
   if not cv then return end
   settingsCanvas = nil; settingsPos = nil
   stopPreview(); stopScrollTap(); killGhost()
-  SET.K.msg = nil; SET.K.armAt = 0; SET.K.tipReset()
+  SET.K.msg = nil; SET.K.armAt = 0; SET.K.tipReset(); SET.K.exp = false; SET.K.q = 0; Anim.cancel("setvis", "kx")
   SET.frame = nil; SET.W = nil; SET.H = nil; SET.cap = nil; SET.hCur = nil; SET.scroll = 0; SET.maxScroll = 0; SET.pill = {}; SET.tog = {}
   Anim.cancel("sethv"); Anim.cancel("setui"); Anim.cancel("setvis"); Anim.cancel("setsb")
   panelOut(cv)
@@ -2257,6 +2257,10 @@ settingsMouse = function(_c, msg, id)
   if id == "key_open" then SET.K.open(); return end
   if id == "key_remove" then SET.K.remove(); return end
   if id == "key_info" then SET.K.tipPin = not SET.K.tipPin; SET.K.tipFade(); return end
+  if id == "key_toggle" then
+    SET.K.exp = not SET.K.exp; SET.K.tipReset(); SET.K.armAt = 0
+    renderSettings({ keyToggle = true }); return
+  end
   if id == "tg_shadow" then setLook("shadowOn", not (config.shadowOn ~= false)); rebuildHUD(); renderSettings(); return end
   if id == "tg_glow" then setLook("glowOn", not (config.glowOn == true)); rebuildHUD(); renderSettings(); return end
   if id == "tg_anim" then setLook("animOn", not animOn()); renderSettings(); return end
@@ -2335,7 +2339,8 @@ end
 -- Flusso: incolla dal clipboard -> controllo formato -> prova a costo zero (GET /openai/v1/models) ->
 -- salva SOLO se Groq risponde 200. readKey() rilegge il file ogni volta: nessun riavvio.
 ------------------------------------------------------------------------
-local K = { has = false, mask = nil, msg = nil, msgId = 0, armAt = 0, busy = false, tipA = 0, tipPin = false, tipHover = false, tipEls = {} }
+local K = { has = false, mask = nil, msg = nil, msgId = 0, armAt = 0, busy = false, tipA = 0, tipPin = false, tipHover = false, tipEls = {},
+  exp = false, q = 0, flip = false }
 SET.K = K
 local KEY_STEPS = { "1) Premi «Prendi / crea la chiave»: si apre il sito Groq.",
   "2) Registrati (è gratis: bastano Google o email, nessuna carta).",
@@ -2359,7 +2364,10 @@ function K.setMsg(kind, text)
       if K.msgId == id and K.msg and settingsCanvas then K.msg = nil; pcall(renderSettings, { scroll = true }) end
     end)
   end
-  if settingsCanvas then pcall(renderSettings, { scroll = true }) end
+  if settingsCanvas then
+    local flip = K.flip; K.flip = false
+    pcall(renderSettings, flip and { page = true } or { scroll = true })     -- flip: la sezione cambia posto (alto <-> in fondo)
+  end
 end
 function K.paste()
   if K.busy then return end
@@ -2384,7 +2392,7 @@ function K.paste()
       local okw = false
       if f then okw = f:write(key) and true or false; f:close() end
       hs.execute("chmod 600 '" .. config.keyPath .. "'")
-      if okw and readKey() == key then K.refresh(); done("ok", "Chiave valida: salvata")
+      if okw and readKey() == key then K.refresh(); K.exp = false; K.q = 0; K.flip = true; done("ok", "Chiave valida: salvata")
       else done("err", "Non riesco a salvare la chiave") end
     elseif st == 401 then done("err", "Chiave non valida: Groq l'ha rifiutata")
     elseif st == 403 then done("err", "Groq ha rifiutato la richiesta (403): riprova")
@@ -2397,7 +2405,7 @@ function K.remove()
   if K.armAt > 0 and (now() - K.armAt) < 3 then
     K.armAt = 0
     os.remove(config.keyPath)
-    K.refresh(); K.setMsg("info", "Chiave rimossa")
+    K.refresh(); K.exp = false; K.q = 0; K.flip = true; K.setMsg("info", "Chiave rimossa")
   else
     K.armAt = now()
     hs.timer.doAfter(3.1, function()
@@ -2424,6 +2432,39 @@ function K.tipFade()
 end
 function K.tipReset() K.tipPin = false; K.tipHover = false; K.tipA = 0; Anim.cancel("settip") end
 
+-- sezione chiave RIDUCIBILE (chiave già impostata): scheda che si apre/chiude, corpo a dissolvenza
+function K.fade(q) return clamp01((q - 0.5) / 0.5) end
+function K.chev(cx, cy, q)
+  local d = 3 * (1 - 2 * clamp01(q))
+  return { { x = cx - 5, y = cy - d }, { x = cx, y = cy + d }, { x = cx + 5, y = cy - d } }
+end
+function K.apply(cv, a, q)
+  cv:elementAttribute(a.box, "frame", { x = a.x, y = a.y, w = a.w, h = 44 + a.bodyH * q })
+  cv:elementAttribute(a.chevIdx, "coordinates", K.chev(a.cx, a.cy, q))
+  local f = K.fade(q)
+  for _, r in ipairs(a.body) do
+    local base = r[3]
+    if r[2] == "fillGradientColors" then
+      local list = {}
+      for i, c in ipairs(base) do list[i] = withA(c, (c.alpha or 1) * f) end
+      cv:elementAttribute(r[1], r[2], list)
+    else
+      cv:elementAttribute(r[1], r[2], withA(base, (base.alpha or 1) * f))
+    end
+  end
+end
+function K.anim(a)
+  Anim.run("setvis", "kx", 0.28, "out", function(e)
+    local cv = settingsCanvas; if not cv then return end
+    local q = lerp(a.from, a.to, clamp01(e)); K.q = q
+    K.apply(cv, a, q)
+  end, function()
+    K.q = a.to
+    local cv = settingsCanvas; if cv then K.apply(cv, a, a.to) end
+    if a.to == 0 and cv and not K.exp then pcall(renderSettings, { scroll = true }) end     -- chiusa: toglie il corpo (e i suoi bottoni) dal canvas
+  end)
+end
+
 -- costruisce tutti gli elementi per un dato offset di scroll. Ritorna (els, info)
 local function layoutSettings(scroll)
   local W, H = SET.W, SET.H
@@ -2439,7 +2480,7 @@ local function layoutSettings(scroll)
   local GAP = 18 * gapK()
   local els = {}
   sHoverMap = {}
-  SET.sliders = {}; SET.sbIdx = nil; SET.keyTip = nil
+  SET.sliders = {}; SET.sbIdx = nil; SET.keyTip = nil; SET.kAnim = nil
   PREV = nil
   for i = 1, NCARD do els[i] = placeholder() end     -- slot per ombra + vetro (riempiti a fine layout)
   local function add(el) els[#els + 1] = el; return #els end
@@ -2608,8 +2649,8 @@ local function layoutSettings(scroll)
   local trail = GAP          -- spazio vuoto in coda al contenuto (tolto dal calcolo dell'altezza naturale)
 
   if settingsPage == "general" then
-    -- CHIAVE GROQ
-    do
+    -- CHIAVE GROQ: non impostata = in evidenza in cima; già impostata = scheda riducibile in fondo (dopo l'orientamento)
+    if not K.has then
       txt(els, "CHIAVE GROQ", pad + 2, y, IW, 14, 10.5, COL.fg3, { font = "bold" })
       local bx, by = pad + 92, y + 7
       hitCircle(els, sHoverMap, "key_info", bx, by, 8.5, { fill = COL.rowBg, hoverFill = COL.accentSoft, stroke = COL.fg3, hoverStroke = COL.accent, sw = 1.2 })
@@ -2692,6 +2733,81 @@ local function layoutSettings(scroll)
     segmented("orient", { { label = "Orizzontale", val = "horizontal", icon = ICON.orientH }, { label = "Verticale", val = "vertical", icon = ICON.orientV } },
       config.orientation, { y = y })
     y = y + 32 + GAP
+
+    if K.has then
+      local ry0 = y
+      local bodyH = 162
+      local showBody = K.exp or K.q > 0.001
+      local boxIdx = add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.rowBg, strokeColor = COL.divider, strokeWidth = 1,
+        roundedRectRadii = { xRadius = R(12), yRadius = R(12) }, frame = { x = pad, y = ry0, w = IW, h = 44 + bodyH * K.q } })
+      local b0 = #els + 1
+      local bodyRecs = {}
+      if showBody then
+        local y0 = ry0 + 44
+        local m = K.msg
+        local l2, l2c
+        if m then l2 = m.text; l2c = (m.kind == "ok") and COL.ok or ((m.kind == "err") and COL.warn or COL.fg2)
+        else l2 = "Salvata su questo Mac · incolla per sostituirla"; l2c = COL.fg3 end
+        txt(els, l2, pad + 16, y0 + 8, IW - 16 - 44, 15, 11, l2c, { lb = "clip" })
+        local bx, by = pad + IW - 24, y0 + 15
+        hitCircle(els, sHoverMap, "key_info", bx, by, 8.5, { fill = COL.rowBg, hoverFill = COL.accentSoft, stroke = COL.fg3, hoverStroke = COL.accent, sw = 1.2 })
+        add({ type = "circle", action = "fill", fillColor = COL.fg2, center = { x = bx, y = by - 3.1 }, radius = 1 })
+        line(els, bx, by - 0.7, bx, by + 3.4, COL.fg2, 1.5)
+        local py = y0 + 32
+        add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(12), yRadius = R(12) },
+          frame = { x = pad + 12, y = py, w = IW - 24, h = 38 }, fillGradient = "linear", fillGradientAngle = COL.multi and 0 or 90, fillGradientColors = COL.grad })
+        hitRect(els, sHoverMap, "key_paste", pad + 12, py, IW - 24, 38, R(12), { fill = withA(COL.fgWhite, K.busy and 0.3 or 0), hoverFill = withA(COL.fgWhite, 0.2) })
+        ICON.copy(els, pad + IW / 2 - 84, py + 19, 14, COL.accentText)
+        txt(els, K.busy and "Controllo…" or "Incolla nuova chiave", pad + IW / 2 - 70, py + 11, 180, 16, 12.5, COL.accentText, { font = "semi", lb = "clip" })
+        local oy = py + 46
+        hitRect(els, sHoverMap, "key_open", pad + 12, oy, IW - 24, 36, R(12), { fill = COL.rowBg, hoverFill = COL.accentSoft, stroke = COL.borderSoft, hoverStroke = COL.border })
+        local ax, ay = pad + IW / 2 - 92, oy + 18
+        line(els, ax - 3.5, ay + 3.5, ax + 3.5, ay - 3.5, COL.accentInk, 1.6)
+        seg(els, { { x = ax - 0.5, y = ay - 3.5 }, { x = ax + 3.5, y = ay - 3.5 }, { x = ax + 3.5, y = ay + 0.5 } }, COL.accentInk, 1.6)
+        txt(els, "Prendi / crea la chiave su Groq", pad + IW / 2 - 80, oy + 10, 200, 16, 12.5, COL.accentInk, { font = "semi", lb = "clip" })
+        local rmy = oy + 44
+        local armed = K.armAt > 0 and (now() - K.armAt) < 3
+        hitRect(els, sHoverMap, "key_remove", pad + 12, rmy, IW - 24, 30, R(10), { fill = armed and withA(COL.warn, 0.14) or withA(COL.rowBg, 0),
+          hoverFill = armed and withA(COL.warn, 0.22) or COL.accentSoft, stroke = armed and COL.warn or COL.divider, hoverStroke = armed and COL.warn or COL.borderSoft })
+        txt(els, armed and "Sicuro? Tocca ancora" or "Rimuovi chiave", pad + 12, rmy + 8, IW - 24, 15, 11.5, armed and COL.warn or COL.fg2,
+          { font = "semi", align = "center", lb = "clip" })
+        SET.keyTip = { y = by + 22 - 212 }
+        -- dissolvenza del corpo: registra i colori e applica l'opacità di partenza
+        local f0 = K.fade(K.q)
+        for k = b0, #els do
+          local el = els[k]
+          for _, at in ipairs({ "fillColor", "strokeColor", "textColor", "fillGradientColors" }) do
+            local base = el[at]
+            if base then
+              bodyRecs[#bodyRecs + 1] = { k, at, base }
+              if at == "fillGradientColors" then
+                local list = {}
+                for i, c in ipairs(base) do list[i] = withA(c, (c.alpha or 1) * f0) end
+                el[at] = list
+              else
+                el[at] = withA(base, (base.alpha or 1) * f0)
+              end
+            end
+          end
+        end
+      end
+      hitRect(els, sHoverMap, "key_toggle", pad + 4, ry0 + 2, IW - 8, 40, R(9), { fill = withA(COL.rowHover, 0), hoverFill = COL.rowHover })
+      add({ type = "circle", action = "fill", fillColor = withA(COL.ok, 0.22), center = { x = pad + 22, y = ry0 + 22 }, radius = 8 })
+      add({ type = "circle", action = "fill", fillColor = COL.ok, center = { x = pad + 22, y = ry0 + 22 }, radius = 4.4 })
+      txt(els, "Chiave Groq", pad + 38, ry0 + 13, 100, 18, 13, COL.fg, { font = "semi", lb = "clip" })
+      local mm = K.msg
+      local mtxt, mcol, mfont = K.mask or "chiave salvata", COL.fg3, "mono"
+      if mm and not K.exp then mtxt = mm.text; mcol = (mm.kind == "ok") and COL.ok or ((mm.kind == "err") and COL.warn or COL.fg2); mfont = "semi" end
+      txt(els, mtxt, pad + 138, ry0 + 14, IW - 138 - 40, 16, 12, mcol, { font = mfont, align = "right", lb = "clip" })
+      local chevIdx = add({ type = "segments", action = "stroke", strokeColor = COL.fg2, strokeWidth = 1.8, strokeCapStyle = "round",
+        strokeJoinStyle = "round", coordinates = K.chev(pad + IW - 22, ry0 + 22, K.q) })
+      local target = K.exp and 1 or 0
+      if not SET.trial and math.abs(K.q - target) > 0.001 then
+        SET.kAnim = { from = K.q, to = target, box = boxIdx, chevIdx = chevIdx, x = pad, y = ry0, w = IW, bodyH = bodyH,
+          cx = pad + IW - 22, cy = ry0 + 22, body = bodyRecs }
+      end
+      y = y + 44 + (K.exp and bodyH or 0) + GAP
+    end
   elseif settingsPage == "theme" then
     -- ANTEPRIMA VIVA: mini-HUD con le impostazioni correnti
     sec("ANTEPRIMA")
@@ -3113,12 +3229,13 @@ renderSettings = function(opts)
     if ghost then syncGhost(); fadeGhost(ghost) end
   end
   if (opts.scroll or opts.page or not cvOld) and not heightAnimating then pokeScrollbar() end
+  if SET.kAnim then SET.K.anim(SET.kAnim); SET.kAnim = nil end
   if settingsPage == "theme" then startPreview() else stopPreview() end
 end
 
 openSettings = function()
   segPrev = {}; togglePrev = {}; resetArmAt = 0; SET.pill = {}; SET.tog = {}
-  SET.K.refresh(); SET.K.armAt = 0; SET.K.tipReset()
+  SET.K.refresh(); SET.K.armAt = 0; SET.K.tipReset(); SET.K.exp = false; SET.K.q = 0
   getAudioDevices(function(list)
     deviceCache = list; settingsDevices = list
     if not settingsCanvas then SET.scroll = 0; SET.W, SET.cap = settingsGeometry(); SET.H = SET.cap end
