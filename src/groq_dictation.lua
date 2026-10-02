@@ -353,6 +353,7 @@ end
 -- Stili data-driven. Riga: { id, nome, categoria, dark, light, fx }
 --   dark/light = "top bot accento g1 g2 [g3 g4]" (esadecimali): fg/fg2/hi/lo/on/ink si derivano (derive)
 --   fx = { icon = id icona custom, bar = round|square|pixel|ghost, part = snow|bats|petals|stars|rain|bubbles|confetti }
+--   (pack completi: in più shape/body/barCol/meter/proc/done/egg/font: vedi "PACK FX" sopra l'HUD)
 -- Per aggiungere uno stile: una riga qui sotto (+ eventuale icona in ICON.c). Nient'altro.
 local ROWS = {
   -- Pop-culture (nomi-nod, palette + motivi generici: nessun marchio/personaggio)
@@ -1216,6 +1217,7 @@ function ICON.partsBuild(els, ox, oy, w, h, s, lite)
   local kind = COL.fx and COL.fx.part
   local spec = kind and PT[kind]
   if not spec then return nil end
+  if spec.build then return spec.build(els, ox, oy, w, h, s, lite, spec) end        -- particelle custom del pack
   local R = { kind = kind, idx = {}, ox = ox, oy = oy, w = w, h = h, s = s }
   for i = 1, (lite and math.ceil(spec.n * 0.5) or spec.n) do
     local col = withA(ptCol(kind, i, spec.n), 0)
@@ -1241,6 +1243,7 @@ function ICON.partsTick(cv, R, t, visible)
   if not R then return end
   local spec = PT[R.kind]
   if not spec then return end
+  if spec.tick then return spec.tick(cv, R, t, visible, spec) end
   if not visible then
     if not R.hidden then
       R.hidden = true
@@ -1398,8 +1401,16 @@ local function hitCircle(els, map, id, cx, cy, r, o)
   return idx
 end
 -- forma "tonda" che segue l'angolo scelto: cerchio se tondo, quadrato arrotondato altrimenti
-local function btnRadius(r) return math.max(2, r * (RADIUS_MUL[config.cornerStyle] or 1)) end
-local function isRoundStyle() return (RADIUS_MUL[config.cornerStyle] or 1) >= 0.99 end
+local function btnRadius(r)
+  local sp = ICON.hudShape                       -- pack con forma propria (solo mentre si disegna l'HUD)
+  if sp and sp.btn then return math.max(1, r * sp.btn) end
+  return math.max(2, r * (RADIUS_MUL[config.cornerStyle] or 1))
+end
+local function isRoundStyle()
+  local sp = ICON.hudShape
+  if sp and sp.btn then return sp.btn >= 0.99 end
+  return (RADIUS_MUL[config.cornerStyle] or 1) >= 0.99
+end
 -- hit-layer interattivo (map) oppure forma statica (map == nil: anteprima)
 local function hitShape(els, map, id, cx, cy, r, o)
   if not map then
@@ -1506,6 +1517,7 @@ mouseCb = function(_c, msg, id)
     elseif id == "stop" then M.stop()
     elseif id == "settings" then openSettings()
     elseif id == "cancel" then M.cancel()
+    elseif id == "egg" then ICON.eggClick(overlay, RECIDX)
     elseif id == "close" then hideOverlay() end
   end
 end
@@ -1573,6 +1585,147 @@ end
 startDrag = function() dragCanvas(overlay, true) end
 
 
+------------------------------------------------------------------------
+-- PACK FX: estensioni opzionali di fx per stile (nessuna per gli stili normali = comportamento invariato).
+--   fx.shape  = id in ICON.shapes  { r = moltiplicatore raggio card, btn = moltiplicatore raggio bottoni (<1 = squadrati) }
+--   fx.body   = id in ICON.bodies  function(els,x,y,w,h,s,r,o,kind) -> bordo, corpo, colore bordo   (kind = "rec" | "proc")
+--   fx.barCol = { dark = "hex", light = "hex" }  colore fisso delle barre onda
+--   fx.meter  = id in ICON.meters  { build(els,I,ox,oy,s,vertical) -> m, tick(cv,I,m,lv,active,warn,t,dt) }
+--   fx.part   = anche id custom in ICON.parts con build()/tick()  (<= 12 elementi, ~16Hz, solo se registra e animOn)
+--   fx.proc   = id in ICON.proc    spinner  { build(els,cx,cy,s) -> st ; tick(cv,st,t) ; hide(cv,st) }
+--   fx.done   = id in ICON.done    spunta   { build(els,cx,cy,s) -> st ; anim(cv,st,e) ; std = true tiene anche la spunta standard }
+--   fx.egg    = id in ICON.eggs    easter egg { build, cond, pick, start, run, clear, dur, label, doneText }
+--   fx.font   = "rounded" ...      carattere del timer/testo di stato nell'HUD
+-- Un pack = una riga ROWS con queste chiavi + le funzioni nelle tabelle ICON.*. Niente altro.
+------------------------------------------------------------------------
+ICON.shapes, ICON.bodies, ICON.meters, ICON.proc, ICON.done, ICON.eggs = {}, {}, {}, {}, {}, {}
+ICON.stat = { n = 0 }                      -- "anelli": registrazioni completate in questa sessione (solo memoria)
+ICON.lv = 0                                -- livello audio liscio (0..1) per le particelle reattive
+ICON.rng = function() return math.random() end
+ICON.hudShape = nil                        -- forma attiva SOLO mentre si disegna l'HUD (non tocca i pannelli)
+
+function ICON.shape() local f = COL.fx; return f and f.shape and ICON.shapes[f.shape] or nil end
+function ICON.cardR(v) local sp = ICON.shape(); if sp and sp.r then return math.max(1.5, v * sp.r) end return R(v) end
+-- corpo della card HUD: custom (fx.body) o vetro standard
+function ICON.cardBody(els, x, y, w, h, s, o, kind)
+  local f = COL.fx
+  local B = f and f.body and ICON.bodies[f.body]
+  local r = ICON.cardR(28 * s)
+  if kind == "proc" then r = ICON.cardR(26 * s) end
+  if B then return B(els, x, y, w, h, s, r, o, kind) end
+  return pushGlass(els, x, y, w, h, r, o)
+end
+function ICON.barCol() local f = COL.fx; local b = f and f.barCol; if not b then return nil end return hex(COL.dark and b.dark or b.light) end
+function ICON.packFont(slot)
+  local f = COL.fx
+  if not (f and f.font) then return nil end
+  local ok, F = pcall(fontFamilyOf, f.font)
+  return ok and F and F[slot] or nil
+end
+
+-- icona che "salta": sposta in y gli elementi dell'icona (ref = tabelle originali degli elementi)
+function ICON.hopIcon(cv, I, dy)
+  local ref = I.iconRef
+  if not ref then return end
+  dy = finite(dy, 0)
+  for k, el in ipairs(ref) do
+    local ix = I.icon0 + k - 1
+    if el.type == "rectangle" then local f = el.frame; cv:elementAttribute(ix, "frame", { x = f.x, y = f.y + dy, w = f.w, h = f.h })
+    elseif el.type == "circle" then cv:elementAttribute(ix, "center", { x = el.center.x, y = el.center.y + dy })
+    elseif el.type == "segments" then
+      local c = {}; for j, p in ipairs(el.coordinates) do c[j] = { x = p.x, y = p.y + dy } end
+      cv:elementAttribute(ix, "coordinates", c)
+    end
+  end
+end
+
+-- EASTER EGG: elementi riservati e nascosti (toast + sprite del pack); animazione = Anim "egg" (breve, si ferma da sola)
+function ICON.eggBuild(els, I, ox, oy, w, h, s, map)
+  local id = COL.fx and COL.fx.egg
+  local sp = id and ICON.eggs[id]
+  if not sp then return end
+  local E = { spec = sp, last = -99, clicks = 0, lastClick = 0, cx = ox + w / 2, ty = oy - 26 * s, ox = ox, oy = oy, w = w, h = h, ta = 0, s = s }
+  E.pill = #els + 1
+  els[E.pill] = { type = "rectangle", action = "strokeAndFill", fillColor = withA(COL.solid, 0), strokeColor = withA(COL.accent, 0), strokeWidth = 1,
+    roundedRectRadii = { xRadius = 9 * s, yRadius = 9 * s }, frame = { x = 0, y = 0, w = 1, h = 1 } }
+  E.text = #els + 1
+  els[E.text] = { type = "text", text = "", textSize = 11 * s, textColor = withA(COL.fg, 0), textFont = fonts().semi,
+    textAlignment = "center", textLineBreak = "clip", frame = { x = 0, y = 0, w = 1, h = 1 } }
+  if sp.build then sp.build(els, E, ox, oy, w, h, s) end
+  I.egg = E
+  I.eggKey = map and "hud" or "prev"
+end
+function ICON.toast(cv, I, label, a)
+  local E = I.egg
+  if not E then return end
+  local s = E.s
+  if label and label ~= E.label then
+    E.label = label
+    local tw = math.min(((utf8.len(label) or #label) * 6.6 + 22) * s, E.w + 70 * s)
+    cv:elementAttribute(E.pill, "frame", { x = E.cx - tw / 2, y = E.ty, w = tw, h = 19 * s })
+    cv:elementAttribute(E.text, "frame", { x = E.cx - tw / 2, y = E.ty + 3 * s, w = tw, h = 19 * s })
+    cv:elementAttribute(E.text, "text", label)
+  end
+  a = clampN(a, 0, 1)
+  if math.abs(a - E.ta) > 0.02 or (a == 0 and E.ta ~= 0) then
+    E.ta = a
+    cv:elementAttribute(E.pill, "fillColor", withA(COL.solid, 0.96 * a))
+    cv:elementAttribute(E.pill, "strokeColor", withA(COL.accent, a))
+    cv:elementAttribute(E.text, "textColor", withA(COL.fg, a))
+  end
+end
+function ICON.eggFire(cv, I, why)
+  local E = I and I.egg
+  if not E or E.running or not cv or not animOn() then return end
+  local t = now()
+  if why ~= "click" and t - E.last < 4 then return end
+  E.last = t; E.running = true
+  local sp = E.spec
+  local var = sp.pick and sp.pick(why) or 1
+  if sp.start then sp.start(cv, I, E, var) end
+  Anim.run("egg", I.eggKey, sp.dur or 1.6, "linear", function(_, p)
+    sp.run(cv, I, E, p, var)
+  end, function()
+    E.running = false
+    if sp.clear then sp.clear(cv, I, E) end
+    ICON.toast(cv, I, nil, 0)
+  end)
+end
+-- 5 clic ravvicinati (entro 3s) sul punto sensibile (timer dell'HUD in pausa / badge nell'anteprima del tab Tema)
+function ICON.eggClick(cv, I)
+  local E = I and I.egg
+  if not E then return end
+  local t = now()
+  if t - E.lastClick > 3 then E.clicks = 0 end
+  E.lastClick = t; E.clicks = E.clicks + 1
+  if E.clicks >= 5 then E.clicks = 0; ICON.eggFire(cv, I, "click") end
+end
+function ICON.eggTick(cv, I, t, dt, active, warn)
+  local E = I.egg
+  if not E or I.preview or E.running or not active or warn then return end
+  local sp = E.spec
+  if sp.cond then
+    local var = sp.cond(I, E, t, dt)
+    if var then ICON.eggFire(cv, I, var) end
+  end
+end
+-- testo di fine (✓ Fatto): il pack puo' variarlo
+function ICON.doneText(text)
+  local id = COL.fx and COL.fx.egg
+  local sp = id and ICON.eggs[id]
+  if sp and sp.doneText then return sp.doneText(text) end
+  return text
+end
+
+-- indicatore (boost) sotto/accanto all'onda
+function ICON.meterTick(cv, I, lv, active, warn, t, dt)
+  local m = I.meter
+  if not m then return 0 end
+  local mt = ICON.meters[COL.fx and COL.fx.meter]
+  if mt and mt.tick then mt.tick(cv, I, m, lv, active, warn, t, dt) end
+  return m.v or 0
+end
+
 -- avviso "NO MIC": scossa orizzontale smorzata della card
 local function shakeHUD()
   if not overlay or not finalFrame or dragTap then return end
@@ -1631,7 +1784,8 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   local n = vertical and 9 or 12
   local pw, ph = recDims(vertical)
   idx.pw, idx.ph = pw, ph
-  idx.border, idx.body = pushGlass(els, ox, oy, sc(pw), sc(ph), R(28 * s), { s = s, id = map and "drag" or nil, lite = (map == nil) })
+  ICON.hudShape = ICON.shape()
+  idx.border, idx.body, idx.borderCol = ICON.cardBody(els, ox, oy, sc(pw), sc(ph), s, { s = s, id = map and "drag" or nil, lite = (map == nil) }, "rec")
   idx.parts = ICON.partsBuild(els, ox, oy, sc(pw), sc(ph), s, map == nil)       -- particelle dello stile (se ne ha)
 
   -- badge mic (registrazione) oppure ingranaggio (in pausa: impostazioni/scelta mic)
@@ -1648,6 +1802,12 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
       add({ type = "circle", action = "fill", fillColor = withA(COL.accent, 0.09), center = { x = bcx, y = bcy }, radius = br * 1.8 })
       add({ type = "circle", action = "fill", fillColor = withA(COL.accent, 0.11), center = { x = bcx, y = bcy }, radius = br * 1.38 })
     end
+    if ICON.hudShape and ICON.hudShape.btn and ICON.hudShape.btn < 0.99 then      -- pack squadrato: badge quadrato, niente anelli
+      idx.badge = add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.accentSoft,
+        strokeColor = withA(COL.accent, 0.7), strokeWidth = sc(1.6),
+        roundedRectRadii = { xRadius = btnRadius(br), yRadius = btnRadius(br) }, frame = { x = bcx - br, y = bcy - br, w = 2 * br, h = 2 * br },
+        fillGradient = "linear", fillGradientAngle = 90, fillGradientColors = gradFade(COL, 0.34, 0.14) })
+    else
     local ring = { type = "circle", action = "stroke", strokeColor = withA(COL.accent, 0), strokeWidth = sc(1.4),
       center = { x = bcx, y = bcy }, radius = br }
     idx.ring1 = add(ring)
@@ -1657,7 +1817,10 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
       strokeColor = withA(COL.accent, 0.55), strokeWidth = sc(1), center = { x = bcx, y = bcy }, radius = br,
       fillGradient = "linear", fillGradientAngle = COL.multi and 45 or 90,
       fillGradientColors = gradFade(COL, 0.34, 0.14) })
+    end
+    idx.icon0 = #els + 1
     ICON.drawFx(els, COL.fx and COL.fx.icon, bcx, bcy, sc(16), COL.accentInk, COL)     -- icona dello stile o microfono
+    idx.iconRef = {}; for k = idx.icon0, #els do idx.iconRef[#idx.iconRef + 1] = els[k] end   -- (per l'icona che salta)
   end
 
   -- timer
@@ -1670,6 +1833,7 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
     idx.timerFrames = { { x = ox + sc(57), y = oy + sc(17), w = sc(60), h = sc(24) }, { x = ox + sc(57), y = oy + sc(21), w = sc(60), h = sc(24) } }
     idx.timer = txt(els, "0:00", ox + sc(57), oy + sc(17), sc(60), sc(24), sc(17), COL.fg, { font = "timer", lb = "clip" })
   end
+  do local pf = ICON.packFont("bold"); if pf then els[idx.timer].textFont = pf end end      -- carattere del pack
 
   -- onda: barre / sottili / punti / linea
   local wstyle = waveStyleOf()
@@ -1706,6 +1870,8 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   end
   idx.barMeta = { horizontal = not vertical, s = s, thick = thick, maxLen = vertical and 30 or 28, dotMax = dotMax,
     q = (shape == "pixel") and thick or nil, ghost = (shape == "ghost") }
+  idx.barCol = ICON.barCol()
+  do local mt = COL.fx and COL.fx.meter and ICON.meters[COL.fx.meter]; if mt then idx.meter = mt.build(els, idx, ox, oy, s, vertical) end end
 
   -- pausa (primario) + stop (vetro)
   local pcx, pcy, scx, scy, brad
@@ -1728,6 +1894,12 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
     stroke = COL.border, hoverStroke = COL.warn, sw = 1 })
   ICON.close(els, kx, ky, sc(11), COL.fg2, 1.8)
 
+  -- easter egg: area sensibile sul timer (solo HUD in pausa; nell'anteprima del tab Tema è il badge)
+  if map and isPaused and COL.fx and COL.fx.egg then
+    hitRect(els, map, "egg", ox + sc(vertical and 0 or 57), oy + sc(vertical and 55 or 17), sc(vertical and 56 or 60), sc(vertical and 18 or 24), 2,
+      { fill = withA(COL.fgWhite, 0), hoverFill = withA(COL.fgWhite, 0) })
+  end
+
   -- tooltip sintetici sopra la card (solo orizzontale: in verticale non c'è spazio ai lati)
   if withTips and not vertical then
     idx.tipBg = add({ type = "rectangle", action = "strokeAndFill", fillColor = withA(COL.solid, 0), strokeColor = withA(COL.border, 0),
@@ -1741,6 +1913,8 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
     }
     idx.tipTop = oy - sc(30)
   end
+  ICON.eggBuild(els, idx, ox, oy, sc(pw), sc(ph), s, map)
+  ICON.hudShape = nil
   return idx
 end
 
@@ -1749,7 +1923,7 @@ setRecordingElements = function(isPaused)
   local P = 40 * s   -- margine attorno alla card (ombra + badge)
   local els = {}
   hoverMap = {}
-  Anim.cancel("hudhv"); Anim.cancel("hudtip")
+  Anim.cancel("hudhv"); Anim.cancel("hudtip"); Anim.cancel("egg", "hud")
   local vertical = (config.orientation == "vertical")
   local pw, ph = recDims(vertical)
   placeCanvas(pw * s + 2 * P, ph * s + 2 * P)
@@ -1768,30 +1942,39 @@ setProcessingElements = function(text)
   local function sc(v) return v * s end
   local P = sc(40)
   hoverMap = {}
-  Anim.cancel("hudhv")
+  Anim.cancel("hudhv"); Anim.cancel("egg", "hud")
   local pw, ph = 236, 52
   placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
   local els = {}
   local function add(el) els[#els + 1] = el; return #els end
-  pushGlass(els, P, P, sc(pw), sc(ph), R(sc(26)), { s = s, id = "drag" })
+  ICON.hudShape = ICON.shape()
+  ICON.cardBody(els, P, P, sc(pw), sc(ph), s, { s = s, id = "drag" }, "proc")
   local cx, cy = P + sc(28), P + sc(26)
   local pr = { dots = {}, state = "busy", cols = {} }
-  for i = 1, 10 do
+  local PS = COL.fx and COL.fx.proc and ICON.proc[COL.fx.proc]        -- spinner / spunta custom del pack (se ci sono)
+  local DN = COL.fx and COL.fx.done and ICON.done[COL.fx.done]
+  if PS then pr.spin = PS.build(els, cx, cy, s); pr.spinT = PS end
+  if DN then pr.dn = DN.build(els, cx, cy, s); pr.dnT = DN end
+  for i = 1, (PS and 0 or 10) do
     local a = (i - 1) / 10 * 2 * math.pi - math.pi / 2
     pr.cols[i] = (COL.multi and waveGradientOn()) and gradAt(COL, (i - 1) / 9) or COL.accent
     pr.dots[i] = add({ type = "circle", action = "fill", fillColor = withA(pr.cols[i], 0.2),
       center = { x = cx + math.cos(a) * sc(9), y = cy + math.sin(a) * sc(9) }, radius = sc(1.9) })
   end
-  pr.okC = add({ type = "circle", action = "fill", fillColor = withA(COL.ok, 0), center = { x = cx, y = cy }, radius = sc(12) })
-  ICON.check(els, cx, cy, sc(17), withA(COL.ok, 0), 2.1); pr.okChk = #els
+  if not DN or DN.std then
+    pr.okC = add({ type = "circle", action = "fill", fillColor = withA(COL.ok, 0), center = { x = cx, y = cy }, radius = sc(12) })
+    ICON.check(els, cx, cy, sc(17), withA(COL.ok, 0), 2.1); pr.okChk = #els
+  end
   pr.errC = add({ type = "circle", action = "fill", fillColor = withA(COL.warn, 0), center = { x = cx, y = cy }, radius = sc(12) })
   ICON.close(els, cx, cy, sc(17), withA(COL.warn, 0), 2.1); pr.errX1 = #els - 1; pr.errX2 = #els
   pr.text = txt(els, cleanStatus(text or "…"), P + sc(54), P + sc(16), sc(pw) - sc(54) - sc(22), sc(22), sc(14), COL.fg, { font = "semi" })
+  do local pf = ICON.packFont("bold"); if pf then els[pr.text].textFont = pf end end
   local kx, ky, kr = P + sc(pw) - sc(8), P + sc(8), sc(9.5)
   pushShadow(els, kx - kr, ky - kr, 2 * kr, 2 * kr, s, kr, 0.35, true)
   hitShape(els, hoverMap, "close", kx, ky, kr, { fill = COL.solid, hoverFill = mix(COL.solid, COL.accent, 0.22),
     stroke = COL.border, hoverStroke = COL.accent, sw = 1 })
   ICON.close(els, kx, ky, sc(11), COL.fg2, 1.8)
+  ICON.hudShape = nil
   overlay:replaceElements(els)
   PROC = pr
   RECIDX = nil
@@ -1801,6 +1984,7 @@ setProcessingElements = function(text)
   uiTimer = hs.timer.new(1 / 30, function()
     local ok, err = pcall(function()
       if not PROC or mode ~= "proc" or not overlay or PROC.state ~= "busy" then return end
+      if PROC.spin then PROC.spinT.tick(overlay, PROC.spin, hs.timer.secondsSinceEpoch()); return end
       local head = (hs.timer.secondsSinceEpoch() * 1.15) % 1
       for i, d in ipairs(PROC.dots) do
         local delta = (head - (i - 1) / 10) % 1
@@ -1817,17 +2001,23 @@ setStatus = function(text)
   local pr = PROC
   local kind = "busy"
   if text:find("^✓") then kind = "ok" elseif text:find("^✕") then kind = "err" end
-  overlay:elementAttribute(pr.text, "text", cleanStatus(text))
+  overlay:elementAttribute(pr.text, "text", cleanStatus(kind == "ok" and ICON.doneText(text) or text))
   overlay:elementAttribute(pr.text, "textColor", kind == "err" and COL.warn or COL.fg)
   if kind ~= pr.state then
     pr.state = kind
     if kind ~= "busy" then
       for _, d in ipairs(pr.dots) do overlay:elementAttribute(d, "fillColor", withA(COL.accent, 0)) end
+      if pr.spin and pr.spinT.hide then pr.spinT.hide(overlay, pr.spin) end
+      if kind == "ok" then ICON.stat.n = ICON.stat.n + 1 end
+      if kind == "ok" and pr.dn and pr.dnT.start then pr.dnT.start(overlay, pr.dn) end
       Anim.run("hud", "result", 0.34, "spring", function(e)
         local a = clamp01(e)
         if kind == "ok" then
-          overlay:elementAttribute(pr.okC, "fillColor", withA(COL.ok, 0.20 * a))
-          overlay:elementAttribute(pr.okChk, "strokeColor", withA(COL.ok, a))
+          if pr.dn then pr.dnT.anim(overlay, pr.dn, e) end
+          if pr.okC then
+            overlay:elementAttribute(pr.okC, "fillColor", withA(COL.ok, 0.20 * a))
+            overlay:elementAttribute(pr.okChk, "strokeColor", withA(COL.ok, a))
+          end
         else
           overlay:elementAttribute(pr.errC, "fillColor", withA(COL.warn, 0.20 * a))
           overlay:elementAttribute(pr.errX1, "strokeColor", withA(COL.warn, a))
@@ -1866,9 +2056,9 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
       cv:elementAttribute(I.timer, "frame", I.timerFrames[warn and 2 or 1])
       cv:elementAttribute(I.timer, "textColor", warn and COL.warn or COL.fg)
       if I.badge then cv:elementAttribute(I.badge, "strokeColor", warn and withA(COL.warn, 0.75) or withA(COL.accent, 0.55)) end
-      if warn then if onWarn then onWarn() end else cv:elementAttribute(I.border, "strokeColor", COL.border) end
+      if warn then if onWarn then onWarn() end else cv:elementAttribute(I.border, "strokeColor", I.borderCol or COL.border) end
     end
-    if warn then cv:elementAttribute(I.border, "strokeColor", mix(COL.border, COL.warn, 0.55 + 0.45 * math.sin(finite(t * 7, 0)))) end
+    if warn then cv:elementAttribute(I.border, "strokeColor", mix(I.borderCol or COL.border, COL.warn, 0.55 + 0.45 * math.sin(finite(t * 7, 0)))) end
   end)
 
   -- anelli pulsanti dietro al mic (intensità regolabile; spenti se le animazioni sono off)
@@ -1904,12 +2094,14 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
     if not I.parts then return end
     if t - (I.partT or 0) < (I.preview and 0.1 or 0.06) and not I.partDirty then return end
     I.partT = t
+    ICON.lv = I.lv or 0
     ICON.partsTick(cv, I.parts, t, animOn() and active and not warn)
   end)
 
   -- onda: i livelli arrivano a 10Hz, qui sono lisciati (attacco rapido, rilascio lento)
   local maxDelta = 0
   guarded("wave", function()
+    local lvSum = 0
     local bm = I.barMeta
     local n = #I.bars
     local styleDots, styleLine = (I.wstyle == "dots"), (I.wstyle == "line")
@@ -1927,10 +2119,12 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
       I.disp[i] = cur
       maxDelta = math.max(maxDelta, math.abs(target - cur))
       local lv = clampN(cur, 0, 1)
+      lvSum = lvSum + lv
       if active and not warn then lv = math.max(lv, 0.06 + 0.05 * math.sin(finite(t * 2.4 + i * 0.8, 0))) end   -- respiro a riposo
       -- colore: accento oppure gradiente del tema lungo l'onda
       local c
       if warn then c = COL.warn
+      elseif I.barCol then c = active and I.barCol or mix(I.barCol, COL.solid, 0.5)       -- colore fisso del pack
       elseif I.wgrad then c = active and b.col or mix(b.col, COL.solid, 0.5)
       else c = active and COL.accent or COL.accentDim end
       local fade = 0.5 + 0.5 * i / n
@@ -1979,7 +2173,11 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
         end
       end
     end
+    I.lv = clampN(lvSum / math.max(1, n) * 1.5, 0, 1)
   end)
+  -- indicatore del pack (boost) + easter egg: niente se lo stile non li ha
+  if I.meter then guarded("meter", function() maxDelta = math.max(maxDelta, ICON.meterTick(cv, I, I.lv or 0, active, warn, t, dt)) end) end
+  if I.egg then guarded("egg", function() ICON.eggTick(cv, I, t, dt, active, warn) end) end
   return maxDelta
 end
 
@@ -2013,6 +2211,7 @@ updateUI = function()
   local warn = (micWarned and recording and not paused) and true or false
   if I.settled and not active then return end
   local text = warn and "NO MIC" or fmtTime(currentElapsed())
+  I.el = active and currentElapsed() or 0
   local md = hudVisuals(overlay, I, t, dt, active, warn, text, shakeHUD, I.demo or levels)
   I.settled = (not active) and (md < 0.004)
 end
@@ -2374,6 +2573,7 @@ settingsMouse = function(_c, msg, id)
     return
   elseif msg ~= "mouseUp" then return end
   if not settingsCanvas then return end
+  if id == "pv_badge" then if PREV then ICON.eggClick(settingsCanvas, PREV.I) end return end      -- easter egg: 5 clic sul badge dell'anteprima
 
   if id == "s_close" then closeSettings(); return end
   if id == "key_paste" then SET.K.paste(); return end
@@ -3139,6 +3339,10 @@ local function layoutSettings()
         local I = buildRecCard(els, ox, oy, s, false, false, nil, false)
         I.preview = true
         PREV = { I = I, top = y, bot = y + bh, t0 = now(), bgA = COL.bg.alpha }
+        Anim.cancel("egg", "prev")
+        if I.egg then
+          hitRect(els, sHoverMap, "pv_badge", ox + 14 * s, oy + 11 * s, 34 * s, 34 * s, 4, { fill = withA(COL.fgWhite, 0), hoverFill = withA(COL.fgWhite, 0) })
+        end
       end
       y = y + bh + 12
     end
@@ -3809,6 +4013,7 @@ end
 
 local function finalizeAndTranscribe()
   busy = true; stopUITimer()
+  ICON.lastDur = elapsed
   Anim.cancel("hud"); animBusy = false
   setProcessingElements("🎙️  Ricevuto")
   if overlay then overlay:alpha(1); overlay:show(); pinOverlay() end
