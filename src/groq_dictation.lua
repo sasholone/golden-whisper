@@ -364,7 +364,8 @@ local ROWS = {
       barCol = { dark = "F4F1D6", light = "2A1C0E" } } },
   { "turbo", "Turbo Ball", "pp", "1B1630 0A0716 FF8A1F FFB02E FF7A1A 1E8CFF", "FFF8F0 FFE6D2 E8650A E8650A D84A1A 1F6FE0",
     { icon = "ball", bar = "square", body = "sport", meter = "boost", part = "boost", proc = "wheel", done = "goal", egg = "turbo" } },
-  { "quahog", "Quahog", "pp", "14284A 0A1428 4A9BFF 4A9BFF 4CC35F FF9A2E FFDD3C", "F6FBFF DDEBFA 2A6FD0 2A6FD0 2E9A3F E87A10 C9A200", { icon = "sofa" } },
+  { "quahog", "Quahog", "pp", "14284A 0A1428 4A9BFF 4A9BFF 4CC35F FF9A2E FFDD3C", "F6FBFF DDEBFA 2A6FD0 2A6FD0 2E9A3F E87A10 C9A200",
+    { icon = "sofa", shape = "cartoon", body = "cartoon", part = "comic", proc = "hop", done = "pop", egg = "quahog", font = "rounded" } },
   { "quest", "Quest", "pp", "1B2A18 0B130A E8C14A 7BD35A E8C14A 3FA67A", "FBF7E6 EAE2BC 5E8F2E 4C9A2A B8901A 2F8F6F", { icon = "shield" } },
   { "zap", "Zap", "pp", "2A2208 120D02 FFD21F FFE14D FFC400 FF5A3C", "FFFCEB FFF0B8 D9A800 D9A800 E88A00 D0352A", { icon = "bolt" } },
   { "funghetto", "Funghetto", "pp", "14213F 070E22 FF4A3D FF4A3D FFD23F 3DA0FF", "F4F9FF D6E8FF D8271C D8271C E0A300 1E6FD8", { icon = "shroom", bar = "square" } },
@@ -2394,6 +2395,192 @@ ICON.eggs.turbo = {
 }
 end
 
+------------------------------------------------------------------------
+-- PACK "Quahog" (sitcom): card a fumetto con contorno spesso + ombra piatta sfalsata (niente blur), banda tappezzeria nei colori
+-- del tema, carattere rotondo, bolle fumetto e rombi che salgono, spinner a pallino che salta, spunta "pop" con stella,
+-- easter egg: a volte la scritta di fine e' una battuta generica e il divano fa un salto.
+-- Tutto disegnato da zero con primitive: nessun personaggio, nessuna citazione.
+------------------------------------------------------------------------
+do
+local U = ICON.u
+local function ink() return COL.dark and hex("03060E") or hex("0F1E3C") end
+local function pick(g, i) return COL.grad[math.min(i, #COL.grad)] or COL.accent end
+local DONE_JOKES = { "Fatto, ciccio!", "Ecco servito!", "Tutto a posto, capo!", "Missione compiuta!" }
+local HOP_JOKES = { "Eh, ci sta!", "Salto di gioia!", "Che comodo!" }
+
+function ICON.c.sofa(els, cx, cy, sz, col, T)           -- divano con cuscino e piedini
+  local u = sz / 16
+  rrect(els, cx - 5.6 * u, cy - 5.8 * u, 11.2 * u, 6 * u, 2.3 * u, { stroke = col, sw = 1.5 * u })
+  rrect(els, cx - 7.6 * u, cy - 1.4 * u, 15.2 * u, 5.8 * u, 2.2 * u, { fill = withA(col, 0.38), stroke = col, sw = 1.5 * u })
+  line(els, cx, cy - 1.2 * u, cx, cy + 3.6 * u, col, 1.1 * u)
+  line(els, cx - 5.4 * u, cy + 4.6 * u, cx - 5.4 * u, cy + 7 * u, col, 1.7 * u)
+  line(els, cx + 5.4 * u, cy + 4.6 * u, cx + 5.4 * u, cy + 7 * u, col, 1.7 * u)
+end
+
+ICON.shapes.cartoon = { r = 0.6 }
+ICON.bodies.cartoon = function(els, x, y, w, h, s, r, o, kind)
+  local k = ink()
+  local o2 = U.copy(o); o2.shadow = false; o2.sheenA = 0.4; o2.border = k; o2.bw = 3 * s
+  U.box(els, x + 3.5 * s, y + 4.5 * s, w, h, withA(k, 0.92), r)                   -- ombra piatta sfalsata
+  local border, body = pushGlass(els, x, y, w, h, r, o2)                          -- contorno spesso
+  local n = #COL.grad
+  local bx0, bx1 = x + r * 0.8 + 3 * s, x + w - r * 0.8 - 3 * s
+  local bw = (bx1 - bx0) / n
+  for i = 1, n do U.box(els, bx0 + (i - 1) * bw, y + h - 8.5 * s, bw + 0.4, 3.6 * s, COL.grad[i], 1.2 * s) end     -- banda tappezzeria
+  U.box(els, x + 4.6 * s, y + 4.6 * s, w - 9.2 * s, h - 9.2 * s, nil, math.max(1, r - 4 * s), withA(COL.accent, 0.38), 1 * s)   -- filo interno
+  return border, body, k
+end
+
+-- bolle fumetto e rombi che salgono piano (max 9, solo se registra)
+ICON.parts.comic = {
+  build = function(els, ox, oy, w, h, s, lite)
+    local R = { kind = "comic", idx = {}, ox = ox, oy = oy, w = w, h = h, s = s, c = {} }
+    local n = lite and 4 or 9
+    for i = 1, n do
+      if i <= 4 then
+        els[#els + 1] = { type = "rectangle", action = "strokeAndFill", fillColor = withA(CLEAR, 0), strokeColor = withA(CLEAR, 0), strokeWidth = 1.2 * s,
+          roundedRectRadii = { xRadius = 3 * s, yRadius = 3 * s }, frame = { x = ox, y = oy, w = 10 * s, h = 7 * s } }
+      elseif i <= 7 then
+        els[#els + 1] = { type = "segments", action = "fill", closed = true, fillColor = withA(CLEAR, 0), coordinates = { { x = ox, y = oy }, { x = ox + 1, y = oy }, { x = ox, y = oy + 1 } } }
+      else
+        els[#els + 1] = { type = "circle", action = "fill", fillColor = withA(CLEAR, 0), center = { x = ox, y = oy }, radius = 1.4 * s }
+      end
+      R.idx[i] = #els
+    end
+    return R
+  end,
+  tick = function(cv, R, t, visible)
+    if not visible then
+      if not R.hidden then
+        R.hidden = true; R.c = {}
+        for i, ix in ipairs(R.idx) do
+          cv:elementAttribute(ix, "fillColor", withA(CLEAR, 0))
+          if i <= 4 then cv:elementAttribute(ix, "strokeColor", withA(CLEAR, 0)) end
+        end
+      end
+      return
+    end
+    R.hidden = false
+    local s, w, h, C = R.s, R.w, R.h, R.c
+    for i, ix in ipairs(R.idx) do
+      local seed = (i * 0.6180339887) % 1
+      local u = (t / (5 + 2 * ((i * 0.31) % 1)) + seed) % 1
+      local x = R.ox + 12 * s + ((i * 0.7548776662 + 0.13) % 1) * math.max(1, w - 24 * s) + math.sin(finite((u * 2 + seed) * 2 * math.pi, 0)) * 3 * s
+      local y = R.oy + h - 5 * s - u * (h - 8 * s)
+      local a = math.sin(u * math.pi) * 0.75
+      local L = C[i]
+      if not L or math.abs(x - L.x) > 0.6 or math.abs(y - L.y) > 0.6 or math.abs(a - L.a) > 0.04 then
+        C[i] = { x = x, y = y, a = a }
+        if i <= 4 then
+          cv:elementAttribute(ix, "frame", { x = x - 5 * s, y = y - 3.5 * s, w = 10 * s, h = 7 * s })
+          cv:elementAttribute(ix, "fillColor", withA(hex("FFFFFF"), 0.14 * a)); cv:elementAttribute(ix, "strokeColor", withA(COL.fg, a))
+        elseif i <= 7 then
+          local d = 2.6 * s
+          cv:elementAttribute(ix, "coordinates", { { x = x, y = y - d }, { x = x + d * 0.8, y = y }, { x = x, y = y + d }, { x = x - d * 0.8, y = y } })
+          cv:elementAttribute(ix, "fillColor", withA(pick(nil, i - 3), a))
+        else
+          cv:elementAttribute(ix, "center", { x = x, y = y }); cv:elementAttribute(ix, "fillColor", withA(COL.accent, a))
+        end
+      end
+    end
+  end,
+}
+
+-- spinner: pallino che salta con ombra
+ICON.proc.hop = {
+  build = function(els, cx, cy, s)
+    local st = { cx = cx, cy = cy, s = s }
+    st.gr = #els + 1
+    line(els, cx - 9 * s, cy + 8.5 * s, cx + 9 * s, cy + 8.5 * s, withA(ink(), 0.5), 1.4 * s)
+    st.sh = U.box(els, cx - 6 * s, cy + 7.3 * s, 12 * s, 2.4 * s, withA(hex("000000"), 0.25), 1.2 * s)
+    st.ball = U.disc(els, cx, cy + 3 * s, 5 * s, pick(nil, 3), ink(), 1.5 * s)
+    return st
+  end,
+  tick = function(cv, st, t)
+    local s = st.s
+    local ph = (t * 1.9) % 1
+    local hgt = 4 * ph * (1 - ph)
+    cv:elementAttribute(st.ball, "center", { x = st.cx, y = st.cy + 3 * s - hgt * 11 * s })
+    local sw = 12 * s * (1 - 0.5 * hgt)
+    cv:elementAttribute(st.sh, "frame", { x = st.cx - sw / 2, y = st.cy + 7.3 * s, w = sw, h = 2.4 * s })
+  end,
+  hide = function(cv, st)
+    cv:elementAttribute(st.gr, "strokeColor", withA(CLEAR, 0)); cv:elementAttribute(st.sh, "fillColor", withA(CLEAR, 0))
+    cv:elementAttribute(st.ball, "fillColor", withA(CLEAR, 0)); cv:elementAttribute(st.ball, "strokeColor", withA(CLEAR, 0))
+  end,
+}
+
+-- spunta finale: stella-esplosione gialla con contorno + check scuro, con "pop"
+ICON.done.pop = {
+  build = function(els, cx, cy, s)
+    local st = { cx = cx, cy = cy, s = s }
+    local y0 = pick(nil, 4)
+    st.y0 = y0
+    st.star = U.poly(els, { { x = cx, y = cy }, { x = cx + 1, y = cy }, { x = cx, y = cy + 1 } }, withA(y0, 0), withA(ink(), 0), 1.8 * s)
+    ICON.check(els, cx, cy, 15 * s, withA(ink(), 0), 2.6 * s); st.chk = #els
+    return st
+  end,
+  anim = function(cv, st, e)
+    local a, s = clamp01(e * 1.5), st.s
+    local sc = clampN(e, 0, 1.25)
+    local pts = {}
+    for k = 0, 11 do
+      local an = k / 12 * 2 * math.pi - math.pi / 2
+      local rr = ((k % 2 == 0) and 13 or 8.5) * s * sc
+      pts[#pts + 1] = { x = st.cx + rr * math.cos(an), y = st.cy + rr * math.sin(an) }
+    end
+    cv:elementAttribute(st.star, "coordinates", pts)
+    cv:elementAttribute(st.star, "fillColor", withA(st.y0, a)); cv:elementAttribute(st.star, "strokeColor", withA(ink(), a))
+    cv:elementAttribute(st.chk, "strokeColor", withA(ink(), a))
+  end,
+}
+
+-- easter egg: il divano fa un saltino con tre coriandoli attorno al badge + toast con una battuta generica.
+-- Scatta: 1 registrazione su 20 (dopo 2s), ogni registrazione che supera 45s; 5 clic sul timer in pausa / badge anteprima.
+-- Fine registrazione: nel 30% dei casi "Fatto" diventa una battuta breve.
+ICON.eggs.quahog = {
+  dur = 1.4,
+  build = function(els, E, ox, oy, w, h, s)
+    E.sp = {}
+    for k = 1, 3 do E.sp[k] = U.disc(els, ox, oy, 1.8 * s, withA(CLEAR, 0)) end
+  end,
+  pick = function() return math.floor(ICON.rng() * 2.999) + 1 end,
+  cond = function(I, E)
+    local el = I.el or 0
+    if E.luck == nil then E.luck = (ICON.rng() < 1 / 20) end
+    if E.luck and el >= 2 and not E.f1 then E.f1 = true; return 1 end
+    if el >= 45 and not E.f2 then E.f2 = true; return 2 end
+  end,
+  run = function(cv, I, E, p, var)
+    local s = E.s
+    local dy = -math.abs(math.sin(p * math.pi * 3)) * (1 - p) * 7 * s
+    if not E.dy or math.abs(dy - E.dy) > 0.3 then E.dy = dy; ICON.hopIcon(cv, I, dy) end
+    local tk = math.floor(p * 30)
+    if tk ~= E.tk then
+      E.tk = tk
+      local bx, by = I.bcx or (E.ox + 31 * s), I.bcy or (E.oy + 28 * s)
+      local env = math.min(1, p * 6) * (1 - p)
+      for k, ix in ipairs(E.sp) do
+        local an = math.rad(-90 + (k - 2) * 55)
+        local d = (17 + 12 * p) * s
+        cv:elementAttribute(ix, "center", { x = bx + d * math.cos(an), y = by + d * math.sin(an) })
+        cv:elementAttribute(ix, "fillColor", withA(pick(nil, k + 1), clampN(env * 1.4, 0, 1)))
+      end
+    end
+    ICON.toast(cv, I, HOP_JOKES[var] or HOP_JOKES[1], math.min(1, p * 8) * math.min(1, (1 - p) * 5))
+  end,
+  clear = function(cv, I, E)
+    E.dy, E.tk = nil, nil
+    ICON.hopIcon(cv, I, 0)
+    for _, ix in ipairs(E.sp) do cv:elementAttribute(ix, "fillColor", withA(CLEAR, 0)) end
+  end,
+  doneText = function(text)
+    if ICON.rng() < 0.3 then return "✓  " .. DONE_JOKES[math.floor(ICON.rng() * 3.999) + 1] end
+    return text
+  end,
+}
+end
+
 -- avviso "NO MIC": scossa orizzontale smorzata della card
 local function shakeHUD()
   if not overlay or not finalFrame or dragTap then return end
@@ -2461,6 +2648,7 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   local bcy = oy + sc(vertical and 30 or 28)
   local br = sc(vertical and 16 or 17)
   idx.br = br
+  idx.bcx, idx.bcy = bcx, bcy
   if isPaused then
     circleButton(els, map, "settings", bcx, bcy, br, "ghost", function(e, cx, cy)
       ICON.gear(e, cx, cy, sc(17), COL.accentInk)
