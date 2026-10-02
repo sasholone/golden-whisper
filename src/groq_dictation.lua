@@ -1549,7 +1549,7 @@ placeCanvas = function(w, h)
   local fy = math.max(sf.y, math.min(cy - h / 2, sf.y + sf.h - h))
   finalFrame = { x = math.floor(fx), y = math.floor(fy), w = w, h = h }
   if not overlay then
-    overlay = hs.canvas.new(finalFrame)
+    overlay = ICON.wrap(hs.canvas.new(finalFrame))       -- proxy: base statica + canvas piccola animata (vedi STRATI)
     -- livello screenSaver: sopra qualsiasi finestra, anche fullscreen/presentazioni
     overlay:level(hs.canvas.windowLevels.screenSaver or hs.canvas.windowLevels.overlay)
     -- niente "stationary": lega la finestra al desktop → scorreva col background al cambio Space
@@ -2677,6 +2677,7 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
     end
     idx.icon0 = #els + 1
     ICON.drawFx(els, COL.fx and COL.fx.icon, bcx, bcy, sc(16), COL.accentInk, COL)     -- icona dello stile o microfono
+    idx.icon1 = #els
     idx.iconRef = {}; for k = idx.icon0, #els do idx.iconRef[#idx.iconRef + 1] = els[k] end   -- (per l'icona che salta)
   end
 
@@ -2785,7 +2786,13 @@ setRecordingElements = function(isPaused)
   local pw, ph = recDims(vertical)
   placeCanvas(pw * s + 2 * P, ph * s + 2 * P)
   local idx = buildRecCard(els, P, P, s, vertical, isPaused, hoverMap, true)
+  -- strati: base = tutto cio' che non cambia; canvas A sopra = solo barre/anelli/badge/timer/particelle (ridisegno ~50x piu' economico)
+  local spec = ICON.splitAnim(els, function()
+    local e0 = {}
+    return e0, buildRecCard(e0, P, P, s, vertical, isPaused, {}, true)
+  end, { x = 0, y = 0, w = pw * s + 2 * P, h = ph * s + 2 * P })
   overlay:replaceElements(els)
+  overlay:layerApply(spec)
   RECIDX = idx
   PROC = nil
   mode = "rec"
@@ -2832,6 +2839,7 @@ setProcessingElements = function(text)
     stroke = COL.border, hoverStroke = COL.accent, sw = 1 })
   ICON.close(els, kx, ky, sc(11), COL.fg2, 1.8)
   ICON.hudShape = nil
+  overlay:layerClear()
   overlay:replaceElements(els)
   PROC = pr
   RECIDX = nil
@@ -3036,6 +3044,213 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
   if I.meter then guarded("meter", function() maxDelta = math.max(maxDelta, ICON.meterTick(cv, I, I.lv or 0, active, warn, t, dt)) end) end
   if I.egg then guarded("egg", function() ICON.eggTick(cv, I, t, dt, active, warn) end) end
   return maxDelta
+end
+
+------------------------------------------------------------------------
+-- STRATI: ogni ridisegno di hs.canvas ripassa TUTTA la canvas (costo ~ elementi x area). La card animata (HUD / anteprima)
+-- sta quindi su DUE canvas: la base (statica: ombra, vetro, bordo, bottoni; si ridisegna solo quando cambia davvero) e una
+-- canvas piccola "A" sopra, senza mouse, con SOLO gli elementi che l'animazione scrive (barre, anelli, badge+icona, timer, particelle).
+-- ICON.wrap(base) restituisce un proxy con la stessa API della canvas: finestra (frame/alpha/show/hide/...) propagata ad A,
+-- elementAttribute instradato per indice (con traslazione delle coordinate). Gli indici della base non cambiano mai
+-- (gli elementi passati ad A restano come segnaposto trasparente).
+------------------------------------------------------------------------
+do
+  local function shiftEl(e, dx, dy)
+    local c = {}; for k, v in pairs(e) do c[k] = v end
+    if e.frame then c.frame = { x = e.frame.x - dx, y = e.frame.y - dy, w = e.frame.w, h = e.frame.h } end
+    if e.center then c.center = { x = e.center.x - dx, y = e.center.y - dy } end
+    if e.coordinates then
+      local p = {}; for i, q in ipairs(e.coordinates) do p[i] = { x = q.x - dx, y = q.y - dy } end
+      c.coordinates = p
+    end
+    return c
+  end
+  local function shiftVal(k, v, dx, dy)
+    if type(v) ~= "table" then return v end
+    if k == "frame" then return { x = v.x - dx, y = v.y - dy, w = v.w, h = v.h } end
+    if k == "center" then return { x = v.x - dx, y = v.y - dy } end
+    if k == "coordinates" then
+      local p = {}; for i, q in ipairs(v) do p[i] = { x = q.x - dx, y = q.y - dy } end
+      return p
+    end
+    return v
+  end
+
+  function ICON.wrap(base)
+    local P = {}
+    local curA = nil                 -- canvas A attuale (upvalue: niente campi sul proxy, il suo __index inoltra alla canvas vera)
+    local function eachA(fn) local A = curA; if A and A.cv then pcall(fn, A.cv, A) end end
+    function P:layerClear()
+      local A = curA; curA = nil
+      if A and A.cv then pcall(function() A.cv:delete() end) end
+    end
+    -- spec = { els = {...}, route = { [indiceBase] = indiceA }, box = {x,y,w,h} in coordinate della base }
+    function P:layerApply(spec)
+      if not spec or not spec.els or #spec.els == 0 or not spec.box then P:layerClear(); return end
+      local b = spec.box
+      local f = base:frame()
+      local A = curA
+      if A and A.cv and A.w == b.w and A.h == b.h then
+        A.cv:replaceElements(spec.els)
+      else
+        P:layerClear()
+        local cv = hs.canvas.new({ x = f.x + b.x, y = f.y + b.y, w = b.w, h = b.h })
+        pcall(function() cv:level(base:level()); cv:behavior(base:behavior()) end)
+        cv:replaceElements(spec.els)
+        cv:alpha(base:alpha())
+        A = { cv = cv, w = b.w, h = b.h }
+        curA = A
+        local ok, sh = pcall(function() return base:isShowing() end)
+        if ok and sh then cv:show(); pcall(function() cv:orderAbove(base) end) end
+      end
+      A.dx, A.dy, A.route = b.x, b.y, spec.route
+      A.cv:topLeft({ x = f.x + b.x, y = f.y + b.y })
+    end
+    function P:layerImage()          -- istantanea di A (per il fantasma del cambio pagina): immagine + offset rispetto alla base
+      local A = curA
+      if not A or not A.cv then return nil end
+      local ok, img = pcall(function() return A.cv:imageFromCanvas() end)
+      if ok and img then return img, A.dx, A.dy, A.w, A.h end
+    end
+    function P:layerCount() return (curA and curA.cv) and 1 or 0 end
+    function P:frame(fr)
+      if fr == nil then return base:frame() end
+      base:frame(fr)
+      eachA(function(cv, A) cv:topLeft({ x = fr.x + A.dx, y = fr.y + A.dy }) end)
+      return P
+    end
+    function P:topLeft(p)
+      if p == nil then return base:topLeft() end
+      base:topLeft(p)
+      eachA(function(cv, A) cv:topLeft({ x = p.x + A.dx, y = p.y + A.dy }) end)
+      return P
+    end
+    function P:alpha(a)
+      if a == nil then return base:alpha() end
+      base:alpha(a); eachA(function(cv) cv:alpha(a) end)
+      return P
+    end
+    function P:show()
+      base:show()
+      eachA(function(cv) cv:show(); cv:orderAbove(base) end)
+      return P
+    end
+    function P:hide() base:hide(); eachA(function(cv) cv:hide() end); return P end
+    function P:orderAbove(c2)
+      base:orderAbove(c2)
+      eachA(function(cv) cv:orderAbove(base) end)
+      return P
+    end
+    function P:level(l)
+      if l == nil then return base:level() end
+      base:level(l); eachA(function(cv) cv:level(l) end)
+      return P
+    end
+    function P:behavior(bh)
+      if bh == nil then return base:behavior() end
+      base:behavior(bh); eachA(function(cv) cv:behavior(bh) end)
+      return P
+    end
+    function P:delete() P:layerClear(); base:delete() end
+    function P:elementAttribute(i, k, v)
+      local A = curA
+      local j = A and A.route and A.route[i]
+      if j then
+        A.cv:elementAttribute(j, k, shiftVal(k, v, A.dx, A.dy))
+        return P
+      end
+      base:elementAttribute(i, k, v)
+      return P
+    end
+    setmetatable(P, { __index = function(_, k)
+      local f = base[k]
+      if type(f) == "function" then
+        return function(self, ...) local r = f(base, ...); if r == base then return P end return r end
+      end
+      return f
+    end })
+    return P
+  end
+
+  local function extent(e)             -- ingombro (x0,y0,x1,y1) di un elemento, tratto incluso
+    local sw = (e.strokeWidth or 0) * 0.5 + 1.5
+    if e.frame then local f = e.frame; return f.x - sw, f.y - sw, f.x + f.w + sw, f.y + f.h + sw end
+    if e.center then local c, r = e.center, (e.radius or 0) + sw; return c.x - r, c.y - r, c.x + r, c.y + r end
+    if e.coordinates then
+      local x0, y0, x1, y1 = 1e9, 1e9, -1e9, -1e9
+      for _, p in ipairs(e.coordinates) do x0 = math.min(x0, p.x); y0 = math.min(y0, p.y); x1 = math.max(x1, p.x); y1 = math.max(y1, p.y) end
+      if x0 > x1 then return nil end
+      return x0 - sw, y0 - sw, x1 + sw, y1 + sw
+    end
+  end
+
+  -- Scopre QUALI elementi dell'HUD cambiano durante l'animazione (probe su una copia: nessuno stato reale toccato) e li sposta
+  -- in una canvas A. probe() -> els0, I0 (stessa card ricostruita a parte). Ritorna spec per layerApply, oppure nil (nessuna divisione).
+  -- els: lista reale (i passati ad A diventano segnaposto). bounds = {x,y,w,h} della base (A viene tagliata li').
+  function ICON.splitAnim(els, probe, bounds, off)
+    off = off or 0
+    local ok, spec = pcall(function()
+      local els0, I0 = probe()
+      if not I0 or not I0.bars then return nil end
+      local seen, W = {}, {}
+      local function ext(w, x0, y0, x1, y1)
+        w.x0 = math.min(w.x0 or x0, x0); w.y0 = math.min(w.y0 or y0, y0); w.x1 = math.max(w.x1 or x1, x1); w.y1 = math.max(w.y1 or y1, y1)
+      end
+      local rec = setmetatable({}, { __index = function() return function() end end })
+      rec.elementAttribute = function(_, i, k, v)
+        seen[i] = true
+        local w = W[i]; if not w then w = {}; W[i] = w end
+        if k == "frame" and type(v) == "table" then ext(w, v.x, v.y, v.x + v.w, v.y + v.h)
+        elseif k == "center" and type(v) == "table" then ext(w, v.x, v.y, v.x, v.y)
+        elseif k == "radius" and type(v) == "number" then w.r = math.max(w.r or 0, v)
+        elseif k == "coordinates" and type(v) == "table" then for _, p in ipairs(v) do ext(w, p.x, p.y, p.x, p.y) end end
+      end
+      rec.frame = function() return { x = 0, y = 0, w = 1, h = 1 } end
+      local lv = {}; for i = 1, #I0.bars do lv[i] = 0.2 + 0.7 * ((i * 0.37) % 1) end
+      local t0 = 500
+      for k = 1, 8 do hudVisuals(rec, I0, t0 + k * 0.09, 0.05, true, false, "0:0" .. k, nil, lv) end      -- registra
+      for k = 1, 4 do hudVisuals(rec, I0, t0 + 1 + k * 0.09, 0.05, true, true, "NO MIC", nil, lv) end      -- avviso
+      for k = 1, 4 do hudVisuals(rec, I0, t0 + 2 + k * 0.09, 0.05, false, false, "0:00", nil, lv) end     -- riposo
+      if I0.badge and seen[I0.badge] and I0.icon0 and I0.icon1 then for i = I0.icon0, I0.icon1 do seen[i] = true end end   -- l'icona sta SOPRA il badge
+      local x0, y0, x1, y1, n = 1e9, 1e9, -1e9, -1e9, 0
+      for i in pairs(seen) do
+        local e = els0[i]
+        if e and not (e.trackMouseUp or e.trackMouseDown or e.trackMouseEnterExit or e.trackMouseMove or e.id) and e.type ~= "image" and e.action ~= "clip" then
+          local a, b, c, d = extent(e)
+          if a then
+            local w = W[i]
+            if w and w.x0 then
+              local r = e.center and math.max(e.radius or 0, w.r or 0) + (e.strokeWidth or 0) * 0.5 + 1.5 or 0
+              if e.center then a, b, c, d = math.min(a, w.x0 - r), math.min(b, w.y0 - r), math.max(c, w.x1 + r), math.max(d, w.y1 + r)
+              else a, b, c, d = math.min(a, w.x0 - 2), math.min(b, w.y0 - 2), math.max(c, w.x1 + 2), math.max(d, w.y1 + 2) end
+            elseif w and w.r and e.center then
+              local r = w.r + (e.strokeWidth or 0) * 0.5 + 1.5
+              a, b, c, d = math.min(a, e.center.x - r), math.min(b, e.center.y - r), math.max(c, e.center.x + r), math.max(d, e.center.y + r)
+            end
+            x0 = math.min(x0, a); y0 = math.min(y0, b); x1 = math.max(x1, c); y1 = math.max(y1, d)
+            n = n + 1
+          else seen[i] = nil end
+        else seen[i] = nil end
+      end
+      if n == 0 then return nil end
+      -- ritaglio ai bordi della base, margine intero (pixel pieni)
+      local bx, by, bw, bh = bounds.x, bounds.y, bounds.w, bounds.h
+      x0 = math.max(bx, math.floor(x0 - 2)); y0 = math.max(by, math.floor(y0 - 2))
+      x1 = math.min(bx + bw, math.ceil(x1 + 2)); y1 = math.min(by + bh, math.ceil(y1 + 2))
+      if x1 - x0 < 4 or y1 - y0 < 4 then return nil end
+      local idxs = {}; for i in pairs(seen) do idxs[#idxs + 1] = i end
+      table.sort(idxs)
+      local A, route = {}, {}
+      for _, i in ipairs(idxs) do
+        local e = els[i + off]
+        if e then A[#A + 1] = shiftEl(e, x0, y0); route[i + off] = #A end
+      end
+      for i in pairs(route) do els[i] = { type = "rectangle", action = "fill", fillColor = CLEAR, frame = { x = 0, y = 0, w = 1, h = 1 } } end
+      return { els = A, route = route, box = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 } }
+    end)
+    if not ok then print("[GW] strati: " .. tostring(spec)); return nil end
+    return spec
+  end
 end
 
 -- opacità dell'HUD a riposo: attenuato quando il mouse non è sopra la card (1 = sempre pieno)
@@ -3690,7 +3905,7 @@ local function layoutSettings()
   local els = {}
   sHoverMap = {}
   SET.sliders = {}; SET.keyTip = nil; SET.kAnim = nil; SET.hero = nil
-  PREV = nil
+  PREV = nil; SET.pvSpec = nil
   SET.reg = {}; SET.dy = {}
   local regs = SET.reg
   local nShell = SET.shellN()
@@ -4193,7 +4408,13 @@ local function layoutSettings()
         local pw, ph = recDims(false)
         local s = clampN((IW - 20) / pw, 0.5, 0.92)
         local ox, oy = pad + (IW - pw * s) / 2, y + (bh - ph * s) / 2
+        local off = #els
         local I = buildRecCard(els, ox, oy, s, false, false, nil, false)
+        -- strati: le parti animate dell'anteprima vanno in una canvas piccola sopra (la base resta statica)
+        SET.pvSpec = ICON.splitAnim(els, function()
+          local e0 = {}
+          return e0, buildRecCard(e0, ox, oy, s, false, false, nil, false)
+        end, { x = 0, y = 0, w = SET.W, h = SET.H }, off)
         I.preview = true
         PREV = { I = I, top = y, bot = y + bh, t0 = now(), bgA = COL.bg.alpha }
         Anim.cancel("egg", "prev")
@@ -4465,9 +4686,15 @@ local function makeGhost(cv, hFrom, ct, wFrom)
     gc:level(hs.canvas.windowLevels.overlay)
     gc:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
     gc:appendElements({ type = "image", image = img, imageScaling = "scaleToFit", frame = { x = -(PSP + 1), y = -ct, w = wFrom, h = hFrom } })
+    local aimg, adx, ady, aw, ah = cv:layerImage()           -- la canvas animata (anteprima) e' una finestra a parte: va nel fantasma
+    local ga = nil
+    if aimg then
+      ga = { x = adx - (PSP + 1), y = ady - ct, w = aw, h = ah }
+      gc:appendElements({ type = "image", image = aimg, imageScaling = "scaleToFit", frame = ga })
+    end
     gc:alpha(1)
     gc:show()
-    return { cv = gc, ct = ct, gh = gh, gw = gw, ih = hFrom, iw = wFrom }
+    return { cv = gc, ct = ct, gh = gh, gw = gw, ih = hFrom, iw = wFrom, a = ga }
   end)
   if ok and g then SET.ghost = g; return g end
   return nil
@@ -4487,6 +4714,7 @@ local function fadeGhost(g)
     e = clamp01(e)
     G.cv:alpha(1 - e)
     G.cv:elementAttribute(1, "frame", { x = -(PSP + 1), y = -G.ct - 6 * e, w = G.iw, h = G.ih })
+    if G.a then G.cv:elementAttribute(2, "frame", { x = G.a.x, y = G.a.y - 6 * e, w = G.a.w, h = G.a.h }) end
     syncGhost()
   end, function() if SET.ghost == g then killGhost() end end)
 end
@@ -4526,12 +4754,13 @@ renderSettings = function(opts)
     fy = math.max(sf.y, math.min(fy, sf.y + sf.h - tH))
     SET.frame = { x = fx, y = fy, w = W, h = tH }
     SET.hCur = tH; SET.wCur = W
-    settingsCanvas = hs.canvas.new({ x = fx, y = fy, w = W, h = tH })
+    settingsCanvas = ICON.wrap(hs.canvas.new({ x = fx, y = fy, w = W, h = tH }))
     settingsCanvas:level(hs.canvas.windowLevels.overlay)
     settingsCanvas:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
     settingsCanvas:mouseCallback(settingsMouse)
     settingsCanvas:replaceElements(els)
     settingsCanvas:alpha(0)
+    settingsCanvas:layerApply(settingsPage == "theme" and SET.pvSpec or nil)
     settingsCanvas:show()
     panelIn("setvis", settingsCanvas, fx, fy, W, tH, 18)
     startScrollTap()
@@ -4550,6 +4779,7 @@ renderSettings = function(opts)
     local ghost = nil
     if opts.page and animOn() then ghost = makeGhost(cv, hFrom, oldClipTop or SET.clipTop, wFrom) else killGhost() end
     cv:replaceElements(els)                -- atomico: contenuto nuovo sotto il fantasma del vecchio
+    cv:layerApply(settingsPage == "theme" and SET.pvSpec or nil)
     -- posizione di arrivo: allargamento SIMMETRICO attorno al centro (clamp ai bordi con minima correzione;
     -- se corretto, si ricorda il centro voluto per tornare lì quando la finestra si restringe); alto fermo
     local sf = screenFrameFor(f)
