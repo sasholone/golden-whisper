@@ -4398,7 +4398,7 @@ local function layoutSettings()
     local r = R0
     r.i1 = #els
     add({ type = "resetClip" })
-    r.len = math.max(0, (y - trail) - (r.contentTop - r.scroll)) + 16
+    r.len = math.max(0, (y - trail) - (r.contentTop - r.base)) + 16     -- altezza reale del contenuto (r.base = parte di scroll gia' "cotta" nelle coordinate: 0 nelle colonne raster)
     r.view = r.bot - r.contentTop
     r.max = math.max(0, r.len - r.view)
     if RAST then
