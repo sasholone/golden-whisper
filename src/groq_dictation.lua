@@ -2801,15 +2801,20 @@ end
 ------------------------------------------------------------------------
 -- HUD elaborazione: spinner a scia (poi check/croce con pop) + testo di stato
 ------------------------------------------------------------------------
-setProcessingElements = function(text)
-  local s = config.scale
+-- tick dello spinner (una funzione sola: la usano il timer reale e la scoperta degli elementi animati)
+local function procTick(cv, pr, t)
+  if not pr or pr.state ~= "busy" then return end
+  if pr.spin then pr.spinT.tick(cv, pr.spin, t); return end
+  local head = (t * 1.15) % 1
+  for i, d in ipairs(pr.dots) do
+    local delta = (head - (i - 1) / 10) % 1
+    cv:elementAttribute(d, "fillColor", withA(pr.cols[i] or COL.accent, 0.14 + 0.86 * spow(1 - delta, 2.2)))
+  end
+end
+
+-- costruisce la card di elaborazione in els (pura: nessuno stato globale toccato, richiamabile come probe)
+local function buildProc(els, text, s, P, pw, ph)
   local function sc(v) return v * s end
-  local P = sc(40)
-  hoverMap = {}
-  Anim.cancel("hudhv"); Anim.cancel("egg")
-  local pw, ph = 236, 52
-  placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
-  local els = {}
   local function add(el) els[#els + 1] = el; return #els end
   ICON.hudShape = ICON.shape()
   ICON.cardBody(els, P, P, sc(pw), sc(ph), s, { s = s, id = "drag" }, "proc")
@@ -2839,8 +2844,32 @@ setProcessingElements = function(text)
     stroke = COL.border, hoverStroke = COL.accent, sw = 1 })
   ICON.close(els, kx, ky, sc(11), COL.fg2, 1.8)
   ICON.hudShape = nil
+  return pr
+end
+
+setProcessingElements = function(text)
+  local s = config.scale
+  local function sc(v) return v * s end
+  local P = sc(40)
+  hoverMap = {}
+  Anim.cancel("hudhv"); Anim.cancel("egg")
+  local pw, ph = 236, 52
+  placeCanvas(sc(pw) + 2 * P, sc(ph) + 2 * P)
+  local els = {}
+  local pr = buildProc(els, text, s, P, pw, ph)
+  -- strati: lo spinner (o i puntini) e' una canvas piccola sopra; la card resta statica
+  local spec = ICON.splitAnim(els, function()
+    local e0 = {}
+    local hm = hoverMap; hoverMap = {}
+    local p0 = buildProc(e0, text, s, P, pw, ph)
+    hoverMap = hm
+    return e0, p0
+  end, { x = 0, y = 0, w = sc(pw) + 2 * P, h = sc(ph) + 2 * P }, 0, function(rec, p0)
+    for k = 1, 8 do procTick(rec, p0, 500 + k * 0.07) end
+  end)
   overlay:layerClear()
   overlay:replaceElements(els)
+  overlay:layerApply(spec)
   PROC = pr
   RECIDX = nil
   mode = "proc"
@@ -2849,12 +2878,7 @@ setProcessingElements = function(text)
   uiTimer = hs.timer.new(1 / 30, function()
     local ok, err = pcall(function()
       if not PROC or mode ~= "proc" or not overlay or PROC.state ~= "busy" then return end
-      if PROC.spin then PROC.spinT.tick(overlay, PROC.spin, hs.timer.secondsSinceEpoch()); return end
-      local head = (hs.timer.secondsSinceEpoch() * 1.15) % 1
-      for i, d in ipairs(PROC.dots) do
-        local delta = (head - (i - 1) / 10) % 1
-        overlay:elementAttribute(d, "fillColor", withA(PROC.cols[i] or COL.accent, 0.14 + 0.86 * spow(1 - delta, 2.2)))
-      end
+      procTick(overlay, PROC, hs.timer.secondsSinceEpoch())
     end)
     if not ok then print("[GW] spinner: " .. tostring(err)) end
   end)
@@ -3187,11 +3211,11 @@ do
   -- Scopre QUALI elementi dell'HUD cambiano durante l'animazione (probe su una copia: nessuno stato reale toccato) e li sposta
   -- in una canvas A. probe() -> els0, I0 (stessa card ricostruita a parte). Ritorna spec per layerApply, oppure nil (nessuna divisione).
   -- els: lista reale (i passati ad A diventano segnaposto). bounds = {x,y,w,h} della base (A viene tagliata li').
-  function ICON.splitAnim(els, probe, bounds, off)
+  function ICON.splitAnim(els, probe, bounds, off, drive)
     off = off or 0
     local ok, spec = pcall(function()
       local els0, I0 = probe()
-      if not I0 or not I0.bars then return nil end
+      if not I0 or (not drive and not I0.bars) then return nil end
       local seen, W = {}, {}
       local function ext(w, x0, y0, x1, y1)
         w.x0 = math.min(w.x0 or x0, x0); w.y0 = math.min(w.y0 or y0, y0); w.x1 = math.max(w.x1 or x1, x1); w.y1 = math.max(w.y1 or y1, y1)
@@ -3206,11 +3230,14 @@ do
         elseif k == "coordinates" and type(v) == "table" then for _, p in ipairs(v) do ext(w, p.x, p.y, p.x, p.y) end end
       end
       rec.frame = function() return { x = 0, y = 0, w = 1, h = 1 } end
-      local lv = {}; for i = 1, #I0.bars do lv[i] = 0.2 + 0.7 * ((i * 0.37) % 1) end
-      local t0 = 500
-      for k = 1, 8 do hudVisuals(rec, I0, t0 + k * 0.09, 0.05, true, false, "0:0" .. k, nil, lv) end      -- registra
-      for k = 1, 4 do hudVisuals(rec, I0, t0 + 1 + k * 0.09, 0.05, true, true, "NO MIC", nil, lv) end      -- avviso
-      for k = 1, 4 do hudVisuals(rec, I0, t0 + 2 + k * 0.09, 0.05, false, false, "0:00", nil, lv) end     -- riposo
+      if drive then drive(rec, I0)
+      else
+        local lv = {}; for i = 1, #I0.bars do lv[i] = 0.2 + 0.7 * ((i * 0.37) % 1) end
+        local t0 = 500
+        for k = 1, 8 do hudVisuals(rec, I0, t0 + k * 0.09, 0.05, true, false, "0:0" .. k, nil, lv) end      -- registra
+        for k = 1, 4 do hudVisuals(rec, I0, t0 + 1 + k * 0.09, 0.05, true, true, "NO MIC", nil, lv) end      -- avviso
+        for k = 1, 4 do hudVisuals(rec, I0, t0 + 2 + k * 0.09, 0.05, false, false, "0:00", nil, lv) end     -- riposo
+      end
       if I0.badge and seen[I0.badge] and I0.icon0 and I0.icon1 then for i = I0.icon0, I0.icon1 do seen[i] = true end end   -- l'icona sta SOPRA il badge
       local x0, y0, x1, y1, n = 1e9, 1e9, -1e9, -1e9, 0
       for i in pairs(seen) do
