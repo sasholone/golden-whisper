@@ -51,6 +51,7 @@ local config = {
   glassOpacity = nil,          -- 0.5..1 opacità del vetro (nil/0 = default del tema, ~0.95)
   cornerStyle  = "round",      -- round | medium | square
   animOn       = true,         -- animazioni/transizioni on/off
+  layers       = true,         -- kill-switch: false = HUD e impostazioni su canvas singola (niente strati / scroll a immagine)
   animSpeed    = "normal",     -- calm | normal | lively
   waveStyle    = "bars",       -- bars | thin | dots | line
   waveColor    = nil,          -- accent | gradient (nil/auto = gradiente solo sugli stili multi-colore)
@@ -556,6 +557,7 @@ local function loadSettings()
   if num(s.glassOpacity) then config.glassOpacity = num(s.glassOpacity) end
   if s.cornerStyle and RADIUS_MUL[s.cornerStyle] then config.cornerStyle = s.cornerStyle end
   if s.animOn ~= nil then config.animOn = bool(s.animOn) end
+  if s.layers ~= nil then config.layers = bool(s.layers) end
   if s.animSpeed and SPEED_MUL[s.animSpeed] then config.animSpeed = s.animSpeed end
   if s.waveStyle then config.waveStyle = s.waveStyle end
   if s.waveColor then config.waveColor = s.waveColor end
@@ -844,6 +846,10 @@ end
 -- ICONE (primitive canvas, tratto arrotondato coerente; sz = lato nominale)
 ------------------------------------------------------------------------
 local ICON = {}
+-- log che non lancia mai: con un'istanza `hs -c` morta (client ucciso) print() di Hammerspoon lancia "ipc port is no longer valid"
+-- e, dentro un timer/callback, l'errore si propaga e puo' innescare tempeste di errori. Qui si ingoia.
+function ICON.log(m) pcall(print, m) end
+function ICON.layersOn() return config.layers ~= false end
 local function arcPts(cx, cy, r, a0, a1, n)
   local t = {}
   for i = 0, n do
@@ -2792,7 +2798,7 @@ setRecordingElements = function(isPaused)
     return e0, buildRecCard(e0, P, P, s, vertical, isPaused, {}, true)
   end, { x = 0, y = 0, w = pw * s + 2 * P, h = ph * s + 2 * P })
   overlay:replaceElements(els)
-  overlay:layerApply(spec)
+  ICON.safeLayers(overlay, els, spec)
   RECIDX = idx
   PROC = nil
   mode = "rec"
@@ -2869,7 +2875,7 @@ setProcessingElements = function(text)
   end)
   overlay:layerClear()
   overlay:replaceElements(els)
-  overlay:layerApply(spec)
+  ICON.safeLayers(overlay, els, spec)
   PROC = pr
   RECIDX = nil
   mode = "proc"
@@ -2880,7 +2886,7 @@ setProcessingElements = function(text)
       if not PROC or mode ~= "proc" or not overlay or PROC.state ~= "busy" then return end
       procTick(overlay, PROC, hs.timer.secondsSinceEpoch())
     end)
-    if not ok then print("[GW] spinner: " .. tostring(err)) end
+    if not ok then ICON.log("[GW] spinner: " .. tostring(err)) end
   end)
   uiTimer:start()
 end
@@ -2929,7 +2935,7 @@ do
     local ok, err = pcall(f)
     if not ok then
       local m = tag .. ": " .. tostring(err)
-      if m ~= lastUIErr then lastUIErr = m; print("[GW] " .. m) end
+      if m ~= lastUIErr then lastUIErr = m; ICON.log("[GW] " .. m) end
     end
     return ok
   end
@@ -3101,7 +3107,30 @@ do
   end
 
   -- placeholder invisibile (action "skip": non costa nulla in disegno) che tiene stabili gli indici della base
+  -- uguaglianza profonda (numeri a meno di 1e-6): serve a non rifotografare una colonna il cui contenuto non e' cambiato
+  function ICON.sameVal(a, b, depth)
+    depth = (depth or 0) + 1
+    if depth > 8 then return false end
+    local ta = type(a)
+    if ta ~= type(b) then return false end
+    if ta == "number" then return a == b or math.abs(a - b) < 1e-6 end
+    if ta ~= "table" then return a == b end
+    for k, v in pairs(a) do if not ICON.sameVal(v, b[k], depth) then return false end end
+    for k in pairs(b) do if a[k] == nil then return false end end
+    return true
+  end
   function ICON.skipEl() return { type = "rectangle", action = "skip", frame = { x = 0, y = 0, w = 1, h = 1 } } end
+  -- applica gli strati; se QUALCOSA fallisce torna a canvas singola (ripristina gli elementi spostati) invece di lasciare l'HUD a meta'
+  function ICON.safeLayers(cv, els, spec)
+    if not spec then pcall(function() cv:layerClear() end); return end
+    local ok, err = pcall(function() cv:layerApply(spec) end)
+    if not ok then
+      ICON.log("[GW] strati: " .. tostring(err))
+      pcall(function() cv:layerClear() end)
+      for i, e in pairs(spec.orig or {}) do els[i] = e end
+      pcall(function() cv:replaceElements(els) end)
+    end
+  end
 
   -- proxy multi-strato: layers[key] = { cv, dx, dy, w, h, route }. Un indice della base instradato in uno strato viene scritto li'
   -- (coordinate traslate); gli altri vanno alla base. Finestra (frame/alpha/show/...) propagata a tutti gli strati.
@@ -3109,14 +3138,132 @@ do
   function ICON.wrap(base)
     local P = {}
     local layers = {}               -- upvalue: niente campi sul proxy (il suo __index inoltra alla canvas vera)
-    local function each(fn) for k, L in pairs(layers) do if L.cv then pcall(fn, L.cv, L, k) end end end
+    local function each(fn) for k, L in pairs(layers) do local w = L.win or L.cv; if w then pcall(fn, w, L, k) end end end
+    local function kill(L)
+      L.dead = true
+      if L.cv then pcall(function() L.cv:delete() end) end
+      if L.vc then pcall(function() L.vc:delete() end) end
+    end
     function P:layerClear(key)
       if key == nil then
-        for k, L in pairs(layers) do if L.cv then pcall(function() L.cv:delete() end) end; layers[k] = nil end
+        for k, L in pairs(layers) do kill(L); layers[k] = nil end
       else
         local L = layers[key]; layers[key] = nil
-        if L and L.cv then pcall(function() L.cv:delete() end) end
+        if L then kill(L) end
       end
+    end
+    -- STRATO RASTER (colonne scorrevoli): il contenuto lungo vive in una canvas mai mostrata (L.cv, coordinate di contenuto) che
+    -- viene fotografata (imageFromCanvas, risoluzione nativa) in una canvas viewport (L.vc = la finestra vera) con 3 elementi:
+    -- [1] immagine (scorre cambiando solo il suo frame), [2] superficie mouse trasparente (hit-test fatto in Lua), [3] scrollbar.
+    -- Le scritture instradate (animazioni, slider) vanno su L.cv e segnano "sporco": una nuova istantanea, al massimo ogni 30 ms.
+    local gcPend = false
+    local function gcSoon()               -- le istantanee pesano nel nativo, non nell'heap Lua: il GC non se ne accorge da solo
+      if gcPend then return end
+      gcPend = true
+      hs.timer.doAfter(0.35, function() gcPend = false; pcall(collectgarbage) end)
+    end
+    -- L.tiles = { {y, h}, ... }: l'immagine e' tagliata in strisce (TILE pt): ogni ridisegno della viewport costa quanto le strisce che
+    -- intersecano la finestra, non quanto l'intera immagine (misurato: 1772 pt interi 25-40% CPU a 30 agg/s; strisce da 512 pt ~8%).
+    local TILE = 512
+    local function tileFrames(L)
+      local y0 = math.floor((L.yOff - L.scroll) * 2 + 0.5) / 2              -- passo di mezzo punto: nitido anche su retina
+      local out = {}
+      for i, t in ipairs(L.tiles) do out[i] = { x = 0, y = y0 + t.y, w = L.fw, h = t.h } end
+      return out
+    end
+    local function rasterNow(L)
+      L.dirty = false
+      local ok, img = pcall(function() return L.cv:imageFromCanvas() end)
+      if not (ok and img and L.vc) then return end
+      local tiles, els = {}, { L.surf, L.sbEl or ICON.skipEl() }
+      local y = 0
+      while y < L.fh do
+        local h = math.min(TILE, L.fh - y)
+        local ti = img
+        if h < L.fh then
+          local okc, c = pcall(function() return img:croppedCopy({ x = 0, y = y, w = L.fw, h = h }) end)
+          if okc and c then ti = c else tiles = nil; break end
+        end
+        tiles[#tiles + 1] = { y = y, h = h }
+        els[#els + 1] = { type = "image", image = ti, imageScaling = "scaleToFit", frame = { x = 0, y = y, w = L.fw, h = h } }
+        y = y + h
+      end
+      if not tiles then                                                       -- ritaglio non disponibile: immagine intera
+        tiles = { { y = 0, h = L.fh } }
+        els = { L.surf, L.sbEl or ICON.skipEl(), { type = "image", image = img, imageScaling = "scaleToFit", frame = { x = 0, y = 0, w = L.fw, h = L.fh } } }
+      end
+      L.tiles = tiles
+      L.vc:replaceElements(els)
+      local fr = tileFrames(L)
+      for i = 1, #tiles do L.vc:elementAttribute(2 + i, "frame", fr[i]) end
+      L.rasters = (L.rasters or 0) + 1; gcSoon()
+    end
+    local function markDirty(L)
+      L.dirty = true
+      if L.pend then return end
+      L.pend = true
+      hs.timer.doAfter(0.03, function()
+        L.pend = false
+        if L.dirty and not L.dead then pcall(rasterNow, L) end
+      end)
+    end
+    -- spec = { els (coordinate di contenuto), route, box = viewport {x,y,w,h} in coordinate base, fc = {w,h,dx,dy}, yOff, scroll,
+    --          cb = callback mouse, sbIdx (indice base della scrollbar), sbEl (elemento in coordinate viewport) }
+    function P:layerRaster(spec, key)
+      key = key or "r"
+      local b, fc = spec.box, spec.fc
+      local f = base:frame()
+      local L = layers[key]
+      if L and not L.raster then P:layerClear(key); L = nil end
+      local surf = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = 0 }, frame = { x = 0, y = 0, w = b.w, h = b.h },
+        trackMouseDown = true, trackMouseUp = true, trackMouseEnterExit = true, trackMouseMove = true, id = "rv" }
+      local same = false
+      if L and L.cv and L.vc and L.fw == fc.w and L.fh == fc.h then
+        same = (not L.touched) and L.last ~= nil and ICON.sameVal(L.last, spec.els)
+        if not same then L.cv:replaceElements(spec.els) end
+      else
+        P:layerClear(key)
+        local fcv = hs.canvas.new({ x = -30000, y = 0, w = fc.w, h = fc.h })     -- mai mostrata
+        fcv:replaceElements(spec.els)
+        local vc = hs.canvas.new({ x = f.x + b.x, y = f.y + b.y, w = b.w, h = b.h })
+        pcall(function() vc:level(base:level()); vc:behavior(base:behavior()) end)
+        vc:replaceElements({ surf, spec.sbEl or ICON.skipEl() })
+        vc:alpha(base:alpha())
+        L = { raster = true, cv = fcv, vc = vc, win = vc, fw = fc.w, fh = fc.h, w = b.w, h = b.h, tiles = {} }
+        layers[key] = L
+        local ok, sh = pcall(function() return base:isShowing() end)
+        if ok and sh then vc:show(); pcall(function() vc:orderAbove(base) end) end
+      end
+      L.dx, L.dy, L.wx, L.wy, L.route, L.sbIdx = fc.dx, fc.dy, b.x, b.y, spec.route, spec.sbIdx
+      L.yOff, L.scroll = spec.yOff or 0, spec.scroll or 0
+      L.vc:mouseCallback(spec.cb)
+      L.vc:topLeft({ x = f.x + b.x, y = f.y + b.y })
+      if L.w ~= b.w or L.h ~= b.h then L.w, L.h = b.w, b.h; L.vc:size({ w = b.w, h = b.h }) end
+      surf.frame = { x = 0, y = 0, w = b.w, h = b.h }
+      L.surf, L.sbEl = surf, spec.sbEl
+      L.last, L.touched = spec.els, false
+      if same then              -- contenuto identico: niente nuova istantanea, solo scroll / scrollbar / superficie
+        L.vc:elementAttribute(1, "frame", surf.frame)
+        if spec.sbEl then L.vc:elementAttribute(2, "frame", spec.sbEl.frame); L.vc:elementAttribute(2, "fillColor", spec.sbEl.fillColor) end
+        local fr = tileFrames(L)
+        for i = 1, #L.tiles do L.vc:elementAttribute(2 + i, "frame", fr[i]) end
+      else
+        rasterNow(L)
+      end
+    end
+    function P:layerRasterScroll(key, sc)    -- scorre l'immagine; false se lo strato non e' raster
+      local L = layers[key]
+      if not L or not L.raster or not L.vc then return false end
+      L.scroll = sc
+      local fr = tileFrames(L)
+      for i = 1, #L.tiles do L.vc:elementAttribute(2 + i, "frame", fr[i]) end
+      return true
+    end
+    function P:layerIsRaster(key) local L = layers[key]; return L ~= nil and L.raster == true end
+    function P:layerStats()                  -- diagnostica: { {key, rasters, fw, fh} }
+      local out = {}
+      for k, L in pairs(layers) do if L.raster then out[#out + 1] = { key = k, rasters = L.rasters or 0, fw = L.fw, fh = L.fh } end end
+      return out
     end
     -- spec = { els = {...}, route = { [indiceBase] = indiceStrato }, box = {x,y,w,h} in coordinate della base, cb = mouseCallback | nil }
     function P:layerApply(spec, key)
@@ -3125,6 +3272,7 @@ do
       local b = spec.box
       local f = base:frame()
       local L = layers[key]
+      if L and L.raster then P:layerClear(key); L = nil end
       if L and L.cv and L.w == b.w and L.h == b.h then
         L.cv:replaceElements(spec.els)
       else
@@ -3148,14 +3296,20 @@ do
       w, h = math.max(1, w), math.max(1, h)
       if L.w == w and L.h == h then return end
       L.w, L.h = w, h
-      L.cv:size({ w = w, h = h })
+      if L.raster then
+        L.vc:size({ w = w, h = h }); L.vc:elementAttribute(1, "frame", { x = 0, y = 0, w = w, h = h })
+        if L.surf then L.surf.frame = { x = 0, y = 0, w = w, h = h } end
+      else
+        L.cv:size({ w = w, h = h })
+      end
     end
     function P:layerImages()                -- istantanee degli strati (per il fantasma del cambio pagina): { {img, x, y, w, h}, ... }
       local out = {}
       for k, L in pairs(layers) do
-        if L.cv then
-          local ok, img = pcall(function() return L.cv:imageFromCanvas() end)
-          if ok and img then out[#out + 1] = { img = img, x = L.dx, y = L.dy, w = L.w, h = L.h } end
+        local win = L.win or L.cv
+        if win then
+          local ok, img = pcall(function() return win:imageFromCanvas() end)
+          if ok and img then out[#out + 1] = { img = img, x = L.wx or L.dx, y = L.wy or L.dy, w = L.w, h = L.h } end
         end
       end
       return out
@@ -3164,13 +3318,13 @@ do
     function P:frame(fr)
       if fr == nil then return base:frame() end
       base:frame(fr)
-      each(function(cv, L) cv:topLeft({ x = fr.x + L.dx, y = fr.y + L.dy }) end)
+      each(function(cv, L) cv:topLeft({ x = fr.x + (L.wx or L.dx), y = fr.y + (L.wy or L.dy) }) end)
       return P
     end
     function P:topLeft(p)
       if p == nil then return base:topLeft() end
       base:topLeft(p)
-      each(function(cv, L) cv:topLeft({ x = p.x + L.dx, y = p.y + L.dy }) end)
+      each(function(cv, L) cv:topLeft({ x = p.x + (L.wx or L.dx), y = p.y + (L.wy or L.dy) }) end)
       return P
     end
     function P:alpha(a)
@@ -3205,6 +3359,13 @@ do
         local j = L.route and L.route[i]
         if j then
           L.cv:elementAttribute(j, k, shiftVal(k, v, L.dx, L.dy))
+          if L.raster then L.touched = true; markDirty(L) end
+          return P
+        end
+        if L.raster and L.sbIdx == i then          -- scrollbar: sta nella viewport, non nell'immagine
+          local sv = shiftVal(k, v, L.wx, L.wy)
+          if L.sbEl then L.sbEl[k] = sv end                -- lo stato resta valido anche dopo una nuova istantanea (replaceElements)
+          L.vc:elementAttribute(2, k, sv)
           return P
         end
       end
@@ -3238,6 +3399,7 @@ do
   -- els: lista reale (i passati ad A diventano segnaposto). bounds = {x,y,w,h} della base (A viene tagliata li').
   function ICON.splitAnim(els, probe, bounds, off, drive)
     off = off or 0
+    if not ICON.layersOn() then return nil end
     local ok, spec = pcall(function()
       local els0, I0 = probe()
       if not I0 or (not drive and not I0.bars) then return nil end
@@ -3297,10 +3459,11 @@ do
         local e = els[i + off]
         if e then A[#A + 1] = shiftEl(e, x0, y0); route[i + off] = #A end
       end
-      for i in pairs(route) do els[i] = ICON.skipEl() end
-      return { els = A, route = route, box = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 } }
+      local orig = {}
+      for i in pairs(route) do orig[i] = els[i]; els[i] = ICON.skipEl() end
+      return { els = A, route = route, box = { x = x0, y = y0, w = x1 - x0, h = y1 - y0 }, orig = orig }
     end)
-    if not ok then print("[GW] strati: " .. tostring(spec)); return nil end
+    if not ok then ICON.log("[GW] strati: " .. tostring(spec)); return nil end
     return spec
   end
 end
@@ -3529,8 +3692,10 @@ closeSettings = function()
 end
 
 -- scrollbar sottile: compare mentre si scorre, poi svanisce (una per regione)
-local function pokeScrollbar()
+local function pokeScrollbar(changed)
   local any = false
+  SET.sbReg = SET.sbReg or {}
+  for _, r in ipairs(changed or {}) do SET.sbReg[r.i] = true end        -- si dissolve solo la scrollbar della colonna che scorre
   for _, r in pairs(SET.reg or {}) do if r.sbIdx then any = true end end
   if not any then return end
   Anim.run("setsb", "fade", 1.5, "linear", function(t)
@@ -3538,9 +3703,16 @@ local function pokeScrollbar()
     SET.sbA = clampN(a, 0, 1) * 0.36
     local cv = settingsCanvas; if not cv then return end
     for _, r in pairs(SET.reg or {}) do
-      if r.sbIdx then cv:elementAttribute(r.sbIdx, "fillColor", withA(COL.fg, SET.sbA)) end
+      if r.sbIdx and (not SET.sbReg or SET.sbReg[r.i]) then cv:elementAttribute(r.sbIdx, "fillColor", withA(COL.fg, SET.sbA)) end
     end
-  end, function() SET.sbA = 0 end, true)
+  end, function()
+    SET.sbA = 0
+    local cv = settingsCanvas
+    for _, r in pairs(SET.reg or {}) do
+      if cv and r.sbIdx and SET.sbReg and not SET.sbReg[r.i] then cv:elementAttribute(r.sbIdx, "fillColor", withA(COL.fg, 0)) end
+    end
+    SET.sbReg = nil
+  end, true)
 end
 
 -- animazioni che scrivono posizioni ASSOLUTE dentro le regioni (non compatibili con lo scroll per spostamento)
@@ -3555,8 +3727,10 @@ end
 local function regionShift(cv, r)
   local d = r.scroll - r.base
   SET.dy[r.i] = d
+  r.hot = nil                                          -- il contenuto si e' mosso sotto il mouse: l'hover riparte al prossimo movimento
   local lo, hi = r.top - 60, r.bot + 60
-  for _, rec in ipairs(r.shift) do
+  local rast = cv:layerRasterScroll("r" .. r.i, r.scroll)      -- colonna raster: basta spostare l'immagine (1 attributo)
+  for _, rec in ipairs(rast and {} or r.shift) do
     if rec[4] ~= d then
       local k, kind, g = rec[1], rec[2], rec[3]
       local y1, y2
@@ -3585,20 +3759,21 @@ function SET.applyScroll()
   local cv = settingsCanvas
   if not cv or not SET.reg then return end
   SET.hvHide()
-  local need, changed = false, {}
+  local need, changed, busyOk = false, {}, true
   for _, r in pairs(SET.reg) do
     if r.scroll ~= r.shown then
       changed[#changed + 1] = r
       if math.abs(r.scroll - r.base) > r.margin - 12 then need = true end     -- uscito dalla fascia costruita: ricostruisci
+      if not cv:layerIsRaster("r" .. r.i) then busyOk = false end
     end
   end
   if #changed == 0 then return end
-  if need or tweensBusy() then renderSettings({ scroll = true }); return end
+  if need or (tweensBusy() and not busyOk) then renderSettings({ scroll = true }); return end   -- colonne raster: nessun conflitto con le animazioni
   local anySc = false
   for _, r in ipairs(changed) do regionShift(cv, r); r.shown = r.scroll end
   for _, r in pairs(SET.reg) do if r.scroll > 0.5 then anySc = true end end
   if SET.divIdx then cv:elementAttribute(SET.divIdx, "fillColor", anySc and COL.divider or withA(COL.divider, 0)) end
-  pokeScrollbar()
+  pokeScrollbar(changed)
 end
 
 local function scrollBy(d, i)
@@ -3614,7 +3789,7 @@ local function scrollBy(d, i)
       SET.pending = false
       if settingsCanvas then
         local ok, err = pcall(SET.applyScroll)
-        if not ok then print("[GW] scroll: " .. tostring(err)) end
+        if not ok then ICON.log("[GW] scroll: " .. tostring(err)) end
       end
     end)
   end
@@ -3654,7 +3829,7 @@ local function startSlider(id)
     lastT = tn
     local f = cv:frame()
     local rel = clampN((hs.mouse.absolutePosition().x - f.x - sl.tx) / sl.tw, 0, 1)
-    local sty = sl.ty - (SET.dy[sl.reg or 1] or 0)
+    local sty = sl.ty - (SET.rastOn and 0 or (SET.dy[sl.reg or 1] or 0))   -- raster: coordinate di contenuto (scroll = immagine)
     local v = tonumber(string.format("%.2f", def.lo + rel * (def.hi - def.lo)))
     config[def.key] = v
     cv:elementAttribute(sl.knob, "center", { x = sl.tx + rel * sl.tw, y = sty })
@@ -3973,19 +4148,23 @@ local function layoutSettings()
   for i = 1, nShell do els[i] = placeholder() end     -- slot per ombra + vetro (riempiti a fine layout)
   local function add(el) els[#els + 1] = el; return #els end
   local y = 0
-  local MARGIN = 140                                   -- elementi creati oltre il bordo visibile (scroll senza ridisegno)
+  -- SCROLL A IMMAGINE (SET.RASTER): le regioni scorrevoli costruiscono TUTTO il contenuto a scroll 0 (coordinate di contenuto);
+  -- buildLayers lo rasterizza una volta e lo scroll sposta solo l'immagine. Senza raster: fascia visibile + MARGIN, scroll baked.
+  local RAST = (SET.RASTER ~= false) and ICON.layersOn()
+  SET.rastOn = RAST
+  local MARGIN = RAST and 1e6 or 140                   -- elementi creati oltre il bordo visibile
   local R0                                             -- regione di scroll aperta
 
   -- REGIONI DI SCROLL: ogni regione ha un ritaglio, un proprio scroll (SET.sc[i]) e crea solo gli elementi
   -- visibili + MARGIN. Lo scroll "normale" sposta gli elementi esistenti (elementAttribute), senza ridisegnare.
   local function openRegion(i, cx0, cx1, ctop, cbot, contentTop)
     local sc = SET.sc[i] or 0
-    local r = { i = i, cx0 = cx0, cx1 = cx1, top = ctop, bot = cbot, contentTop = contentTop, scroll = sc, base = sc, shown = sc,
+    local r = { i = i, cx0 = cx0, cx1 = cx1, top = ctop, bot = cbot, contentTop = contentTop, scroll = sc, base = RAST and 0 or sc, shown = sc,
       visLo = ctop - MARGIN, visHi = cbot + MARGIN, margin = MARGIN }
     r.clipIdx = add({ type = "rectangle", action = "clip", frame = { x = cx0, y = ctop, w = cx1 - cx0, h = math.max(1, cbot - ctop) } })
     r.i0 = #els + 1
     regs[i] = r; R0 = r
-    y = contentTop - sc
+    y = contentTop - r.base
   end
   local function closeRegion(trail)
     local r = R0
@@ -3994,6 +4173,10 @@ local function layoutSettings()
     r.len = math.max(0, (y - trail) - (r.contentTop - r.scroll)) + 16
     r.view = r.bot - r.contentTop
     r.max = math.max(0, r.len - r.view)
+    if RAST then
+      r.scroll = clampN(r.scroll, 0, r.max); r.shown = r.scroll; SET.sc[r.i] = r.scroll
+      SET.dy[r.i] = r.scroll - r.base                  -- spostamento a schermo (hover, hit-test)
+    end
     local sh = {}
     for k = r.i0, r.i1 do
       local el = els[k]
@@ -4705,10 +4888,64 @@ end
 -- a cambio pagina / stile / misura). Scroll e aggiornamenti dell'hero toccano solo la canvas piccola; la logica esistente
 -- continua a scrivere sugli stessi indici: il proxy li instrada. Le colonne hanno il mouse (stessa callback), l'hero e'
 -- trasparente al mouse. Elementi spostati = segnaposto "skip" nella base (indici invariati).
+-- Hit-test delle colonne raster: la viewport ha UNA superficie mouse; qui si risolve a mano quale elemento (id) sta sotto il puntatore
+-- usando la mappa dei rettangoli/cerchi interattivi del contenuto (coordinate di contenuto) + lo scroll corrente. Ordine = topmost per ultimo.
+function SET.rasterHits(els, idxs, ox, oy)
+  local hits = {}
+  for _, i in ipairs(idxs) do
+    local e = els[i]
+    if e and e.id and (e.trackMouseDown or e.trackMouseUp or e.trackMouseEnterExit) then
+      local h = { id = e.id, down = e.trackMouseDown, up = e.trackMouseUp, ee = e.trackMouseEnterExit }
+      if e.frame then h.x0, h.y0, h.x1, h.y1 = e.frame.x - ox, e.frame.y - oy, e.frame.x + e.frame.w - ox, e.frame.y + e.frame.h - oy
+      elseif e.center and e.radius then h.c = true; h.cx, h.cy, h.rad = e.center.x - ox, e.center.y - oy, e.radius
+      else h = nil end
+      if h then hits[#hits + 1] = h end
+    end
+  end
+  return hits
+end
+function SET.rasterMouse(hits, r)
+  local function find(flag, x, y)
+    for k = #hits, 1, -1 do
+      local h = hits[k]
+      if h[flag] then
+        if h.c then
+          local dx, dy = x - h.cx, y - h.cy
+          if dx * dx + dy * dy <= h.rad * h.rad then return h.id end
+        elseif x >= h.x0 and x <= h.x1 and y >= h.y0 and y <= h.y1 then return h.id end
+      end
+    end
+    return nil
+  end
+  return function(c, msg, _id, x, y)
+    if msg == "mouseExit" then
+      local o = r.hot; r.hot = nil
+      if o then settingsMouse(c, "mouseExit", o) end
+      return
+    end
+    if type(x) ~= "number" or type(y) ~= "number" or x ~= x or y ~= y then return end
+    local cy = y + r.scroll - (r.contentTop - r.top)            -- punto nel contenuto
+    if msg == "mouseEnter" or msg == "mouseMove" then
+      local n = find("ee", x, cy)
+      if n ~= r.hot then
+        local o = r.hot; r.hot = n
+        if o then settingsMouse(c, "mouseExit", o) end
+        if n then settingsMouse(c, "mouseEnter", n) end
+      end
+    elseif msg == "mouseDown" then
+      settingsMouse(c, "mouseDown", find("down", x, cy) or "s_drag")      -- fondo = maniglia di trascinamento (come lo schermo sotto)
+    elseif msg == "mouseUp" then
+      local n = find("up", x, cy)
+      if n then settingsMouse(c, "mouseUp", n) end
+    end
+  end
+end
+
 function SET.buildLayers(els)
   local specs = {}
   SET.elsO = {}
   for i = 1, #els do SET.elsO[i] = els[i] end              -- riferimenti originali (geometria per l'overlay hover)
+  if not ICON.layersOn() then SET.pvSpec = nil; specs.orig = {}; return specs end   -- kill-switch: tutto nella base
   local clipBot = SET.clipBot or ((SET.H or 300) - PSP - 8)
   local function take(key, box, idxs, cb, dragHit)
     local list, route = {}, {}
@@ -4725,8 +4962,32 @@ function SET.buildLayers(els)
   for i, r in pairs(SET.reg or {}) do
     local idxs = {}
     for k = r.i0, r.i1 do idxs[#idxs + 1] = k end
-    if r.sbIdx then idxs[#idxs + 1] = r.sbIdx end            -- anche la scrollbar (la sua dissolvenza non deve ridisegnare la base)
-    take("r" .. i, { x = r.cx0, y = r.top, w = r.cx1 - r.cx0, h = math.max(1, clipBot - r.top) }, idxs, settingsMouse, true)
+    local box = { x = r.cx0, y = r.top, w = r.cx1 - r.cx0, h = math.max(1, clipBot - r.top) }
+    if SET.RASTER ~= false and r.max > 0 and r.len > 0 then
+      -- colonna raster: contenuto intero (coordinate di contenuto) -> immagine; la viewport ha immagine + superficie mouse + scrollbar
+      local list, route = {}, {}
+      local hits = SET.rasterHits(els, idxs, r.cx0, r.contentTop)
+      for _, k in ipairs(idxs) do
+        local e = els[k]
+        if e then list[#list + 1] = ICON.shiftEl(e, r.cx0, r.contentTop); route[k] = #list end
+      end
+      local sbEl
+      if r.sbIdx and els[r.sbIdx] then sbEl = ICON.shiftEl(els[r.sbIdx], box.x, box.y) end
+      local orig = {}
+      for k in pairs(route) do orig[k] = els[k]; els[k] = ICON.skipEl() end
+      if r.sbIdx and sbEl then orig[r.sbIdx] = els[r.sbIdx]; els[r.sbIdx] = ICON.skipEl() end
+      specs["r" .. i] = { raster = true, els = list, route = route, box = box, cb = SET.rasterMouse(hits, r), sbIdx = sbEl and r.sbIdx or nil, sbEl = sbEl,
+        fc = { w = box.w, h = math.max(1, math.ceil(r.len)), dx = r.cx0, dy = r.contentTop }, yOff = r.contentTop - r.top, scroll = r.scroll,
+        alt = function()          -- ripiego (se la canvas raster non si crea): colonna normale a spostamento di elementi
+          for k, e in pairs(orig) do els[k] = e end
+          local keep = specs
+          take("r" .. i, box, (function() local t = {}; for k = r.i0, r.i1 do t[#t + 1] = k end; if r.sbIdx then t[#t + 1] = r.sbIdx end; return t end)(), settingsMouse, true)
+          return keep["r" .. i]
+        end }
+    else
+      if r.sbIdx then idxs[#idxs + 1] = r.sbIdx end            -- anche la scrollbar (la sua dissolvenza non deve ridisegnare la base)
+      take("r" .. i, box, idxs, settingsMouse, true)
+    end
   end
   local Hh = SET.hero
   if Hh and Hh.box and Hh.i0 and Hh.i1 then
@@ -4735,10 +4996,35 @@ function SET.buildLayers(els)
     take("hero", Hh.box, idxs, nil, false)
   end
   if SET.pvSpec then specs.pv = SET.pvSpec end
+  -- elementi spostati negli strati (per tornare a canvas singola se uno strato non si crea)
+  local orig = {}
+  for i in pairs(SET.reg or {}) do for k = SET.reg[i].i0, SET.reg[i].i1 do orig[k] = SET.elsO[k] end; if SET.reg[i].sbIdx then orig[SET.reg[i].sbIdx] = SET.elsO[SET.reg[i].sbIdx] end end
+  if SET.hero and SET.hero.i0 then for k = SET.hero.i0, SET.hero.i1 do orig[k] = SET.elsO[k] end end
+  if SET.pvSpec and SET.pvSpec.orig then for k, e in pairs(SET.pvSpec.orig) do orig[k] = e end end
+  specs.orig = orig
   return specs
 end
-function SET.applyLayers(cv, specs)
-  for _, key in ipairs({ "r1", "r2", "hero", "pv" }) do cv:layerApply(specs and specs[key] or nil, key) end
+function SET.applyLayers(cv, specs, els)
+  local failed = false
+  for _, key in ipairs({ "r1", "r2", "hero", "pv" }) do
+    local sp = specs and specs[key] or nil
+    local ok, err = pcall(function()
+      if sp and sp.raster then cv:layerRaster(sp, key) else cv:layerApply(sp, key) end
+    end)
+    if not ok then ICON.log("[GW] strati: " .. tostring(err)); failed = true; break end
+  end
+  if failed then
+    -- qualcosa non si e' creato: torna a canvas singola (base completa, scroll a spostamento di elementi), niente a meta'
+    pcall(function() cv:layerClear() end)
+    if els and specs and specs.orig then
+      for k, e in pairs(specs.orig) do els[k] = e end
+      pcall(function() cv:replaceElements(els) end)
+    end
+    SET.rastOn = false
+    for _, r in pairs(SET.reg or {}) do r.base = 0; r.shown = 0 end
+    for i, r in pairs(SET.reg or {}) do SET.dy[i] = r.scroll end
+    SET.applyScroll()
+  end
 end
 
 -- HOVER: un solo rettangolo su una canvas piccola (pool di 2) che si sposta sull'elemento sotto il mouse. Niente attributi sulla base
@@ -4780,6 +5066,7 @@ function SET.hover(id, entering)
   local cv = settingsCanvas
   local h = sHoverMap[id]
   if not cv or not h then return end
+  if not ICON.layersOn() then hoverTo(cv, sHoverMap, "sethv", id, entering); return end      -- kill-switch: hover sulla base come prima degli strati
   local pool = SET.hv.pool
   if not entering then
     for n, p in ipairs(pool) do
@@ -4956,7 +5243,7 @@ renderSettings = function(opts)
     settingsCanvas:mouseCallback(settingsMouse)
     settingsCanvas:replaceElements(els)
     settingsCanvas:alpha(0)
-    SET.applyLayers(settingsCanvas, layerSpecs)
+    SET.applyLayers(settingsCanvas, layerSpecs, els)
     settingsCanvas:show()
     panelIn("setvis", settingsCanvas, fx, fy, W, tH, 18)
     startScrollTap()
@@ -4975,7 +5262,7 @@ renderSettings = function(opts)
     local ghost = nil
     if opts.page and animOn() then ghost = makeGhost(cv, hFrom, oldClipTop or SET.clipTop, wFrom) else killGhost() end
     cv:replaceElements(els)                -- atomico: contenuto nuovo sotto il fantasma del vecchio
-    SET.applyLayers(cv, layerSpecs)
+    SET.applyLayers(cv, layerSpecs, els)
     -- posizione di arrivo: allargamento SIMMETRICO attorno al centro (clamp ai bordi con minima correzione;
     -- se corretto, si ricorda il centro voluto per tornare lì quando la finestra si restringe); alto fermo
     local sf = screenFrameFor(f)
