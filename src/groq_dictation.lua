@@ -161,7 +161,7 @@ local function gradA(T, a)
   return out
 end
 
-local FAMILIES
+local FAMILIES, FAMILY_ORDER
 do   -- (blocco: limite di 200 variabili locali del chunk)
 local function lighten(c, t) return mix(c, { red = 1, green = 1, blue = 1, alpha = c.alpha or 1 }, t) end
 -- d = { top, bot, fg, fg2, acc, hi, lo, on, ink, g }  (esadecimali)
@@ -203,10 +203,66 @@ local function theme(d, isDark)
   T.ok          = isDark and hex("#4ADE80") or hex("#12904A")
   T.shadowK     = isDark and 1.0 or 0.55                      -- le ombre su fondo chiaro sono più leggere
   T.fgWhite     = { red = 1, green = 1, blue = 1, alpha = 1 }
+  T.fx = {}                                          -- icona/barre/particelle (impostato da family)
   return T
 end
 
-local function family(name, dark, light) return { name = name, dark = theme(dark, true), light = theme(light, false) } end
+-- luminanza relativa (WCAG) e colore -> esadecimale
+local function lum(c)
+  local function f(v) v = clampN(v, 0, 1); if v <= 0.03928 then return v / 12.92 end return spow((v + 0.055) / 1.055, 2.4) end
+  return 0.2126 * f(c.red) + 0.7152 * f(c.green) + 0.0722 * f(c.blue)
+end
+local function hx(c)
+  local function b(v) return string.format("%02X", math.floor(clampN(v, 0, 1) * 255 + 0.5)) end
+  return b(c.red) .. b(c.green) .. b(c.blue)
+end
+-- "top bot accento g1 g2 [g3 g4]" -> d completo (testo, hi/lo, inchiostro e "on" derivati dal contrasto)
+local function derive(str, isDark)
+  local cols = {}
+  for h in tostring(str):gmatch("%x%x%x%x%x%x") do cols[#cols + 1] = h end
+  if #cols < 5 then cols = { "202020", "101010", "D6AF5E", "EBCB85", "B48B3B" } end
+  local W, K = hex("FFFFFF"), hex("000000")
+  local T, B, A = hex(cols[1]), hex(cols[2]), hex(cols[3])
+  local g = {}; for i = 4, #cols do g[#g + 1] = cols[i] end
+  -- in light il testo su accento è bianco: se i riempimenti sono troppo chiari li scuriamo un filo (stessa tinta)
+  local ONK = mix(B, K, 0.82)
+  local function minC(c, A_)
+    local m, Lc = 1e9, lum(c)
+    for _, s in ipairs({ A_, table.unpack(g) }) do
+      local L = lum(hex(s))
+      m = math.min(m, (math.max(L, Lc) + 0.05) / (math.min(L, Lc) + 0.05))
+    end
+    return m
+  end
+  local accH = cols[3]
+  if not isDark then
+    for _ = 1, 8 do
+      if minC(W, accH) >= 3.4 or minC(W, accH) < 2.0 then break end
+      accH = hx(mix(hex(accH), K, 0.07))
+      for i2, gh in ipairs(g) do g[i2] = hx(mix(hex(gh), K, 0.07)) end
+    end
+  end
+  A = hex(accH)
+  local fg, fg2, hi, lo, ink
+  if isDark then
+    fg = mix(T, W, 0.93); fg2 = mix(T, W, 0.6); hi = mix(A, W, 0.3); lo = mix(A, K, 0.18)
+    ink = A; for _ = 1, 6 do if lum(ink) < 0.33 then ink = mix(ink, W, 0.15) end end
+  else
+    fg = mix(B, K, 0.9); fg2 = mix(B, K, 0.6); hi = mix(A, W, 0.14); lo = mix(A, K, 0.22)
+    ink = A; for _ = 1, 8 do if lum(ink) > 0.17 then ink = mix(ink, K, 0.14) end end
+  end
+  local on = (minC(W, accH) >= minC(ONK, accH)) and W or ONK
+  return { top = cols[1], bot = cols[2], fg = hx(fg), fg2 = hx(fg2), acc = accH, hi = hx(hi), lo = hx(lo),
+           on = hx(on), ink = hx(ink), g = g }
+end
+
+local function family(name, dark, light, fx)
+  if type(dark) == "string" then dark = derive(dark, true) end
+  if type(light) == "string" then light = derive(light, false) end
+  local F = { name = name, dark = theme(dark, true), light = theme(light, false), fx = fx or {} }
+  F.dark.fx = F.fx; F.light.fx = F.fx          -- icona/forma barre/particelle: per stile, uguali in dark e light
+  return F
+end
 
 -- Famiglie. Dark gold = carattere originale (nero caldo + oro); light gold = champagne + oro caldo.
 FAMILIES = {
@@ -286,9 +342,88 @@ FAMILIES = {
     { top = "#FFFEF2", bot = "#F5F0C8", fg = "#2A2800", fg2 = "#7A7220", acc = "#C9B400", hi = "#DCC81A", lo = "#A89500", on = "#1E1A00", ink = "#7A6E00",
       g = { "#D8C400", "#8CC020", "#E88A10" } }),
 }
-end
-local FAMILY_ORDER = { "gold", "mono", "ocean", "violet", "emerald", "rose",
+
+FAMILY_ORDER = { "gold", "mono", "ocean", "violet", "emerald", "rose",
   "sunset", "aurora", "neon", "candy", "lava", "ice", "forest", "synthwave", "contrast", "lagoon", "citrus" }
+-- categorie degli stili storici
+for c, ids in pairs({ cl = "gold mono violet rose contrast", fk = "sunset candy lava citrus", nt = "ocean emerald aurora ice forest lagoon",
+  ne = "neon synthwave" }) do
+  for id in ids:gmatch("%a+") do FAMILIES[id].cat = c end
+end
+-- Stili data-driven. Riga: { id, nome, categoria, dark, light, fx }
+--   dark/light = "top bot accento g1 g2 [g3 g4]" (esadecimali): fg/fg2/hi/lo/on/ink si derivano (derive)
+--   fx = { icon = id icona custom, bar = round|square|pixel|ghost, part = snow|bats|petals|stars|rain|bubbles|confetti }
+-- Per aggiungere uno stile: una riga qui sotto (+ eventuale icona in ICON.c). Nient'altro.
+local ROWS = {
+  -- Pop-culture (nomi-nod, palette + motivi generici: nessun marchio/personaggio)
+  { "bluerush", "Blue Rush", "pp", "0B1A52 050C2B 3D8BFF 3D8BFF 00C2FF FFC832", "F4F8FF DCE8FF 1458D6 1458D6 0A8ED8 D99A00", { icon = "ring" } },
+  { "blocky", "Blocky", "pp", "23301A 11160C 7CBD3A 8FD14A 5B9A2E 8A5A33", "F3F7E8 DDE8C4 4C8A1F 4C8A1F 3E7A2A 8A5A33", { icon = "pixmic", bar = "pixel" } },
+  { "turbo", "Turbo Ball", "pp", "1B1630 0A0716 FF8A1F FFB02E FF7A1A 1E8CFF", "FFF8F0 FFE6D2 E8650A E8650A D84A1A 1F6FE0", { icon = "ball", bar = "square" } },
+  { "quahog", "Quahog", "pp", "14284A 0A1428 4A9BFF 4A9BFF 4CC35F FF9A2E FFDD3C", "F6FBFF DDEBFA 2A6FD0 2A6FD0 2E9A3F E87A10 C9A200", { icon = "sofa" } },
+  { "quest", "Quest", "pp", "1B2A18 0B130A E8C14A 7BD35A E8C14A 3FA67A", "FBF7E6 EAE2BC 5E8F2E 4C9A2A B8901A 2F8F6F", { icon = "shield" } },
+  { "zap", "Zap", "pp", "2A2208 120D02 FFD21F FFE14D FFC400 FF5A3C", "FFFCEB FFF0B8 D9A800 D9A800 E88A00 D0352A", { icon = "bolt" } },
+  { "funghetto", "Funghetto", "pp", "14213F 070E22 FF4A3D FF4A3D FFD23F 3DA0FF", "F4F9FF D6E8FF D8271C D8271C E0A300 1E6FD8", { icon = "shroom", bar = "square" } },
+  -- Stagioni
+  { "spooky", "Spooky", "st", "1A0F26 08040E FF7A1A FF8A1F FF5A00 9B4DFF", "FFF6EC F1E0F4 D95F00 D95F00 C23B00 7E34C8", { icon = "pumpkin", bar = "ghost", part = "bats" } },
+  { "noel", "Noel", "st", "2A0E14 0F0509 E8B84A D62F3A E8B84A 2E9E5A", "FFFDF8 F8E8E4 C42A36 C42A36 B08A1E 1F7A44", { icon = "tree", part = "snow" } },
+  { "sakura", "Sakura", "st", "2A141F 13070D FFB7C5 FFB7C5 FF8FA8 FFD9E0", "FFF8FA FDE4EB D9456F E0577F C73A66 7DAF4E", { icon = "flower", part = "petals" } },
+  { "autunno", "Autunno", "st", "2A180C 120A04 E8821E F2B134 E8821E B8412A", "FFF8EC F3DFC0 C2640A C98A12 C2640A A3351E", { part = "petals" } },
+  { "estate", "Estate", "st", "0C2A3A 04121C FFD23F FFD23F FF8A5A 1FD1D1", "FFFDF0 D8F3F5 E0A800 E8A800 E86A3A 0A9AA8", { icon = "sun" } },
+  { "primavera", "Primavera", "st", "14261A 07100A 8FE388 8FE388 FFB7D5 FFE27A", "F8FFF6 E0F3D8 3FA040 4AA848 D85A8A C8A020", { icon = "flower", part = "petals" } },
+  { "inverno", "Inverno", "st", "0E1E33 050D18 A8D8FF E8F6FF A8D8FF 6F8CFF", "F8FCFF DCEBF8 2A7AC0 2A8AD0 3F6FE0 6A5FD0", { icon = "snow", part = "snow" } },
+  { "cuori", "Cuori", "st", "2E0F1C 140509 FF5A7E FF8FA8 FF5A7E D9366A", "FFF7F9 FFE0E8 D81F4A E0345E C8173F A8123A", { icon = "heart", part = "petals" } },
+  { "brindisi", "Brindisi", "st", "1A1608 0A0803 F2C94C F2C94C F7E7B0 E58AA8", "FFFCF0 F5EBC8 B8901A C09A20 A8741A C0507A", { part = "confetti" } },
+  -- Retro
+  { "arcade", "Arcade", "rt", "0A0A24 03030F FFE600 FFE600 FF4FA3 2D5BFF 00E5FF", "FFFEF0 F2EEC8 D4A800 C99A00 D81F7E 2038D8 0088A8", { icon = "stick", bar = "pixel" } },
+  { "vapor", "Vapor", "rt", "261046 0F0620 FF71CE FF71CE B967FF 01CDFE", "FFF6FD F0E1FF D9399E D9399E 8A3FE0 0A9AC8", { icon = "sunset" } },
+  { "pirata", "Pirata", "rt", "1E150B 0C0803 D4A23A D4A23A C23A2E 2E9AA6", "FBF4E2 EBDDB6 9A6A10 A87814 A82A20 1F7F8A", { icon = "skull" } },
+  { "noir", "Noir", "rt", "1C1C1C 080808 E8E8E8 F2F2F2 B0B0B0 C8102E", "FAFAF8 E4E2DC 1A1A1A 2A2A2A 5A5A5A C8102E", { icon = "clap" } },
+  { "miami", "Miami", "rt", "0F2630 05111A 2EE6D6 2EE6D6 FF6FB5 FFC857", "F4FFFD D8F6F2 0A9C94 0A9C94 DB3E8A D49000", {} },
+  { "lcd", "LCD", "rt", "1C2A12 0B1206 9BBC0F C5DE5A 9BBC0F 6A8A0F", "EAF2C8 D3E0A0 306230 4A7A20 306230 0F380F", { icon = "pixmic", bar = "pixel" } },
+  { "ambra", "Ambra", "rt", "1E1406 0B0702 FFB000 FFC94D FFB000 E87A00", "FFF8E6 F3E3B8 B87800 C48400 A86400 8A4A00", { bar = "square" } },
+  { "steam", "Steam", "rt", "261A10 100A05 C99A4A E0B866 C99A4A 4F9A8A", "FBF4E4 E8DABB 8A6420 9A7226 7A5418 2F7A6C", { icon = "gear" } },
+  -- Neon
+  { "rain", "Digital Rain", "ne", "03150A 010802 00FF66 B6FFC8 00FF66 00A845", "F2FFF6 D2F2DC 00994A 00A24D 008A3E 00632B", { icon = "pixmic", bar = "square", part = "rain" } },
+  { "cyber", "Cyber", "ne", "14120A 07060A FCEE0A FCEE0A FF2A6D 05D9E8", "FFFEE8 F4F0B8 C9B800 B8A800 D8184F 058FA0", { bar = "square" } },
+  { "tokyo", "Tokyo", "ne", "150F2E 07051A FF3D9A FF3D9A 00E0FF F5FF5E", "FFF8FC F0E4FF D81C7A D81C7A 0A8FB0 B0A800", {} },
+  { "acido", "Acido", "ne", "14240A 070D02 B6FF00 B6FF00 00FFA3 9B30FF", "F8FFE8 E2F2B8 6AA800 6AA800 00A870 7A1FC8", {} },
+  { "uv", "UV", "ne", "150A2E 06021A 9D4DFF 9D4DFF 00E0FF FF4DDB", "FAF6FF E6DAFB 6A2FD8 6A2FD8 0A88C8 C0289A", {} },
+  -- Natura
+  { "deserto", "Deserto", "nt", "2B1A10 120A05 E8A55A F2C26B E8844A C8503C", "FFF8EC F5E0BC B8651E C8801E B8501E 8E3A2C", { icon = "cactus" } },
+  { "abissi", "Abissi", "nt", "04182B 010A14 19E6D2 19E6D2 3A8BFF 9B5CFF", "F2FCFF CFEAF5 0A8FA8 0A9AA8 1F5FD8 6A3FD0", { part = "bubbles" } },
+  { "matcha", "Matcha", "nt", "1C2616 0A0F07 A6D17A C5E3A0 A6D17A 6FA86A", "F8FBEF E1ECC9 5F8F3A 6C9A3E 4F8040 3A7050", {} },
+  { "corallo", "Corallo", "nt", "2B1511 120806 FF7A66 FF9A7A FF6F61 1FC5B5", "FFF7F4 FFE0D8 D9503E E0654E CF4938 0A9A8E", {} },
+  { "lavanda", "Lavanda", "nt", "211B33 0E0A1A B8A6F0 D0C2FF B8A6F0 9CC9B0", "FBF9FF E8E2F8 7A5FCF 8A6FD8 6A4FBF 4F9A78", {} },
+  -- Funky
+  { "cosmo", "Cosmo", "fk", "150C36 06031A 8C6CFF 8C6CFF FF5CA8 3DC8FF", "F8F5FF E2DAFA 5A3FD8 5A3FD8 D02A7E 0F8FC8", { icon = "planet", part = "stars" } },
+  { "gelato", "Gelato", "fk", "2C1A24 140A10 FF9EB5 FF9EB5 B8F2C2 FFF1B8", "FFF9FB FDE6EE D9547A E0658A 3FA66A C89A1E", { icon = "cone" } },
+  { "cioccolato", "Cioccolato", "fk", "2B1810 130A06 F0B8A0 F7D2BC E39A7E 8C5A3A", "FFF7F1 F0DACB A8503A B85F44 8F3E2C 6B3A1E", {} },
+  { "bacche", "Bacche", "fk", "2A0F2E 12051A E040FB FF6FB0 E040FB 7C5CFF", "FFF7FD F5DDF5 B01FC4 C0267E B01FC4 5A3FD8", {} },
+  { "memphis", "Memphis", "fk", "1F1A3A 0E0A20 FFD23F FFD23F FF5FA2 2FD6C8 6C63FF", "FFFDF3 F6EFC9 E0A800 E0A800 E0357E 0AA79B 5A4FE0", {} },
+  -- Classici
+  { "inchiostro", "Inchiostro", "cl", "15171E 090A0E E9DFC4 F2E8CC D8C9A0 8FA3D8", "FBF6E9 EBE1C8 1B2A49 1B2A49 33477A 8A5A2B", {} },
+  { "caffe", "Caffè", "cl", "2A1D15 120B07 D2A06A E8C497 D2A06A A8703C", "FFF9F1 EBD9C3 8A5A2B 9A6630 7A4A22 5C3A1C", {} },
+  { "nebbia", "Nebbia", "cl", "20252B 0D1013 A9BAC9 C4D2DE A9BAC9 7E92A8", "FAFBFC E3E8EC 506A82 5A7590 3F566C 2E4256", {} },
+  { "ardesia", "Ardesia", "cl", "12262B 060F11 4FB8B0 7ADAD0 4FB8B0 3A8F9A", "F5FBFB D9ECEC 1F7F7A 238A84 186B70 124E54", {} },
+  { "bordeaux", "Bordeaux", "cl", "2A0D16 12050A E0607E F08AA0 DC5A78 C73A5A", "FFF8F9 F3DCE1 A81D3C B8284A 8E1633 6B0F28", {} },
+  { "platino", "Platino", "cl", "22242A 0E0F13 D8DCE6 F4F6FA D8DCE6 9AA3B8", "FCFCFE E6E8EE 5A6278 6A7390 4A526A 363E54", {} },
+  { "rame", "Rame", "cl", "2A160F 120805 E0875A F2B48A E0875A B05A38", "FFF8F3 F2DCCB B0582A C0683A 9A4A22 7A361A", {} },
+}
+for _, r in ipairs(ROWS) do
+  FAMILIES[r[1]] = family(r[2], r[4], r[5], r[6]); FAMILIES[r[1]].cat = r[3]
+  FAMILY_ORDER[#FAMILY_ORDER + 1] = r[1]
+end
+-- ordine: raggruppato per categoria (a parità di categoria, l'ordine di definizione)
+FAMILY_ORDER.cats = { { "all", "Tutti" }, { "cl", "Classici" }, { "fk", "Funky" }, { "nt", "Natura" }, { "ne", "Neon" },
+  { "rt", "Retro" }, { "pp", "Pop" }, { "st", "Stagioni" } }
+do
+  local flat = {}
+  for i = 2, #FAMILY_ORDER.cats do
+    for _, id in ipairs(FAMILY_ORDER) do if FAMILIES[id].cat == FAMILY_ORDER.cats[i][1] then flat[#flat + 1] = id end end
+  end
+  for i = 1, #FAMILY_ORDER do FAMILY_ORDER[i] = flat[i] end
+end
+end
 local COL = FAMILIES.gold.dark
 
 local function scaleFor(preset)
@@ -831,6 +966,332 @@ function ICON.reset(els, cx, cy, sz, col)
     { x = tx - dx * 3.2 * u - px * 2.6 * u, y = ty - dy * 3.2 * u - py * 2.6 * u } }, col, 1.5 * u)
 end
 
+-- icone dei MODI (Dark / Light / Auto)
+function ICON.sun(els, cx, cy, sz, col)
+  local u = sz / 16
+  els[#els + 1] = { type = "circle", action = "fill", fillColor = col, center = { x = cx, y = cy }, radius = 3.2 * u }
+  for i = 0, 7 do
+    local a = math.rad(i * 45)
+    line(els, cx + 5.2 * u * math.cos(a), cy + 5.2 * u * math.sin(a), cx + 7.2 * u * math.cos(a), cy + 7.2 * u * math.sin(a), col, 1.5 * u)
+  end
+end
+function ICON.moon(els, cx, cy, sz, col)
+  local u = sz / 16
+  local ox, oy = cx - 0.8 * u, cy + 0.8 * u
+  local pts = arcPts(ox, oy, 6.4 * u, 9, 261, 22)                 -- arco esterno (lato lungo)
+  for _, p in ipairs(arcPts(ox + 3 * u, oy - 3 * u, 5.2 * u, 219.7, 50.3, 16)) do pts[#pts + 1] = p end   -- morso interno
+  els[#els + 1] = { type = "segments", action = "strokeAndFill", fillColor = col, strokeColor = col, strokeWidth = 1 * u,
+    strokeJoinStyle = "round", closed = true, coordinates = pts }
+end
+function ICON.auto(els, cx, cy, sz, col)
+  local u = sz / 16
+  els[#els + 1] = { type = "circle", action = "stroke", strokeColor = col, strokeWidth = 1.5 * u, center = { x = cx, y = cy }, radius = 6.4 * u }
+  els[#els + 1] = { type = "segments", action = "fill", fillColor = col, closed = true, coordinates = arcPts(cx, cy, 6.4 * u, 90, 270, 18) }
+end
+
+------------------------------------------------------------------------
+-- ICONE CUSTOM DEGLI STILI + PARTICELLE
+-- Solo primitive canvas, disegnate da zero (motivi generici, nessun marchio). Firma: (els, cx, cy, sz, col, T)
+-- col = colore principale (inchiostro dell'accento), T = tema (per i colori del gradiente). Ogni stile sceglie
+-- la propria con fx.icon; se manca si usa il microfono standard.
+------------------------------------------------------------------------
+ICON.c = {}
+ICON.parts = {}
+do
+local C = ICON.c
+local function poly(els, pts, fill, stroke, sw)
+  els[#els + 1] = { type = "segments", action = (fill and stroke) and "strokeAndFill" or (fill and "fill" or "stroke"),
+    fillColor = fill, strokeColor = stroke, strokeWidth = sw or 1, strokeJoinStyle = "round", strokeCapStyle = "round",
+    closed = true, coordinates = pts }
+end
+local function disc(els, x, y, r, fill, stroke, sw)
+  els[#els + 1] = { type = "circle", action = (fill and stroke) and "strokeAndFill" or (fill and "fill" or "stroke"),
+    fillColor = fill, strokeColor = stroke, strokeWidth = sw or 1, center = { x = x, y = y }, radius = r }
+end
+local function P(u, cx, cy, list)       -- lista piatta {x1,y1,x2,y2,...} (in unità u) -> punti
+  local t = {}
+  for i = 1, #list, 2 do t[#t + 1] = { x = cx + list[i] * u, y = cy + list[i + 1] * u } end
+  return t
+end
+local function g(T, i) return T.grad[math.min(i, #T.grad)] or T.accent end
+
+function C.ring(els, cx, cy, sz, col, T)          -- anello dorato + scie di velocità
+  local u = sz / 16; local rx = cx + 2.2 * u
+  line(els, cx - 7.6 * u, cy - 3.4 * u, cx - 3.8 * u, cy - 3.4 * u, col, 1.4 * u)
+  line(els, cx - 8 * u, cy, cx - 2.6 * u, cy, col, 1.4 * u)
+  line(els, cx - 7.6 * u, cy + 3.4 * u, cx - 3.8 * u, cy + 3.4 * u, col, 1.4 * u)
+  disc(els, rx, cy, 4.6 * u, nil, g(T, 3), 2.7 * u)
+  seg(els, arcPts(rx, cy, 4.6 * u, 205, 285, 8), withA(T.fgWhite, 0.8), 1 * u)
+end
+function C.pixmic(els, cx, cy, sz, col, T)         -- microfono a pixel (7x8 blocchi)
+  local u = sz / 16; local px = 1.9 * u
+  local rows = { "..###..", "..###..", "..###..", "#.###.#", "#.....#", ".#...#.", "..###..", "...#...", ".#####." }
+  local x0, y0 = cx - 3.5 * px, cy - 4.5 * px
+  for r, row in ipairs(rows) do
+    for c = 1, 7 do
+      if row:sub(c, c) == "#" then
+        els[#els + 1] = { type = "rectangle", action = "fill", fillColor = (r <= 3 and c == 3 and r == 1) and g(T, 2) or col,
+          frame = { x = x0 + (c - 1) * px, y = y0 + (r - 1) * px, w = px + 0.35, h = px + 0.35 } }
+      end
+    end
+  end
+end
+function C.ball(els, cx, cy, sz, col, T)           -- palla con scia di boost
+  local u = sz / 16; local bx, by = cx + 1.6 * u, cy - 1 * u
+  poly(els, P(u, cx, cy, { -3.2, 0.2, -8, 7.6, -0.6, 3.6 }), g(T, 2))
+  poly(els, P(u, cx, cy, { -3.8, 1.2, -6, 5.2, -2.2, 3 }), withA(T.fgWhite, 0.55))
+  disc(els, bx, by, 5.3 * u, nil, col, 1.7 * u)
+  local hexa = {}
+  for i = 0, 5 do local a = math.rad(i * 60 + 30); hexa[#hexa + 1] = { x = bx + 2.1 * u * math.cos(a), y = by + 2.1 * u * math.sin(a) } end
+  poly(els, hexa, col)
+end
+function C.sofa(els, cx, cy, sz, col, T)           -- divano
+  local u = sz / 16
+  rrect(els, cx - 5.6 * u, cy - 5.8 * u, 11.2 * u, 6 * u, 2.3 * u, { stroke = col, sw = 1.5 * u })
+  rrect(els, cx - 7.6 * u, cy - 1.4 * u, 15.2 * u, 5.8 * u, 2.2 * u, { fill = withA(col, 0.38), stroke = col, sw = 1.5 * u })
+  line(els, cx - 5.4 * u, cy + 4.6 * u, cx - 5.4 * u, cy + 7 * u, col, 1.7 * u)
+  line(els, cx + 5.4 * u, cy + 4.6 * u, cx + 5.4 * u, cy + 7 * u, col, 1.7 * u)
+end
+function C.pumpkin(els, cx, cy, sz, col, T)        -- zucca col sorriso
+  local u = sz / 16
+  rrect(els, cx - 7.4 * u, cy - 3.6 * u, 7.4 * u, 10 * u, 3.7 * u, { fill = col, stroke = T.solid, sw = 0.8 * u })
+  rrect(els, cx, cy - 3.6 * u, 7.4 * u, 10 * u, 3.7 * u, { fill = col, stroke = T.solid, sw = 0.8 * u })
+  rrect(els, cx - 3.4 * u, cy - 4.4 * u, 6.8 * u, 11 * u, 3.4 * u, { fill = col, stroke = T.solid, sw = 0.8 * u })
+  rrect(els, cx - 1 * u, cy - 7.6 * u, 2.2 * u, 3.6 * u, 0.9 * u, { fill = g(T, 3) })
+  poly(els, P(u, cx, cy, { -3.6, -0.6, -1.4, -0.6, -2.5, -2.8 }), T.solid)
+  poly(els, P(u, cx, cy, { 1.4, -0.6, 3.6, -0.6, 2.5, -2.8 }), T.solid)
+  poly(els, P(u, cx, cy, { -3.4, 2, -1.8, 3.6, -0.6, 2.4, 0.6, 3.6, 1.8, 2.4, 3.4, 2, 2.6, 4.6, -2.6, 4.6 }), T.solid)
+end
+function C.tree(els, cx, cy, sz, col, T)           -- albero di Natale
+  local u = sz / 16; local gc = g(T, 3)
+  rrect(els, cx - 1.2 * u, cy + 5 * u, 2.4 * u, 2.6 * u, 0.6 * u, { fill = col })
+  poly(els, P(u, cx, cy, { 0, -1.2, -7, 5.2, 7, 5.2 }), gc, gc, 1 * u)
+  poly(els, P(u, cx, cy, { 0, -4.2, -5.5, 2, 5.5, 2 }), gc, gc, 1 * u)
+  poly(els, P(u, cx, cy, { 0, -7, -4, -2, 4, -2 }), gc, gc, 1 * u)
+  disc(els, cx, cy - 7.6 * u, 1.3 * u, g(T, 2))
+  disc(els, cx - 2.6 * u, cy + 3.4 * u, 0.9 * u, g(T, 1)); disc(els, cx + 2.8 * u, cy + 4 * u, 0.9 * u, g(T, 2))
+  disc(els, cx + 0.4 * u, cy - 0.2 * u, 0.8 * u, g(T, 1))
+end
+function C.stick(els, cx, cy, sz, col, T)          -- joystick da sala giochi
+  local u = sz / 16
+  rrect(els, cx - 6.4 * u, cy + 2.6 * u, 12.8 * u, 4.6 * u, 1.6 * u, { fill = col })
+  line(els, cx, cy + 2.6 * u, cx, cy - 2.6 * u, col, 1.9 * u)
+  disc(els, cx, cy - 4.4 * u, 3.5 * u, g(T, 2))
+  disc(els, cx - 1 * u, cy - 5.4 * u, 1 * u, withA(T.fgWhite, 0.6))
+end
+function C.shield(els, cx, cy, sz, col, T)         -- scudo con croce
+  local u = sz / 16
+  poly(els, P(u, cx, cy, { -5.6, -6, 5.6, -6, 5.6, -1, 4.6, 2.8, 2.4, 5.5, 0, 7, -2.4, 5.5, -4.6, 2.8, -5.6, -1 }),
+    withA(col, 0.28), col, 1.5 * u)
+  line(els, cx, cy - 3.4 * u, cx, cy + 3.8 * u, g(T, 2), 1.6 * u)
+  line(els, cx - 3 * u, cy - 0.6 * u, cx + 3 * u, cy - 0.6 * u, g(T, 2), 1.6 * u)
+end
+function C.bolt(els, cx, cy, sz, col, T)           -- fulmine
+  local u = sz / 16
+  poly(els, P(u, cx, cy, { 1.6, -7.6, -4.2, 0.8, -0.4, 0.8, -1.8, 7.6, 4.6, -1.6, 0.6, -1.6 }), col, col, 1 * u)
+end
+function C.shroom(els, cx, cy, sz, col, T)         -- fungo
+  local u = sz / 16
+  rrect(els, cx - 2.6 * u, cy + 0.2 * u, 5.2 * u, 6 * u, 1.8 * u, { fill = g(T, 2) })
+  poly(els, arcPts(cx, cy + 0.8 * u, 7.2 * u, 180, 360, 18), col, col, 1 * u)
+  disc(els, cx - 3 * u, cy - 2.2 * u, 1.5 * u, withA(T.fgWhite, 0.9)); disc(els, cx + 2.9 * u, cy - 3 * u, 1.3 * u, withA(T.fgWhite, 0.9))
+  disc(els, cx + 0.1 * u, cy - 4.4 * u, 1 * u, withA(T.fgWhite, 0.9))
+end
+function C.sunset(els, cx, cy, sz, col, T)         -- sole retro a strisce
+  local u = sz / 16
+  poly(els, arcPts(cx, cy + 0.6 * u, 6.4 * u, 180, 360, 20), col)
+  for i, w in ipairs({ 11, 8.4, 5.6 }) do
+    line(els, cx - w / 2 * u, cy + (1.8 + i * 1.9) * u, cx + w / 2 * u, cy + (1.8 + i * 1.9) * u, g(T, 2), 1.3 * u)
+  end
+end
+function C.flower(els, cx, cy, sz, col, T)         -- fiore a 5 petali
+  local u = sz / 16
+  for i = 0, 4 do
+    local a = math.rad(-90 + i * 72)
+    disc(els, cx + 3.6 * u * math.cos(a), cy + 3.6 * u * math.sin(a), 2.8 * u, withA(col, 0.88))
+  end
+  disc(els, cx, cy, 1.7 * u, g(T, 2))
+end
+function C.cactus(els, cx, cy, sz, col, T)         -- cactus
+  local u = sz / 16
+  rrect(els, cx - 1.8 * u, cy - 6.4 * u, 3.6 * u, 13.2 * u, 1.8 * u, { fill = col })
+  seg(els, P(u, cx, cy, { -1.8, 1.4, -4.8, 1.4, -4.8, -2.4 }), col, 2.6 * u)
+  seg(els, P(u, cx, cy, { 1.8, -0.6, 4.8, -0.6, 4.8, -4.2 }), col, 2.6 * u)
+  line(els, cx - 6.4 * u, cy + 7.4 * u, cx + 6.4 * u, cy + 7.4 * u, g(T, 2), 1.4 * u)
+end
+function C.planet(els, cx, cy, sz, col, T)         -- pianeta con anello
+  local u = sz / 16
+  disc(els, cx, cy, 4.4 * u, col)
+  local ring, ca, sa = {}, math.cos(math.rad(-22)), math.sin(math.rad(-22))
+  for i = 0, 23 do
+    local a = i / 24 * 2 * math.pi
+    local x, y = 8 * u * math.cos(a), 2.5 * u * math.sin(a)
+    ring[#ring + 1] = { x = cx + x * ca - y * sa, y = cy + x * sa + y * ca }
+  end
+  poly(els, ring, nil, g(T, 2), 1.4 * u)
+end
+function C.skull(els, cx, cy, sz, col, T)          -- teschio con ossa incrociate
+  local u = sz / 16
+  line(els, cx - 7 * u, cy + 6.4 * u, cx + 7 * u, cy + 1 * u, g(T, 2), 1.6 * u)
+  line(els, cx - 7 * u, cy + 1 * u, cx + 7 * u, cy + 6.4 * u, g(T, 2), 1.6 * u)
+  disc(els, cx, cy - 1.8 * u, 5.2 * u, col)
+  rrect(els, cx - 2.8 * u, cy + 1.6 * u, 5.6 * u, 4 * u, 1.2 * u, { fill = col })
+  disc(els, cx - 2 * u, cy - 1.6 * u, 1.45 * u, T.solid); disc(els, cx + 2 * u, cy - 1.6 * u, 1.45 * u, T.solid)
+  line(els, cx - 0.9 * u, cy + 3.6 * u, cx - 0.9 * u, cy + 5.4 * u, T.solid, 0.8 * u)
+  line(els, cx + 0.9 * u, cy + 3.6 * u, cx + 0.9 * u, cy + 5.4 * u, T.solid, 0.8 * u)
+end
+function C.heart(els, cx, cy, sz, col, T)          -- cuore
+  local u = sz / 16; local pts = {}
+  for i = 0, 27 do
+    local t = i / 28 * 2 * math.pi
+    pts[#pts + 1] = { x = cx + 0.42 * u * 16 * math.sin(t) ^ 3,
+      y = cy - 0.42 * u * (13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t)) + 0.6 * u }
+  end
+  poly(els, pts, col, col, 1 * u)
+end
+function C.clap(els, cx, cy, sz, col, T)           -- ciak
+  local u = sz / 16
+  rrect(els, cx - 6.6 * u, cy - 1.8 * u, 13.2 * u, 8.6 * u, 1.5 * u, { stroke = col, sw = 1.5 * u })
+  rrect(els, cx - 6.6 * u, cy - 6.2 * u, 13.2 * u, 3.8 * u, 1 * u, { fill = col })
+  for i = 0, 2 do line(els, cx - 4.4 * u + i * 4 * u, cy - 6.1 * u, cx - 2.6 * u + i * 4 * u, cy - 2.5 * u, T.solid, 1.2 * u) end
+end
+function C.snow(els, cx, cy, sz, col, T)           -- fiocco di neve
+  local u = sz / 16
+  for i = 0, 5 do
+    local a = math.rad(i * 60 - 90)
+    local ca, sa = math.cos(a), math.sin(a)
+    line(els, cx, cy, cx + 7.2 * u * ca, cy + 7.2 * u * sa, col, 1.5 * u)
+    local bx, by = cx + 4.4 * u * ca, cy + 4.4 * u * sa
+    for _, d in ipairs({ 55, -55 }) do
+      local b = a + math.rad(d)
+      line(els, bx, by, bx + 2.2 * u * math.cos(b), by + 2.2 * u * math.sin(b), col, 1.3 * u)
+    end
+  end
+end
+function C.cone(els, cx, cy, sz, col, T)           -- cono gelato
+  local u = sz / 16
+  poly(els, P(u, cx, cy, { -3.8, -0.4, 3.8, -0.4, 0, 7.6 }), g(T, 3), g(T, 3), 1 * u)
+  disc(els, cx, cy - 2.6 * u, 4.4 * u, col)
+  disc(els, cx + 0.4 * u, cy - 7 * u, 1.2 * u, g(T, 2))
+end
+function C.sun(els, cx, cy, sz, col, T) ICON.sun(els, cx, cy, sz, col) end
+function C.gear(els, cx, cy, sz, col, T) ICON.gear(els, cx, cy, sz, col) end
+
+-- disegna l'icona custom dello stile (id) o, se manca, il microfono standard
+function ICON.drawFx(els, id, cx, cy, sz, col, T)
+  local f = id and C[id]
+  if f then f(els, cx, cy, sz, col, T) else ICON.mic(els, cx, cy, sz, col) end
+end
+
+------------------------------------------------------------------------
+-- PARTICELLE leggere dentro la pillola (solo se lo stile ha fx.part e le animazioni sono attive).
+-- Nessuno stato per particella: posizione = funzione del tempo → nessun accumulo, nessun NaN.
+-- shape: c = punto, r = coriandolo/petalo, l = riga (pioggia), o = bolla (anello), b = pipistrello, s = stella
+------------------------------------------------------------------------
+local PT = ICON.parts
+PT.snow    = { n = 12, shape = "c", cycle = 7.5, sway = 2, drift = 4, size = 1.5, a = 0.85, dir = 1 }
+PT.petals  = { n = 9,  shape = "r", cycle = 6.5, sway = 1.5, drift = 7, size = 2.4, a = 0.8, dir = 1 }
+PT.confetti = { n = 12, shape = "r", cycle = 4.2, sway = 3, drift = 3, size = 1.9, a = 0.85, dir = 1 }
+PT.rain    = { n = 10, shape = "l", cycle = 1.9, sway = 0, drift = 0, size = 6, a = 0.75, dir = 1 }
+PT.bubbles = { n = 8,  shape = "o", cycle = 5.5, sway = 2, drift = 3, size = 2.2, a = 0.7, dir = -1 }
+PT.stars   = { n = 10, shape = "s", cycle = 1, sway = 0, drift = 0, size = 1.3, a = 0.9, dir = 0 }
+PT.bats    = { n = 3,  shape = "b", cycle = 5.2, sway = 2, drift = 0, size = 3.4, a = 0.8, dir = 0 }
+
+local function ptCol(kind, i, n)
+  if kind == "snow" or kind == "stars" then return COL.dark and COL.fg or COL.accentInk end
+  if kind == "bats" then return COL.dark and COL.accent2 or COL.accentInk end
+  if kind == "rain" or kind == "bubbles" then return COL.accent end
+  return gradAt(COL, (i - 1) / math.max(1, n - 1))
+end
+-- elementi (nell'ordine) da aggiungere a els; ritorna { kind, idx = {...}, ox, oy, w, h, s }
+function ICON.partsBuild(els, ox, oy, w, h, s)
+  local kind = COL.fx and COL.fx.part
+  local spec = kind and PT[kind]
+  if not spec then return nil end
+  local R = { kind = kind, idx = {}, ox = ox, oy = oy, w = w, h = h, s = s }
+  for i = 1, spec.n do
+    local col = withA(ptCol(kind, i, spec.n), 0)
+    local el
+    if spec.shape == "c" or spec.shape == "s" then
+      el = { type = "circle", action = "fill", fillColor = col, center = { x = ox + w / 2, y = oy + h / 2 }, radius = spec.size * s }
+    elseif spec.shape == "r" then
+      el = { type = "rectangle", action = "fill", fillColor = col, roundedRectRadii = { xRadius = spec.size * s * 0.6, yRadius = spec.size * s * 0.6 },
+        frame = { x = ox + w / 2, y = oy + h / 2, w = spec.size * 2 * s, h = spec.size * 1.3 * s } }
+    elseif spec.shape == "o" then
+      el = { type = "circle", action = "stroke", strokeColor = col, strokeWidth = 1 * s, center = { x = ox + w / 2, y = oy + h / 2 }, radius = spec.size * s }
+    else
+      el = { type = "segments", action = "stroke", strokeColor = col, strokeWidth = (spec.shape == "l" and 1.1 or 1.3) * s,
+        strokeCapStyle = "round", strokeJoinStyle = "round", coordinates = { { x = ox + w / 2, y = oy + h / 2 }, { x = ox + w / 2 + 1, y = oy + h / 2 + 1 } } }
+    end
+    els[#els + 1] = el
+    R.idx[i] = #els
+  end
+  return R
+end
+-- aggiorna le particelle al tempo t (visible = false: le nasconde una volta sola)
+function ICON.partsTick(cv, R, t, visible)
+  if not R then return end
+  local spec = PT[R.kind]
+  if not spec then return end
+  if not visible then
+    if not R.hidden then
+      R.hidden = true
+      for _, ix in ipairs(R.idx) do
+        cv:elementAttribute(ix, spec.shape == "o" and "strokeColor" or "fillColor", withA(CLEAR, 0))
+        if spec.shape == "l" or spec.shape == "b" then cv:elementAttribute(ix, "strokeColor", withA(CLEAR, 0)) end
+      end
+    end
+    return
+  end
+  R.hidden = false
+  local s, w, h = R.s, R.w, R.h
+  local pad = 9 * s
+  local n = spec.n
+  for i, ix in ipairs(R.idx) do
+    local seed = (i * 0.6180339887) % 1
+    local x0 = pad + ((i * 0.7548776662 + 0.13) % 1) * math.max(1, w - 2 * pad)
+    local life = spec.cycle * (0.8 + 0.4 * ((i * 0.31) % 1))
+    local u = ((t / life) + seed) % 1
+    local col = ptCol(R.kind, i, n)
+    local a = spec.a
+    local x, y
+    if spec.shape == "s" then                                   -- stelle ferme che brillano
+      x = x0; y = 6 * s + ((i * 0.4142 + 0.2) % 1) * math.max(1, h - 12 * s)
+      a = a * (0.15 + 0.85 * spow(math.sin(finite(t * 1.3 + seed * 9, 0)) * 0.5 + 0.5, 2))
+    elseif spec.shape == "b" then                               -- pipistrelli che attraversano la pillola
+      x = 4 * s + u * (w - 8 * s)
+      y = h * (0.25 + 0.5 * seed) + math.sin(finite(u * 12 + seed * 6, 0)) * h * 0.14
+      a = a * math.sin(u * math.pi)
+    else
+      local span = math.max(1, h - 8 * s)
+      y = (spec.dir >= 0) and (4 * s + u * span) or (h - 4 * s - u * span)
+      x = x0 + math.sin(finite((u * spec.sway + seed) * 2 * math.pi, 0)) * spec.drift * s
+      a = a * math.sin(u * math.pi)
+    end
+    a = clampN(a, 0, 1)
+    x, y = finite(R.ox + x, R.ox), finite(R.oy + y, R.oy)
+    local cc = withA(col, a)
+    if spec.shape == "c" or spec.shape == "s" then
+      cv:elementAttribute(ix, "center", { x = x, y = y }); cv:elementAttribute(ix, "fillColor", cc)
+    elseif spec.shape == "r" then
+      local wob = 0.75 + 0.25 * math.sin(finite(t * 3 + i, 0))
+      cv:elementAttribute(ix, "frame", { x = x, y = y, w = spec.size * 2 * s * wob, h = spec.size * 1.3 * s })
+      cv:elementAttribute(ix, "fillColor", cc)
+    elseif spec.shape == "o" then
+      cv:elementAttribute(ix, "center", { x = x, y = y }); cv:elementAttribute(ix, "strokeColor", cc)
+    elseif spec.shape == "l" then
+      cv:elementAttribute(ix, "coordinates", { { x = x, y = y }, { x = x, y = y + spec.size * s } }); cv:elementAttribute(ix, "strokeColor", cc)
+    else                                                         -- pipistrello: due ali che sbattono
+      local fl = math.sin(finite(t * 11 + seed * 5, 0)) * 0.8
+      local k = spec.size * s
+      cv:elementAttribute(ix, "coordinates", { { x = x - 2 * k, y = y + fl * k * 0.9 }, { x = x - 0.9 * k, y = y - 0.5 * k + fl * k * 0.2 },
+        { x = x, y = y + 0.5 * k }, { x = x + 0.9 * k, y = y - 0.5 * k + fl * k * 0.2 }, { x = x + 2 * k, y = y + fl * k * 0.9 } })
+      cv:elementAttribute(ix, "strokeColor", cc)
+    end
+  end
+end
+end
+
 ------------------------------------------------------------------------
 -- VETRO: ombre multi-strato + corpo traslucido + riflesso + bordo luminoso
 -- (hs.canvas non ha blur dello sfondo: la profondità è simulata)
@@ -1161,6 +1622,7 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   local pw, ph = recDims(vertical)
   idx.pw, idx.ph = pw, ph
   idx.border, idx.body = pushGlass(els, ox, oy, sc(pw), sc(ph), R(28 * s), { s = s, id = map and "drag" or nil })
+  idx.parts = ICON.partsBuild(els, ox, oy, sc(pw), sc(ph), s)       -- particelle dello stile (se ne ha)
 
   -- badge mic (registrazione) oppure ingranaggio (in pausa: impostazioni/scelta mic)
   local bcx = ox + sc(vertical and 28 or 31)
@@ -1185,7 +1647,7 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
       strokeColor = withA(COL.accent, 0.55), strokeWidth = sc(1), center = { x = bcx, y = bcy }, radius = br,
       fillGradient = "linear", fillGradientAngle = COL.multi and 45 or 90,
       fillGradientColors = gradFade(COL, 0.34, 0.14) })
-    ICON.mic(els, bcx, bcy, sc(16), COL.accentInk)
+    ICON.drawFx(els, COL.fx and COL.fx.icon, bcx, bcy, sc(16), COL.accentInk, COL)     -- icona dello stile o microfono
   end
 
   -- timer
@@ -1204,6 +1666,9 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   local pitch = vertical and D.vp or D.pitch
   idx.wstyle, idx.wgrad = wstyle, waveGradientOn()
   local thick = (wstyle == "thin") and 1.7 or 3.2
+  local shape = COL.fx and COL.fx.bar or "round"            -- round | square | pixel | ghost
+  if shape == "pixel" or shape == "square" then thick = (wstyle == "thin") and 2.2 or 3.6 end
+  local brad = (shape == "pixel") and 0 or (shape == "square" and 0.7 or thick / 2)
   local dotMax = pitch * 0.52
   for i = 1, n do
     local px, py
@@ -1217,7 +1682,7 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
       if vertical then fr = { x = px - sc(2.5), y = py - sc(thick / 2), w = sc(5), h = sc(thick) }
       else fr = { x = px - sc(thick / 2), y = py - sc(2), w = sc(thick), h = sc(4) } end
       b.idx = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, 0.5),
-        roundedRectRadii = { xRadius = sc(thick / 2), yRadius = sc(thick / 2) }, frame = fr })
+        roundedRectRadii = { xRadius = sc(brad), yRadius = sc(brad) }, frame = fr })
     end
     idx.bars[i] = b
   end
@@ -1229,7 +1694,8 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
         strokeCapStyle = "round", strokeJoinStyle = "round", coordinates = { { x = a.px, y = a.py }, { x = b.px, y = b.py } } })
     end
   end
-  idx.barMeta = { horizontal = not vertical, s = s, thick = thick, maxLen = vertical and 30 or 28, dotMax = dotMax }
+  idx.barMeta = { horizontal = not vertical, s = s, thick = thick, maxLen = vertical and 30 or 28, dotMax = dotMax,
+    q = (shape == "pixel") and thick or nil, ghost = (shape == "ghost") }
 
   -- pausa (primario) + stop (vetro)
   local pcx, pcy, scx, scy, brad
@@ -1413,6 +1879,14 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
     cv:elementAttribute(I.badge, "radius", finite(I.br * (1 + (active and 0.035 * pk * math.sin(t * 2 * math.pi * 0.85) or 0)), I.br))
   end)
 
+  -- particelle dello stile (neve, pipistrelli, ...): ~22 aggiornamenti/s, ferme se le animazioni sono spente o a riposo
+  guarded("particles", function()
+    if not I.parts then return end
+    if t - (I.partT or 0) < 0.045 and not I.partDirty then return end
+    I.partT = t
+    ICON.partsTick(cv, I.parts, t, animOn() and active and not warn)
+  end)
+
   -- onda: i livelli arrivano a 10Hz, qui sono lisciati (attacco rapido, rilascio lento)
   local maxDelta = 0
   guarded("wave", function()
@@ -1438,6 +1912,7 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
       else c = active and COL.accent or COL.accentDim end
       local fade = 0.5 + 0.5 * i / n
       local a = active and ((0.42 + 0.58 * math.min(1, lv * 1.4)) * fade) or 0.8
+      if bm.ghost then a = a * clampN(0.62 + 0.38 * math.sin(finite(t * 1.9 + i * 0.9, 0)), 0, 1) end     -- barre "spettrali": sfarfallio
       local col = withA(c, a)
       if styleLine then
         local off = ((i % 2 == 0) and 1 or -1) * lv * bm.maxLen * 0.5 * bm.s
@@ -1450,9 +1925,11 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
       else
         if bm.horizontal then
           local h = (4 + lv * bm.maxLen) * bm.s
+          if bm.q then h = math.max(bm.q, math.floor(h / (bm.q * bm.s) + 0.5) * bm.q * bm.s) end          -- a blocchi
           cv:elementAttribute(b.idx, "frame", { x = b.px - bm.thick * bm.s / 2, y = b.py - h / 2, w = bm.thick * bm.s, h = finite(h, 4) })
         else
           local w = (5 + lv * bm.maxLen) * bm.s
+          if bm.q then w = math.max(bm.q, math.floor(w / (bm.q * bm.s) + 0.5) * bm.q * bm.s) end
           cv:elementAttribute(b.idx, "frame", { x = b.px - w / 2, y = b.py - bm.thick * bm.s / 2, w = finite(w, 5), h = bm.thick * bm.s })
         end
         cv:elementAttribute(b.idx, "fillColor", col)
@@ -1794,6 +2271,7 @@ settingsMouse = function(_c, msg, id)
     if d then config.audioDevice = d.idx; config.micName = d.name; persist("micDevice", d.idx); persist("micName", d.name) end
   elseif kind == "size" then config.sizePreset = val; config.scale = scaleFor(val); persist("sizePreset", val); rebuildHUD()
   elseif kind == "orient" then config.orientation = val; persist("orientation", val); resetLevels(); rebuildHUD()
+  elseif kind == "cat" then SET.cat = val
   elseif kind == "style" then setLook("style", val); applyTheme(); rebuildHUD()
   elseif kind == "theme" then setLook("themeMode", val); applyTheme(); rebuildHUD()
   elseif kind == "corner" then setLook("cornerStyle", val); rebuildHUD()
@@ -2030,24 +2508,55 @@ local function layoutSettings(scroll)
     end
     y = y + bh + GAP
 
-    -- STILE: griglia di campioni a gradiente (nel modo corrente)
+    -- STILE: chip di categoria (a capo se serve) + griglia di campioni a gradiente (nel modo corrente)
     sec("STILE")
     local mode = resolveMode()
+    local cats = FAMILY_ORDER.cats
+    local curCat = SET.cat or "all"
+    do
+      local found = false
+      for _, c in ipairs(cats) do if c[1] == curCat then found = true end end
+      if not found then curCat = "all"; SET.cat = "all" end
+    end
+    do
+      local cx, cy = pad, y
+      for _, c in ipairs(cats) do
+        local w = math.max(36, (utf8.len(c[2]) or #c[2]) * 6.2 + 20)
+        if cx + w > pad + IW + 0.5 then cx = pad; cy = cy + 28 end
+        local on = (c[1] == curCat)
+        if on then
+          add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(11), yRadius = R(11) },
+            frame = { x = cx, y = cy, w = w, h = 22 }, fillGradient = "linear", fillGradientAngle = 0, fillGradientColors = COL.grad })
+        end
+        local ho = { fill = on and withA(COL.fgWhite, 0) or COL.rowBg, hoverFill = on and withA(COL.fgWhite, 0.16) or COL.accentSoft }
+        if not on then ho.stroke = COL.divider; ho.hoverStroke = COL.borderSoft end
+        hitRect(els, sHoverMap, "cat:" .. c[1], cx, cy, w, 22, R(11), ho)
+        txt(els, c[2], cx, cy + 4, w, 15, 10.5, on and COL.accentText or COL.fg2, { font = "semi", align = "center", lb = "clip" })
+        cx = cx + w + 6
+      end
+      y = cy + 22 + 14
+    end
+    local list = {}
+    for _, key in ipairs(FAMILY_ORDER) do
+      if curCat == "all" or FAMILIES[key].cat == curCat then list[#list + 1] = key end
+    end
     local ncol = 5
-    local cw, rowH = IW / ncol, 62
-    for i, key in ipairs(FAMILY_ORDER) do
+    local cw, rowH = IW / ncol, 60
+    for i, key in ipairs(list) do
       local F = FAMILIES[key]; local T = F[mode]
       local c, r = (i - 1) % ncol, math.floor((i - 1) / ncol)
       local cx, cy = pad + (c + 0.5) * cw, y + r * rowH + 19
       local cur = (config.style == key)
       add({ type = "circle", action = "fill", fillColor = T.accent, center = { x = cx, y = cy }, radius = 13.5,
         fillGradient = "linear", fillGradientAngle = 45, fillGradientColors = T.grad })
+      if cur then add({ type = "circle", action = "stroke", strokeColor = withA(T.accent, 0.3), strokeWidth = 1, center = { x = cx, y = cy }, radius = 20.5 }) end
+      if not cur and F.fx and F.fx.icon then ICON.drawFx(els, F.fx.icon, cx, cy, 15, T.accentText, T) end
       hitCircle(els, sHoverMap, "style:" .. key, cx, cy, 17.5, { fill = CLEAR,
         stroke = cur and T.accent or withA(T.accent, 0), hoverStroke = cur and T.accent or withA(T.accent, 0.6), sw = 2 })
       if cur then ICON.check(els, cx, cy, 14, T.accentText, 2.4) end
-      txt(els, F.name, cx - cw / 2, y + r * rowH + 40, cw, 13, 10, cur and COL.fg or COL.fg3, { font = cur and "semi" or "reg", align = "center", lb = "clip" })
+      txt(els, F.name, cx - cw / 2, y + r * rowH + 40, cw, 13, 9.5, cur and COL.fg or COL.fg3, { font = cur and "semi" or "reg", align = "center", lb = "clip" })
     end
-    y = y + math.ceil(#FAMILY_ORDER / ncol) * rowH + 10
+    y = y + math.ceil(#list / ncol) * rowH + 10
 
     sec("MODO")
     segmented("theme", { { label = "Dark", val = "dark" }, { label = "Light", val = "light" }, { label = "Auto", val = "auto" } },
