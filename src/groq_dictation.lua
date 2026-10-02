@@ -2745,6 +2745,21 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   end
   do local pf = ICON.packFont("bold"); if pf then els[idx.timer].textFont = pf end end      -- carattere del pack
 
+  -- ruota di connessione (al posto del timer finche' il mic non e' vivo): N puntini in cerchio, alpha 0 a riposo. Grande quanto il timer.
+  if map then
+    local N = 8
+    local wcx, wcy = (vertical and (ox + sc(28)) or (ox + sc(57) + sc(22))), (vertical and (oy + sc(64)) or (oy + sc(29)))
+    local R, dr = idx.timerSize * 0.42, idx.timerSize * 0.115
+    local sq = (COL.fx and (COL.fx.bar == "pixel" or COL.fx.bar == "square")) and true or false
+    idx.wheel = { n = N, idx = {}, last = {} }
+    for i = 1, N do
+      local a = (i - 1) / N * 2 * math.pi - math.pi / 2
+      local px, py = wcx + math.cos(a) * R, wcy + math.sin(a) * R
+      if sq then idx.wheel.idx[i] = add({ type = "rectangle", action = "fill", fillColor = withA(COL.accent, 0), frame = { x = px - dr, y = py - dr, w = 2 * dr, h = 2 * dr } })
+      else idx.wheel.idx[i] = add({ type = "circle", action = "fill", fillColor = withA(COL.accent, 0), center = { x = px, y = py }, radius = dr }) end
+    end
+  end
+
   -- onda: barre / sottili / punti / linea
   local wstyle = waveStyleOf()
   local pitch = vertical and D.vp or D.pitch
@@ -2841,7 +2856,9 @@ setRecordingElements = function(isPaused)
   -- strati: base = tutto cio' che non cambia; canvas A sopra = solo barre/anelli/badge/timer/particelle (ridisegno ~50x piu' economico)
   local spec = ICON.splitAnim(els, function()
     local e0 = {}
-    return e0, buildRecCard(e0, P, P, s, vertical, isPaused, {}, true)
+    local I0 = buildRecCard(e0, P, P, s, vertical, isPaused, {}, true)
+    I0.probeConn = true                                   -- la scoperta degli elementi animati deve vedere anche la ruota di connessione
+    return e0, I0
   end, { x = 0, y = 0, w = pw * s + 2 * P, h = ph * s + 2 * P }, 0, nil, ICON.recGroup)
   overlay:replaceElements(els)
   ICON.safeLayers(overlay, els, spec)
@@ -2996,13 +3013,38 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
       I.warnPrev = warn
       cv:elementAttribute(I.timer, "textSize", warn and (I.timerSize * (I.vertical and 0.8 or 0.66)) or I.timerSize)
       cv:elementAttribute(I.timer, "frame", I.timerFrames[warn and 2 or 1])
-      cv:elementAttribute(I.timer, "textColor", warn and COL.warn or COL.fg)
+      cv:elementAttribute(I.timer, "textColor", withA(warn and COL.warn or COL.fg, I.tA or 1))
       if I.badge then cv:elementAttribute(I.badge, "strokeColor", warn and withA(COL.warn, 0.75) or withA(COL.accent, 0.55)) end
       if warn then if onWarn then onWarn() end else cv:elementAttribute(I.border, "strokeColor", I.borderCol or COL.border) end
     end
     if warn then cv:elementAttribute(I.border, "strokeColor", mix(I.borderCol or COL.border, COL.warn, 0.55 + 0.45 * math.sin(finite(t * 7, 0)))) end
-    local okw = (I.okFlash and not warn) and true or false
-    if okw ~= (I.okOn or false) then I.okOn = okw; cv:elementAttribute(I.timer, "textColor", okw and COL.ok or (warn and COL.warn or COL.fg)) end
+  end)
+
+  -- ruota di connessione <-> timer: dissolvenza incrociata ~0.25 s, nessun cambio di colore. Spenta = anelli di puntini a alpha 0.
+  guarded("wheel", function()
+    local W = I.wheel
+    if not W then return end
+    local on = ((I.wheelOn or I.probeConn) and not warn) and true or false
+    local tgt = on and 1 or 0
+    local wa = I.wA or 0
+    if wa == tgt and not on then return end
+    if animOn() then wa = wa + (tgt - wa) * (1 - math.exp(-14 * clampN(dt, 0.001, 0.1))); if math.abs(wa - tgt) < 0.02 then wa = tgt end else wa = tgt end
+    I.wA = wa
+    local ta = clampN(1 - wa, 0, 1)
+    if math.abs(ta - (I.tA or 1)) > 0.015 or (ta == 1 and (I.tA or 1) ~= 1) or (ta == 0 and (I.tA or 1) ~= 0) then
+      I.tA = ta; cv:elementAttribute(I.timer, "textColor", withA(warn and COL.warn or COL.fg, ta))
+    end
+    local head = animOn() and ((t * (I.wheelSpd or 1.1)) % 1) or 0.3
+    local N = W.n
+    for i = 1, N do
+      local delta = (head - (i - 1) / N) % 1
+      local a = (0.16 + 0.84 * spow(clampN(1 - delta, 0, 1), 2.0)) * wa
+      local last = W.last[i]
+      if not last or math.abs(a - last) > 0.02 or (a == 0 and last ~= 0) then
+        W.last[i] = a
+        cv:elementAttribute(W.idx[i], "fillColor", withA(COL.accent, a))
+      end
+    end
   end)
 
   -- anelli pulsanti dietro al mic (intensità regolabile; spenti se le animazioni sono off)
@@ -3178,10 +3220,11 @@ do
     for _, b in ipairs(I0.bars or {}) do if b.idx then m[b.idx] = "w" end end
     for _, si in ipairs(I0.segs or {}) do m[si] = "w" end
     if I0.parts and I0.parts.idx then for _, i in ipairs(I0.parts.idx) do m[i] = "p" end end
+    if I0.wheel then for _, i in ipairs(I0.wheel.idx) do m[i] = "c" end end
     return function(i) return m[i] or "r" end
   end
   -- frequenza massima di ridisegno (Hz) delle canvas del HUD di registrazione: onda 18, anelli/badge 12, timer 8 (cambia 1/s), particelle 16, avviso 15
-  ICON.GROUP_HZ = { w = 18, r = 12, t = 8, p = 16, x = 15 }
+  ICON.GROUP_HZ = { w = 18, r = 12, t = 8, p = 16, x = 15, c = 15 }
   function ICON.skipEl() return { type = "rectangle", action = "skip", frame = { x = 0, y = 0, w = 1, h = 1 } } end
   -- cv = proxy ICON.wrap; later = anche una volta differita (se la finestra viene portata avanti dopo il callback)
   function ICON.relayer(cv, later)
@@ -3647,10 +3690,12 @@ updateUI = function()
   local warn = (micWarned and recording and not paused) and true or false
   if I.settled and not active then return end
   local mc = ICON.micS
-  local lbl = (active and not warn) and ICON.micLabel(t) or nil        -- "Mic…" finche' il mic non manda un livello vero
-  local text = warn and "NO MIC" or lbl or fmtTime(currentElapsed())
+  local lbl = (active and not warn) and ICON.micLabel(t) or nil        -- non nil finche' il mic non manda un livello vero: al posto del timer c'e' la ruota
+  local text = warn and "NO MIC" or fmtTime(currentElapsed())
   I.conn = (active and not warn and recording and mc and mc.ph and mc.ph ~= "live") and true or false
-  I.okFlash = (mc and mc.shown and mc.liveAt and (t - mc.liveAt) < 0.5) and true or false   -- cenno "pronto" (verde) dopo la connessione
+  I.wheelOn = (lbl ~= nil) and true or false
+  I.wheelSpd = (mc and (mc.ph == "retry" or mc.ph == "fallback")) and 2.0 or 1.1       -- ritentativo / fallback: giro piu' veloce
+  I.okFlash = false                                                        -- (nessun cenno verde: la ruota si dissolve nel timer)
   I.el = active and currentElapsed() or 0
   local md = hudVisuals(overlay, I, t, dt, active, warn, text, shakeHUD, I.demo or levels)
   I.settled = (not active) and (md < 0.004)
