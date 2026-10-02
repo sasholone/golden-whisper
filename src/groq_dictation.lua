@@ -2363,7 +2363,7 @@ local function layoutSettings(scroll)
     local pillIdx = add({ type = "rectangle", action = "fill", fillColor = COL.accent, roundedRectRadii = { xRadius = R(ph / 2 - 2), yRadius = R(ph / 2 - 2) },
       frame = { x = pillX(sel), y = y0 + inset, w = ow, h = ph },
       fillGradient = "linear", fillGradientAngle = COL.multi and 0 or 90, fillGradientColors = COL.grad })
-    local labels = {}
+    local labels, icons = {}, {}
     for i, opt in ipairs(options) do
       local ox = pillX(i)
       local on = (i == sel)
@@ -2371,7 +2371,9 @@ local function layoutSettings(scroll)
         { fill = withA(COL.rowHover, 0), hoverFill = on and withA(COL.rowHover, 0) or COL.rowHover })
       local tx, tw = ox, ow
       if opt.icon then
+        local from = #els + 1
         opt.icon(els, ox + 15, y0 + h / 2, 15, on and COL.accentText or COL.fg2)
+        icons[i] = { from, #els }
         tx, tw = ox + 20, ow - 20
       end
       labels[i] = txt(els, opt.label, tx, y0 + (h - size * 1.25) / 2, tw, size * 1.4, size, on and COL.accentText or COL.fg2,
@@ -2385,11 +2387,33 @@ local function layoutSettings(scroll)
       els[pillIdx].frame.x = fx
       els[labels[prev]].textColor = selCol
       els[labels[sel]].textColor = unCol
+      -- le icone seguono lo stesso tween di colore delle etichette (tutti gli elementi dell'icona)
+      local function tint(i, col)
+        local r = icons[i]; if not r then return end
+        for k = r[1], r[2] do
+          local el = els[k]
+          if el then
+            if el.strokeColor then el.strokeColor = col end
+            if el.fillColor then el.fillColor = col end
+          end
+        end
+      end
+      tint(prev, selCol); tint(sel, unCol)
       Anim.run("setui", "pill:" .. prefix, 0.26, "out", function(e)
         local cv = settingsCanvas; if not cv then return end
         cv:elementAttribute(pillIdx, "frame", { x = lerp(fx, tx, e), y = y0 + inset, w = ow, h = ph })
-        cv:elementAttribute(labels[sel], "textColor", lerpC(unCol, selCol, e))
-        cv:elementAttribute(labels[prev], "textColor", lerpC(selCol, unCol, e))
+        local cs, cp = lerpC(unCol, selCol, e), lerpC(selCol, unCol, e)
+        cv:elementAttribute(labels[sel], "textColor", cs)
+        cv:elementAttribute(labels[prev], "textColor", cp)
+        for _, pair in ipairs({ { sel, cs }, { prev, cp } }) do
+          local r = icons[pair[1]]
+          if r then
+            for k = r[1], r[2] do
+              if els[k].strokeColor then cv:elementAttribute(k, "strokeColor", pair[2]) end
+              if els[k].fillColor then cv:elementAttribute(k, "fillColor", pair[2]) end
+            end
+          end
+        end
       end)
     end
   end
@@ -2559,7 +2583,8 @@ local function layoutSettings(scroll)
     y = y + math.ceil(#list / ncol) * rowH + 10
 
     sec("MODO")
-    segmented("theme", { { label = "Dark", val = "dark" }, { label = "Light", val = "light" }, { label = "Auto", val = "auto" } },
+    segmented("theme", { { label = "Dark", val = "dark", icon = ICON.moon }, { label = "Light", val = "light", icon = ICON.sun },
+      { label = "Auto", val = "auto", icon = ICON.auto } },
       config.themeMode, { y = y })
     y = y + 32 + GAP
 
