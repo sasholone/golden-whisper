@@ -3224,11 +3224,8 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
         cols[i] = col
       elseif styleDots then
         local r = finite((bm.dotMax * 0.38 + lv * bm.dotMax * 0.62) * bm.s, 1)
-        if not BH[i] or math.abs(r - BH[i]) > 0.08 or not BA[i] or math.abs(a - BA[i]) > 0.012 then
-          cv:elementAttribute(b.idx, "radius", r)
-          cv:elementAttribute(b.idx, "fillColor", col)
-          BH[i], BA[i] = r, a
-        end
+        if not BH[i] or math.abs(r - BH[i]) > 0.12 then cv:elementAttribute(b.idx, "radius", r); BH[i] = r end
+        if not BA[i] or math.abs(a - BA[i]) > 0.07 then cv:elementAttribute(b.idx, "fillColor", col); BA[i] = a end
       else
         local ext
         if bm.horizontal then
@@ -3240,15 +3237,16 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
         end
         ext = finite(ext, 4)
         -- scrive solo se la barra è cambiata oltre una soglia (mezzo pixel / ~1% di opacità)
-        if not BH[i] or math.abs(ext - BH[i]) > 0.4 or not BA[i] or math.abs(a - BA[i]) > 0.012 then
+        -- (su una canvas mostrata ogni scrittura costa: il colore ~2,5 volte la geometria; l'opacita' si riscrive a gradini di ~7%, la geometria a mezzo pixel)
+        if not BH[i] or math.abs(ext - BH[i]) > 0.45 then
           if bm.horizontal then
             cv:elementAttribute(b.idx, "frame", { x = b.px - bm.thick * bm.s / 2, y = b.py - ext / 2, w = bm.thick * bm.s, h = ext })
           else
             cv:elementAttribute(b.idx, "frame", { x = b.px - ext / 2, y = b.py - bm.thick * bm.s / 2, w = ext, h = bm.thick * bm.s })
           end
-          cv:elementAttribute(b.idx, "fillColor", col)
-          BH[i], BA[i] = ext, a
+          BH[i] = ext
         end
+        if not BA[i] or math.abs(a - BA[i]) > 0.07 then cv:elementAttribute(b.idx, "fillColor", col); BA[i] = a end
       end
     end
     if styleLine and I.segs then
