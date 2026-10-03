@@ -1111,6 +1111,143 @@ function ICON.auto(els, cx, cy, sz, col)
   els[#els + 1] = { type = "segments", action = "fill", fillColor = col, closed = true, coordinates = arcPts(cx, cy, 6.4 * u, 90, 270, 18) }
 end
 
+-- icone del tab TEMA (stesso linguaggio: tratto uniforme, colore unico `col`, nessun elemento con gradiente/ombra). Firma: (els, cx, cy, sz, col)
+do
+  local function bez(a, c, b, n)                              -- curva quadratica campionata
+    local t = {}
+    for i = 0, n do local k = i / n; t[#t + 1] = { x = (1 - k) ^ 2 * a.x + 2 * (1 - k) * k * c.x + k * k * b.x, y = (1 - k) ^ 2 * a.y + 2 * (1 - k) * k * c.y + k * k * b.y } end
+    return t
+  end
+  local function dot(els, x, y, r, col) els[#els + 1] = { type = "circle", action = "fill", fillColor = col, center = { x = x, y = y }, radius = r } end
+  local function ring(els, x, y, r, col, sw) els[#els + 1] = { type = "circle", action = "stroke", strokeColor = col, strokeWidth = sw, center = { x = x, y = y }, radius = r } end
+  local function corner(els, cx, cy, sz, col, rr)             -- rettangolo con angoli di raggio rr (in unita' u)
+    local u = sz / 16
+    rrect(els, cx - 6.4 * u, cy - 4.8 * u, 12.8 * u, 9.6 * u, rr * u, { stroke = col, sw = 1.5 * u })
+  end
+  function ICON.cornerSq(els, cx, cy, sz, col) corner(els, cx, cy, sz, col, 0.2) end
+  function ICON.cornerMd(els, cx, cy, sz, col) corner(els, cx, cy, sz, col, 2.6) end
+  function ICON.cornerRd(els, cx, cy, sz, col) corner(els, cx, cy, sz, col, 4.8) end
+  function ICON.shadow(els, cx, cy, sz, col)                  -- quadrato + ombra sfalsata
+    local u = sz / 16
+    rrect(els, cx - 2.6 * u, cy - 2.6 * u, 9.2 * u, 9.2 * u, 2.2 * u, { fill = withA(col, 0.38) })
+    rrect(els, cx - 6.4 * u, cy - 6.4 * u, 9.6 * u, 9.6 * u, 2.2 * u, { stroke = col, sw = 1.5 * u })
+  end
+  function ICON.drop(els, cx, cy, sz, col)                    -- goccia (vetro)
+    local u = sz / 16
+    local pts = { { x = cx, y = cy - 7.4 * u } }
+    for _, q in ipairs(arcPts(cx, cy + 2.4 * u, 4.8 * u, -48, 228, 20)) do pts[#pts + 1] = q end
+    seg(els, pts, col, 1.5 * u, true)
+  end
+  function ICON.micPulse(els, cx, cy, sz, col)                -- pulsazione: punto + due onde
+    local u = sz / 16
+    dot(els, cx, cy, 2.5 * u, col); ring(els, cx, cy, 5 * u, withA(col, 0.75), 1.4 * u); ring(els, cx, cy, 7.5 * u, withA(col, 0.45), 1.3 * u)
+  end
+  function ICON.sine(els, cx, cy, sz, col, n)                 -- onda con n periodi (calma 1 / normale 2 / vivace 3)
+    local u = sz / 16; n = n or 2
+    local pts, amp = {}, (1.9 + 0.8 * n) * u
+    for i = 0, 28 do local k = i / 28; pts[#pts + 1] = { x = cx - 7.4 * u + k * 14.8 * u, y = cy - amp * math.sin(k * 2 * math.pi * n) } end
+    seg(els, pts, col, 1.5 * u)
+  end
+  function ICON.sine1(els, cx, cy, sz, col) ICON.sine(els, cx, cy, sz, col, 1) end
+  function ICON.sine2(els, cx, cy, sz, col) ICON.sine(els, cx, cy, sz, col, 2) end
+  function ICON.sine3(els, cx, cy, sz, col) ICON.sine(els, cx, cy, sz, col, 3) end
+  function ICON.wvBars(els, cx, cy, sz, col)
+    local u = sz / 16
+    for i, h in ipairs({ 5, 10, 14, 8, 11 }) do rrect(els, cx + (i - 3) * 3.5 * u - 1.2 * u, cy - h * u / 2, 2.4 * u, h * u, 1.2 * u, { fill = col }) end
+  end
+  function ICON.wvThin(els, cx, cy, sz, col)
+    local u = sz / 16
+    for i, h in ipairs({ 5, 10, 14, 8, 11 }) do line(els, cx + (i - 3) * 3.5 * u, cy - h * u / 2, cx + (i - 3) * 3.5 * u, cy + h * u / 2, col, 1.1 * u) end
+  end
+  function ICON.wvDots(els, cx, cy, sz, col)
+    local u = sz / 16
+    for i, r in ipairs({ 1.0, 1.7, 2.3, 1.5, 1.2 }) do dot(els, cx + (i - 3) * 3.5 * u, cy, r * u, col) end
+  end
+  function ICON.wvLine(els, cx, cy, sz, col)
+    local u = sz / 16
+    local pts = {}
+    for i, v in ipairs({ 0.2, -0.9, 0.7, -0.5, 0.9, -0.3 }) do pts[#pts + 1] = { x = cx + (i - 3.5) * 2.9 * u, y = cy + v * 5 * u } end
+    seg(els, pts, col, 1.5 * u)
+  end
+  function ICON.dotAcc(els, cx, cy, sz, col) dot(els, cx, cy, 4.4 * sz / 16, col) end
+  function ICON.dotGrad(els, cx, cy, sz, col)
+    local u = sz / 16
+    for i, a in ipairs({ 0.3, 0.6, 1 }) do dot(els, cx + (i - 2) * 5.2 * u, cy, 2.5 * u, withA(col, a)) end
+  end
+  local function rows(els, cx, cy, sz, col, k)                -- densita': 3 righe a distanza k
+    local u = sz / 16
+    for i = 1, 3 do line(els, cx - 6.2 * u, cy + (i - 2) * k * u, cx + 6.2 * u, cy + (i - 2) * k * u, col, 1.5 * u) end
+  end
+  function ICON.rowsC(els, cx, cy, sz, col) rows(els, cx, cy, sz, col, 2.9) end
+  function ICON.rowsN(els, cx, cy, sz, col) rows(els, cx, cy, sz, col, 4.4) end
+  function ICON.rowsW(els, cx, cy, sz, col) rows(els, cx, cy, sz, col, 6) end
+  function ICON.eye(els, cx, cy, sz, col)
+    local u = sz / 16
+    local up, dn = {}, {}
+    for i = 0, 14 do local t = -1 + i / 7; up[#up + 1] = { x = cx + 7.4 * u * t, y = cy - 4.6 * u * (1 - t * t) }; dn[#dn + 1] = { x = cx + 7.4 * u * t, y = cy + 4.6 * u * (1 - t * t) } end
+    for i = #dn - 1, 2, -1 do up[#up + 1] = dn[i] end
+    seg(els, up, col, 1.5 * u, true)
+    dot(els, cx, cy, 2.2 * u, col)
+  end
+  function ICON.ghost(els, cx, cy, sz, col)                   -- fantasma (HUD a riposo)
+    local u = sz / 16
+    local pts = { { x = cx - 5.4 * u, y = cy + 6.4 * u }, { x = cx - 5.4 * u, y = cy - 0.8 * u } }
+    for _, q in ipairs(arcPts(cx, cy - 0.8 * u, 5.4 * u, 180, 360, 14)) do pts[#pts + 1] = q end
+    for _, q in ipairs({ { 5.4, 6.4 }, { 2.7, 4 }, { 0, 6.4 }, { -2.7, 4 } }) do pts[#pts + 1] = { x = cx + q[1] * u, y = cy + q[2] * u } end
+    seg(els, pts, col, 1.5 * u, true)
+    dot(els, cx - 2 * u, cy - 1.2 * u, 0.95 * u, col); dot(els, cx + 2 * u, cy - 1.2 * u, 0.95 * u, col)
+  end
+  function ICON.sizeIcon(els, cx, cy, sz, col)                -- dimensione: due quadrati annidati
+    local u = sz / 16
+    rrect(els, cx - 7 * u, cy - 7 * u, 14 * u, 14 * u, 3 * u, { stroke = col, sw = 1.4 * u })
+    rrect(els, cx - 3 * u, cy - 3 * u, 6 * u, 6 * u, 1.6 * u, { fill = col })
+  end
+  function ICON.micS(els, cx, cy, sz, col) ICON.mic(els, cx, cy, sz * 0.62, col) end
+  function ICON.micM(els, cx, cy, sz, col) ICON.mic(els, cx, cy, sz * 0.84, col) end
+  function ICON.micL(els, cx, cy, sz, col) ICON.mic(els, cx, cy, sz * 1.05, col) end
+  -- "Aa" / "09" nel VERO font (kind = sf | rounded | mono)
+  function ICON.aaF(kind, str)
+    return function(els, cx, cy, sz, col)
+      local font
+      if kind == "mono" then font = fonts().mono elseif kind == "rounded" then font = fontsOf("rounded").bold else font = fontsOf("sf").bold end
+      els[#els + 1] = { type = "text", text = str or "Aa", textSize = sz * 0.9, textColor = col, textFont = font, textAlignment = "center",
+        textLineBreak = "clip", frame = { x = cx - 12, y = cy - sz * 0.62, w = 24, h = sz * 1.3 } }
+    end
+  end
+  -- categorie degli stili
+  function ICON.catAll(els, cx, cy, sz, col)
+    local u = sz / 16
+    for _, p in ipairs({ { -3.4, -3.4 }, { 3.4, -3.4 }, { -3.4, 3.4 }, { 3.4, 3.4 } }) do rrect(els, cx + p[1] * u - 2.6 * u, cy + p[2] * u - 2.6 * u, 5.2 * u, 5.2 * u, 1.3 * u, { stroke = col, sw = 1.3 * u }) end
+  end
+  function ICON.catGem(els, cx, cy, sz, col)
+    local u = sz / 16
+    seg(els, { { x = cx, y = cy - 6.6 * u }, { x = cx + 6 * u, y = cy - 1.4 * u }, { x = cx, y = cy + 6.6 * u }, { x = cx - 6 * u, y = cy - 1.4 * u } }, col, 1.4 * u, true)
+    line(els, cx - 6 * u, cy - 1.4 * u, cx + 6 * u, cy - 1.4 * u, col, 1.2 * u)
+  end
+  function ICON.catLeaf(els, cx, cy, sz, col)
+    local u = sz / 16
+    local A, B = { x = cx - 5.4 * u, y = cy + 5.4 * u }, { x = cx + 5.4 * u, y = cy - 5.4 * u }
+    local pts = bez(A, { x = cx - 5.4 * u, y = cy - 5.4 * u }, B, 10)
+    for _, q in ipairs(bez(B, { x = cx + 5.4 * u, y = cy + 5.4 * u }, A, 10)) do pts[#pts + 1] = q end
+    seg(els, pts, col, 1.4 * u, true)
+    line(els, A.x, A.y, cx + 1 * u, cy - 1 * u, col, 1.2 * u)
+  end
+  function ICON.catBolt(els, cx, cy, sz, col)
+    local u = sz / 16
+    seg(els, { { x = cx + 1.8 * u, y = cy - 7 * u }, { x = cx - 4.6 * u, y = cy + 1 * u }, { x = cx - 0.4 * u, y = cy + 1 * u }, { x = cx - 1.8 * u, y = cy + 7 * u },
+      { x = cx + 4.6 * u, y = cy - 1.2 * u }, { x = cx + 0.4 * u, y = cy - 1.2 * u } }, col, 1.4 * u, true)
+  end
+  function ICON.catRetro(els, cx, cy, sz, col)
+    local u = sz / 16
+    rrect(els, cx - 6.6 * u, cy - 6 * u, 13.2 * u, 9.6 * u, 1.8 * u, { stroke = col, sw = 1.4 * u })
+    line(els, cx - 3 * u, cy + 6.8 * u, cx + 3 * u, cy + 6.8 * u, col, 1.4 * u); line(els, cx, cy + 3.6 * u, cx, cy + 6.8 * u, col, 1.4 * u)
+  end
+  function ICON.catSnow(els, cx, cy, sz, col)
+    local u = sz / 16
+    for i = 0, 2 do local a = math.rad(i * 60 + 90); line(els, cx - 6.6 * u * math.cos(a), cy - 6.6 * u * math.sin(a), cx + 6.6 * u * math.cos(a), cy + 6.6 * u * math.sin(a), col, 1.4 * u) end
+  end
+end
+
 ------------------------------------------------------------------------
 -- ICONE CUSTOM DEGLI STILI + PARTICELLE
 -- Solo primitive canvas, disegnate da zero (motivi generici, nessun marchio). Firma: (els, cx, cy, sz, col, T)
@@ -4585,8 +4722,10 @@ local function layoutSettings()
     add({ type = "rectangle", action = "strokeAndFill", fillColor = COL.rowBg, strokeColor = COL.divider, strokeWidth = 1,
       roundedRectRadii = { xRadius = R(12), yRadius = R(12) }, frame = { x = x, y = by, w = w, h = h } })
   end
-  local function sec(title)
-    txt(els, title, pad + 2, y, IW, 14, 10.5, COL.fg3, { font = "bold" })
+  local function sec(title, icon)
+    local tx = pad + 2
+    if icon then icon(els, pad + 8, y + 7, 13, COL.fg3); tx = pad + 19 end
+    txt(els, title, tx, y, IW - (tx - pad), 14, 10.5, COL.fg3, { font = "bold" })
     y = y + 20
   end
 
@@ -4653,6 +4792,7 @@ local function layoutSettings()
                 for k = r[1], r[2] do
                   if els[k].strokeColor then cv:elementAttribute(k, "strokeColor", c2) end
                   if els[k].fillColor then cv:elementAttribute(k, "fillColor", c2) end
+                  if els[k].textColor then cv:elementAttribute(k, "textColor", c2) end
                 end
               end
             end
@@ -4681,9 +4821,11 @@ local function layoutSettings()
   end
 
   -- interruttore animato dentro una riga alta 40 che parte da ry
-  local function switchRow(id, label, on, ry, dim)
+  local function switchRow(id, label, on, ry, dim, icon)
     hitRect(els, sHoverMap, id, pad + 4, ry + 2, IW - 8, 40, R(9), { fill = withA(COL.rowHover, 0), hoverFill = COL.rowHover })
-    txt(els, label, pad + 16, ry + 13, IW - 90, 18, 13, COL.fg, { font = "semi" })
+    local lx = pad + 16
+    if icon then icon(els, pad + 25, ry + 22, 15, on and COL.accentInk or COL.fg3); lx = pad + 42 end
+    txt(els, label, lx, ry + 13, IW - 90 - (lx - pad - 16), 18, 13, COL.fg, { font = "semi" })
     local tw, th = 42, 24
     local tx0, ty0 = pad + IW - 16 - tw, ry + 10
     -- progresso VISIBILE 0..1 dell'interruttore: ogni render riparte da lì (click ravvicinati = nessuno scatto)
@@ -4720,7 +4862,10 @@ local function layoutSettings()
     local def = SLIDER_DEFS[id]
     local v = sliderValue(def)
     local rel = (v - def.lo) / (def.hi - def.lo)
-    txt(els, label, pad + 16, sy + 14, 86, 16, 12, COL.fg2, {})
+    local ic = ({ shadow = ICON.shadow, glass = ICON.drop, pulse = ICON.micPulse, idle = ICON.ghost })[id]
+    local lx = pad + 16
+    if ic then ic(els, pad + 24, sy + 22, 14, COL.fg3); lx = pad + 38 end
+    txt(els, label, lx, sy + 14, 86 - (lx - pad - 16), 16, 12, COL.fg2, {})
     local tx, tw2 = pad + 16 + 90, IW - 32 - 90 - 40
     local ty = sy + 22
     add({ type = "rectangle", action = "fill", fillColor = COL.track, roundedRectRadii = { xRadius = 2.5, yRadius = 2.5 },
@@ -4790,7 +4935,7 @@ local function layoutSettings()
     end
 
     -- MICROFONO
-    sec("MICROFONO")
+    sec("MICROFONO", ICON.mic)
     local nDev = math.max(1, #settingsDevices)
     local bh = nDev * 34 + 8
     box(pad, y, IW, bh)
@@ -4817,12 +4962,12 @@ local function layoutSettings()
     end
     y = y + bh + GAP
 
-    sec("DIMENSIONE")
-    segmented("size", { { label = "Minimal", val = "minimal" }, { label = "Standard", val = "standard" }, { label = "Grande", val = "large" } },
+    sec("DIMENSIONE", ICON.sizeIcon)
+    segmented("size", { { label = "Minimal", val = "minimal", icon = ICON.micS }, { label = "Standard", val = "standard", icon = ICON.micM }, { label = "Grande", val = "large", icon = ICON.micL } },
       config.sizePreset, { y = y })
     y = y + 32 + GAP
 
-    sec("ORIENTAMENTO")
+    sec("ORIENTAMENTO", ICON.orientH)
     segmented("orient", { { label = "Orizzontale", val = "horizontal", icon = ICON.orientH }, { label = "Verticale", val = "vertical", icon = ICON.orientV } },
       config.orientation, { y = y })
     y = y + 32 + GAP
@@ -4968,7 +5113,9 @@ local function layoutSettings()
         end
         hitRect(els, sHoverMap, "cat:" .. c[1], pad0, ry, catW, crh, R(10),
           { fill = on and withA(COL.fgWhite, 0) or withA(COL.rowBg, 0), hoverFill = on and withA(COL.fgWhite, 0.16) or COL.rowHover })
-        txt(els, c[2], pad0 + 12, ry + (crh - 16) / 2, catW - 44, 16, 12, on and COL.accentText or COL.fg2, { font = "semi", lb = "clip" })
+        local cic = ({ all = ICON.catAll, cl = ICON.catGem, fk = ICON.sparkle, nt = ICON.catLeaf, ne = ICON.catBolt, rt = ICON.catRetro, pp = ICON.palette, st = ICON.catSnow })[c[1]]
+        if cic then cic(els, pad0 + 17, ry + crh / 2, 13, on and COL.accentText or COL.fg3) end
+        txt(els, c[2], pad0 + 30, ry + (crh - 16) / 2, catW - 30 - 26, 16, 11.5, on and COL.accentText or COL.fg2, { font = "semi", lb = "clip" })
         txt(els, tostring(counts[c[1]] or 0), pad0 + catW - 34, ry + (crh - 14) / 2 + 1, 24, 14, 10.5, on and withA(COL.accentText, 0.75) or COL.fg3, { align = "right", lb = "clip" })
       end
     end
@@ -5028,7 +5175,7 @@ local function layoutSettings()
     ---- COLONNA DESTRA -------------------------------------------------------
     pad, IW = colBx, colBw
     y = bodyTop
-    sec("ANTEPRIMA")
+    sec("ANTEPRIMA", ICON.eye)
     do
       local bh = 104
       if not trial then
@@ -5060,7 +5207,7 @@ local function layoutSettings()
     pad, IW = colBx, colBw
 
     S(20 + 32 + GAP, function()
-      sec("MODO")
+      sec("MODO", ICON.auto)
       segmented("theme", { { label = "Dark", val = "dark", icon = ICON.moon }, { label = "Light", val = "light", icon = ICON.sun },
         { label = "Auto", val = "auto", icon = ICON.auto } }, config.themeMode, { y = y })
     end)
@@ -5068,10 +5215,10 @@ local function layoutSettings()
     local on = config.shadowOn ~= false
     local bh2 = on and 88 or 44
     S(20 + bh2 + 44 + GAP, function()
-      sec("OMBRA E ALONE")
+      sec("OMBRA E ALONE", ICON.shadow)
       local glowOn = config.glowOn == true
       box(pad, y, IW, bh2 + 44)
-      switchRow("tg_shadow", on and "Ombra attiva" or "Ombra disattivata", on, y)
+      switchRow("tg_shadow", on and "Ombra attiva" or "Ombra disattivata", on, y, nil, ICON.shadow)
       local ry = y + 44
       if on then
         add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = ry, w = IW - 32, h = 1 } })
@@ -5079,68 +5226,68 @@ local function layoutSettings()
         ry = ry + 44
       end
       add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = ry, w = IW - 32, h = 1 } })
-      switchRow("tg_glow", glowOn and "Alone accento attivo" or "Alone accento", glowOn, ry)
+      switchRow("tg_glow", glowOn and "Alone accento attivo" or "Alone accento", glowOn, ry, nil, ICON.sun)
     end)
 
     S(20 + 44 + GAP, function()
-      sec("VETRO")
+      sec("VETRO", ICON.drop)
       box(pad, y, IW, 44)
       sliderRow("glass", "Opacità", y)
     end)
 
     S(20 + 32 + GAP, function()
-      sec("ANGOLI")
-      segmented("corner", { { label = "Squadrati", val = "square" }, { label = "Medi", val = "medium" }, { label = "Tondi", val = "round" } },
+      sec("ANGOLI", ICON.cornerMd)
+      segmented("corner", { { label = "Squadrati", val = "square", icon = ICON.cornerSq }, { label = "Medi", val = "medium", icon = ICON.cornerMd }, { label = "Tondi", val = "round", icon = ICON.cornerRd } },
         config.cornerStyle or "round", { y = y })
     end)
 
     S(20 + 32 + 10 + 32 + GAP, function()
-      sec("ONDA")
-      segmented("wave", { { label = "Barre", val = "bars" }, { label = "Sottili", val = "thin" }, { label = "Punti", val = "dots" }, { label = "Linea", val = "line" } },
-        waveStyleOf(), { y = y, size = 11.5 })
+      sec("ONDA", ICON.wvBars)
+      segmented("wave", { { label = "Barre", val = "bars", icon = ICON.wvBars }, { label = "Sottili", val = "thin", icon = ICON.wvThin }, { label = "Punti", val = "dots", icon = ICON.wvDots }, { label = "Linea", val = "line", icon = ICON.wvLine } },
+        waveStyleOf(), { y = y, size = 10.5 })
       y = y + 32 + 10
-      segmented("wcol", { { label = "Accento", val = "accent" }, { label = "Gradiente", val = "gradient" } },
+      segmented("wcol", { { label = "Accento", val = "accent", icon = ICON.dotAcc }, { label = "Gradiente", val = "gradient", icon = ICON.dotGrad } },
         waveGradientOn() and "gradient" or "accent", { y = y })
     end)
 
     S(20 + 44 + GAP, function()
-      sec("PULSAZIONE MIC")
+      sec("PULSAZIONE MIC", ICON.micPulse)
       box(pad, y, IW, 44)
       sliderRow("pulse", "Intensità", y)
     end)
 
     local an = animOn()
     S(20 + (an and 94 or 44) + GAP, function()
-      sec("ANIMAZIONI")
+      sec("ANIMAZIONI", ICON.sine2)
       box(pad, y, IW, an and 44 + 50 or 44)
-      switchRow("tg_anim", an and "Animazioni attive" or "Animazioni disattivate", an, y)
+      switchRow("tg_anim", an and "Animazioni attive" or "Animazioni disattivate", an, y, nil, ICON.sine2)
       if an then
         add({ type = "rectangle", action = "fill", fillColor = COL.divider, frame = { x = pad + 16, y = y + 44, w = IW - 32, h = 1 } })
-        segmented("aspeed", { { label = "Calme", val = "calm" }, { label = "Normali", val = "normal" }, { label = "Vivaci", val = "lively" } },
+        segmented("aspeed", { { label = "Calme", val = "calm", icon = ICON.sine1 }, { label = "Normali", val = "normal", icon = ICON.sine2 }, { label = "Vivaci", val = "lively", icon = ICON.sine3 } },
           SPEED_MUL[config.animSpeed] and config.animSpeed or "normal", { x = pad + 10, w = IW - 20, y = y + 52, h = 30, size = 11.5 })
       end
     end)
 
     S(20 + 32 + GAP, function()
-      sec("TESTO")
-      segmented("uifont", { { label = "SF", val = "sf" }, { label = "Arrotondato", val = "rounded" }, { label = "Mono", val = "mono" } },
-        (config.uiFont == "rounded" or config.uiFont == "mono") and config.uiFont or "sf", { y = y })
+      sec("TESTO", ICON.aaF("sf", "Aa"))
+      segmented("uifont", { { label = "SF", val = "sf", icon = ICON.aaF("sf", "Aa") }, { label = "Arrotondato", val = "rounded", icon = ICON.aaF("rounded", "Aa") }, { label = "Mono", val = "mono", icon = ICON.aaF("mono", "Aa") } },
+        (config.uiFont == "rounded" or config.uiFont == "mono") and config.uiFont or "sf", { y = y, size = 10.5 })
     end)
 
     S(20 + 32 + GAP, function()
-      sec("TIMER")
-      segmented("tfont", { { label = "Mono", val = "mono" }, { label = "SF", val = "sf" }, { label = "Arrotondato", val = "rounded" } },
-        (config.timerFont == "sf" or config.timerFont == "rounded") and config.timerFont or "mono", { y = y })
+      sec("TIMER", ICON.clock)
+      segmented("tfont", { { label = "Mono", val = "mono", icon = ICON.aaF("mono", "09") }, { label = "SF", val = "sf", icon = ICON.aaF("sf", "09") }, { label = "Arrotondato", val = "rounded", icon = ICON.aaF("rounded", "09") } },
+        (config.timerFont == "sf" or config.timerFont == "rounded") and config.timerFont or "mono", { y = y, size = 10.5 })
     end)
 
     S(20 + 32 + GAP, function()
-      sec("DENSITÀ")
-      segmented("dens", { { label = "Compatta", val = "compact" }, { label = "Normale", val = "normal" }, { label = "Ampia", val = "wide" } },
+      sec("DENSITÀ", ICON.rowsN)
+      segmented("dens", { { label = "Compatta", val = "compact", icon = ICON.rowsC }, { label = "Normale", val = "normal", icon = ICON.rowsN }, { label = "Ampia", val = "wide", icon = ICON.rowsW } },
         DENS[config.density] and config.density or "normal", { y = y })
     end)
 
     S(20 + 44 + GAP, function()
-      sec("HUD A RIPOSO")
+      sec("HUD A RIPOSO", ICON.ghost)
       box(pad, y, IW, 44)
       sliderRow("idle", "Opacità", y)
     end)
@@ -5192,9 +5339,9 @@ local function layoutSettings()
       txt(els, "Aggiungi tasto", pad + IW / 2 - 44, y + 10, 110, 16, 12.5, COL.accentInk, { font = "semi", lb = "clip" })
       y = y + 36 + GAP
     end
-    sec("AVVIO / STOP")
+    sec("AVVIO / STOP", ICON.play)
     bindings("ss", config.ssBindings, { { label = "2 tap", val = "double" }, { label = "1 tap", val = "single" }, { label = "hold", val = "hold" } })
-    sec("PAUSA")
+    sec("PAUSA", ICON.pause)
     bindings("pause", config.pauseBindings, { { label = "1 tap", val = "single" }, { label = "2 tap", val = "double" } })
     y = y - 12
     trail = GAP - 12
