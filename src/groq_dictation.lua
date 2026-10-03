@@ -2752,6 +2752,7 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
   local n = vertical and 9 or 12
   local pw, ph = recDims(vertical)
   idx.pw, idx.ph = pw, ph
+  if map == nil then idx.pinOff = true end              -- anteprima del tab Tema: il bottone annulla resta nella base
   ICON.hudShape = ICON.shape()
   idx.border, idx.body, idx.borderCol = ICON.cardBody(els, ox, oy, sc(pw), sc(ph), s, { s = s, id = map and "drag" or nil, lite = (map == nil) }, "rec")
   if map then idx.parts = ICON.partsBuild(els, ox, oy, sc(pw), sc(ph), s, false) end      -- particelle dello stile (se ne ha); nell'anteprima del tab Tema (map nil) non ce ne sono
@@ -3752,7 +3753,7 @@ do
       if I0.badge and seen[I0.badge] and I0.icon0 and I0.icon1 then
         for i = I0.icon0, I0.icon1 do seen[i] = true; if seenHot[I0.badge] then seenHot[i] = true end end   -- l'icona sta SOPRA il badge
       end
-      if I0.pin0 and grp then for i = I0.pin0, I0.pin1 do seen[i] = true; seenHot[i] = true end end        -- elementi "fissati in cima" (annulla): sempre in canvas propria
+      if I0.pin0 and grp and not I0.pinOff then for i = I0.pin0, I0.pin1 do seen[i] = true; seenHot[i] = true end end        -- elementi "fissati in cima" (annulla): sempre in canvas propria
       local classify = grp and grp(I0) or nil
       local G = {}                                   -- chiave -> { ids = {}, x0.. }
       local function grow(g, i, e)
@@ -3775,7 +3776,7 @@ do
       table.sort(idxs)
       for _, i in ipairs(idxs) do
         local e = els0[i]
-        local pinned = I0.pin0 and grp and i >= I0.pin0 and i <= I0.pin1
+        local pinned = I0.pin0 and grp and not I0.pinOff and i >= I0.pin0 and i <= I0.pin1
         if e and (pinned or not (e.trackMouseUp or e.trackMouseDown or e.trackMouseEnterExit or e.trackMouseMove or e.id)) and e.type ~= "image" and e.action ~= "clip" then
           local key = "a"
           if classify then key = seenHot[i] and classify(i) or "x" end
@@ -4306,18 +4307,25 @@ local function previewTick()
   local cv, P = settingsCanvas, PREV
   if not cv or not P or settingsPage ~= "theme" then return end
   local t = now()
-  if t - (SET.lastScroll or 0) < 0.25 then return end
-  if SET.heroAt and t - SET.heroAt < 0.2 then return end
+  local function idle()          -- fermo: l'onda di cerchi si spegne (niente anello congelato a meta')
+    if P.live then P.live = false; pcall(function() cv:ripSet(nil) end) end
+  end
+  if t - (SET.lastScroll or 0) < 0.25 then return idle() end
+  if SET.heroAt and t - SET.heroAt < 0.2 then return idle() end
   local boost = SET.pvBoost and t < SET.pvBoost
   if not boost then
     local m = hs.mouse.absolutePosition()
     local f = cv:frame()
     local mx, my = m.x - f.x, m.y - f.y
-    if mx < (P.x0 or 0) or mx > (P.x1 or 0) or my < (P.top or 0) or my > (P.bot or 0) then return end
+    if mx < (P.x0 or 0) or mx > (P.x1 or 0) or my < (P.top or 0) or my > (P.bot or 0) then return idle() end
   end
-  if Anim.list["setvis|h"] or Anim.list["setvis|xfade"] or Anim.list["setvis|vis"] then return end
+  if Anim.list["setvis|h"] or Anim.list["setvis|xfade"] or Anim.list["setvis|vis"] then return idle() end
   local I = P.I
-  local dt = clampN(I.last and (t - I.last) or 0.08, 0.001, 0.12)
+  P.live = true
+  -- il timer gira a 20 Hz: ogni tick aggiorna solo la pulsazione (alpha di finestra, ~gratis), un tick su due anche onda e timer (10 Hz)
+  P.n = (P.n or 0) + 1
+  if P.n % 2 == 1 then guarded("ring", function() ICON.ringTick(cv, I, t, true, false) end); return end
+  local dt = clampN(I.last and (t - I.last) or 0.1, 0.001, 0.15)
   I.last = t
   if I.body and P.bgA ~= COL.bg.alpha then       -- trasparenza del vetro cambiata (slider in corso)
     P.bgA = COL.bg.alpha
@@ -4332,7 +4340,7 @@ local function previewTick()
 end
 local function startPreview()
   if previewTimer then return end
-  previewTimer = hs.timer.doEvery(1 / 10, function() guarded("preview", previewTick) end)
+  previewTimer = hs.timer.doEvery(1 / 20, function() guarded("preview", previewTick) end)
 end
 
 -- hero degli stili: mostra lo stile sotto il mouse (o quello attuale); aggiornamento a pochi attributi
@@ -5029,7 +5037,7 @@ local function layoutSettings()
         SET.pvSpec = ICON.splitAnim(els, function()
           local e0 = {}
           return e0, buildRecCard(e0, ox, oy, s, false, false, nil, false)
-        end, { x = 0, y = 0, w = SET.W, h = SET.H }, off)
+        end, { x = 0, y = 0, w = SET.W, h = SET.H }, off, nil, ICON.recGroup)      -- gruppi per ruolo (onda / timer / badge...): ogni scrittura ridisegna solo la sua canvas piccola
         I.preview = true
         PREV = { I = I, top = y, bot = y + bh, x0 = pad, x1 = pad + IW, t0 = now(), bgA = COL.bg.alpha, mt = now() }
         Anim.cancel("egg", "prev")
@@ -5381,7 +5389,20 @@ function SET.applyLayers(cv, specs, els)
   for _, key in ipairs({ "r1", "r2", "hero", "pv" }) do
     local sp = specs and specs[key] or nil
     local ok, err = pcall(function()
-      if sp and sp.raster then cv:layerRaster(sp, key) else cv:layerApply(sp, key) end
+      if key == "pv" then                                      -- anteprima: piu' strati per ruolo (pvw, pvr, pvt, ...), ognuno col suo Hz
+        local keep = {}
+        if sp and sp.groups then
+          for _, k in ipairs(sp.order) do
+            keep["pv" .. k] = true
+            sp.groups[k].hz = ICON.GROUP_HZ[k]
+            cv:layerApply(sp.groups[k], "pv" .. k)
+          end
+          cv:layerClear("pv")
+        else
+          cv:layerApply(sp, key)
+        end
+        for _, k in ipairs({ "w", "r", "t", "p", "x", "c" }) do if not keep["pv" .. k] then cv:layerClear("pv" .. k) end end
+      elseif sp and sp.raster then cv:layerRaster(sp, key) else cv:layerApply(sp, key) end
     end)
     if not ok then ICON.log("[GW] strati: " .. tostring(err)); failed = true; break end
   end
