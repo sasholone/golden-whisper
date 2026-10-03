@@ -1363,14 +1363,17 @@ pushShadow = function(list, x, y, w, h, s, radius, mul, noGlow, lite)
   local glow = (config.glowOn == true) and not noGlow
   local shadow = (config.shadowOn ~= false)
   if not glow and not shadow then return end
-  s = finite(s, 1)
-  local k = clampN(config.shadowIntensity or 0.5, 0, 1)
-  local m = (mul or 1) * (COL.shadowK or 1)
+  -- LIMITI: scala, intensita' ed estensioni sono clampate (px). Prima nessun tetto: scala/intensita' fuori range o un alone sommato
+  -- all'ombra su una finestra grande (impostazioni 800x760) davano un'ombra "gigante"; ora ombra <= 24 px (+10 di offset),
+  -- alone <= 14 px e alpha cumulata <= ~0.26 (il pannello grande non amplifica piu' l'alone: mul massimo 1).
+  s = clampN(finite(s, 1), 0.3, 1.6)
+  local k = clampN(tonumber(config.shadowIntensity) or 0.5, 0, 1)
+  local m = clampN(finite(mul or 1, 1), 0, 2) * (COL.shadowK or 1)
   if glow then
-    local gn = lite and 4 or 8                                    -- lite: meno strati (stessa resa, metà elementi)
-    local ga = (COL.dark and 0.05 or 0.055) * (mul or 1) * (8 / gn)
+    local gn = lite and 4 or 8
+    local ga = (COL.dark and 0.036 or 0.032) * clampN(finite(mul or 1, 1), 0, 1) * (8 / gn)
     for i = 1, gn do
-      local e = i * 2.4 * (8 / gn) * s
+      local e = math.min(i * 1.8 * (8 / gn) * math.min(s, 1.4), 14)
       local c = COL.multi and gradAt(COL, (i - 1) / (gn - 1)) or COL.accent
       list[#list + 1] = { type = "rectangle", action = "fill", fillColor = withA(c, ga),
         roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
@@ -1379,17 +1382,18 @@ pushShadow = function(list, x, y, w, h, s, radius, mul, noGlow, lite)
   end
   if not shadow then return end
   local an = lite and 3 or 8
+  local off = math.min(8 * s * k, 10)
   for i = 1, an do                       -- ambient: ampia e morbida
-    local e = i * 2.6 * (8 / an) * s * k
+    local e = math.min(i * 2.6 * (8 / an) * s * k, 24)
     list[#list + 1] = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = 0.021 * (8 / an) * m },
       roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
-      frame = { x = x - e, y = y - e + 8 * s * k, w = w + 2 * e, h = h + 2 * e } }
+      frame = { x = x - e, y = y - e + off, w = w + 2 * e, h = h + 2 * e } }
   end
   for i = 1, (lite and 1 or 4) do        -- contatto: stretta e più scura
-    local e = (lite and 2.4 or i * 0.9) * s * k
+    local e = math.min((lite and 2.4 or i * 0.9) * s * k, 6)
     list[#list + 1] = { type = "rectangle", action = "fill", fillColor = { red = 0, green = 0, blue = 0, alpha = (lite and 0.13 or 0.05) * m },
       roundedRectRadii = { xRadius = radius + e, yRadius = radius + e },
-      frame = { x = x - e, y = y - e + 2 * s * k + 1, w = w + 2 * e, h = h + 2 * e } }
+      frame = { x = x - e, y = y - e + math.min(2 * s * k, 3) + 1, w = w + 2 * e, h = h + 2 * e } }
   end
 end
 
