@@ -477,6 +477,61 @@ local function dens() return DENS[config.density] or DENS.normal end
 local function animOn() return config.animOn ~= false end
 local function gapK() return dens().gap end
 
+-- SANIFICAZIONE CENTRALE DEI VALORI DI LOOK (e delle chiavi che li accompagnano: posizione, misura, orientamento).
+-- Ogni valore passa di qui in ingresso (loadSettings, setLook, Sorprendimi): tipo, intervallo, enum validi; invalido -> default
+-- (mai errore). Un solo punto: i setter della UI e il file settings.lua non possono piu' portare nel codice stringhe al posto di
+-- numeri/bool, valori fuori range o nomi sconosciuti. Tabella dentro config (niente nuovi local: limite 200 del chunk).
+config.LOOK = { def = {
+  style = "gold", themeMode = "dark", shadowOn = true, shadowIntensity = 0.5, glassOpacity = 0,
+  cornerStyle = "round", animOn = true, animSpeed = "normal", waveStyle = "bars", waveColor = "auto",
+  micPulse = 0.5, glowOn = false, uiFont = "sf", timerFont = "mono", density = "normal", idleOpacity = 1,
+} }
+do
+  local K = config.LOOK
+  local function asBool(v, d)
+    if v == true or v == "true" or v == 1 or v == "1" then return true end
+    if v == false or v == "false" or v == 0 or v == "0" then return false end
+    return d
+  end
+  local function asNum(v)
+    v = tonumber(v)
+    if v == nil or v ~= v or v == math.huge or v == -math.huge then return nil end
+    return v
+  end
+  local function oneOf(v, list, d) for _, x in ipairs(list) do if v == x then return v end end return d end
+  K.asBool, K.asNum = asBool, asNum
+  -- valore valido per la chiave (nil/invalido -> default della chiave)
+  function K.clean(key, v)
+    local d = K.def[key]
+    if key == "style" then return (type(v) == "string" and FAMILIES[v]) and v or d
+    elseif key == "themeMode" then return oneOf(v, { "dark", "light", "auto" }, d)
+    elseif key == "shadowOn" or key == "glowOn" or key == "animOn" then return asBool(v, d)
+    elseif key == "shadowIntensity" then return clampN(asNum(v) or d, 0, 1)
+    elseif key == "glassOpacity" then local n = asNum(v); if not n or n <= 0 then return 0 end return clampN(n, 0.5, 1)   -- 0 = default del tema
+    elseif key == "cornerStyle" then return (type(v) == "string" and RADIUS_MUL[v]) and v or d
+    elseif key == "animSpeed" then return (type(v) == "string" and SPEED_MUL[v]) and v or d
+    elseif key == "waveStyle" then return oneOf(v, { "bars", "thin", "dots", "line" }, d)
+    elseif key == "waveColor" then return oneOf(v, { "accent", "gradient", "auto" }, d)
+    elseif key == "micPulse" then return clampN(asNum(v) or d, 0, 1)
+    elseif key == "idleOpacity" then return clampN(asNum(v) or d, 0.3, 1)
+    elseif key == "uiFont" then return oneOf(v, { "sf", "rounded", "mono" }, d)
+    elseif key == "timerFont" then return oneOf(v, { "mono", "sf", "rounded" }, d)
+    elseif key == "density" then return (type(v) == "string" and DENS[v]) and v or d
+    end
+    return v
+  end
+  -- porta tutta config in uno stato valido (chiavi assenti restano assenti: i default sono quelli di config)
+  function K.fix(c)
+    for key in pairs(K.def) do if c[key] ~= nil then c[key] = K.clean(key, c[key]) end end
+    if c.layers ~= nil then c.layers = asBool(c.layers, true) end
+    if c.micAutoFallback ~= nil then c.micAutoFallback = asBool(c.micAutoFallback, true) end
+    c.sizePreset = oneOf(c.sizePreset, { "standard", "large", "minimal" }, "standard")
+    c.orientation = oneOf(c.orientation, { "horizontal", "vertical" }, "horizontal")
+    local px, py = asNum(c.posX), asNum(c.posY)
+    if px and py and math.abs(px) < 1e5 and math.abs(py) < 1e5 then c.posX, c.posY = px, py else c.posX, c.posY = nil, nil end
+  end
+end
+
 local function applyTheme()
   local fam = FAMILIES[config.style] or FAMILIES.gold
   local base = fam[resolveMode()]
@@ -575,6 +630,7 @@ local function loadSettings()
   if s.themeAuto and not s.themeMode then config.themeMode = "auto" end
   if s.posX then config.posX = s.posX end
   if s.posY then config.posY = s.posY end
+  config.LOOK.fix(config)                       -- tipi, intervalli ed enum validi per ogni chiave di look (invalido -> default)
   if #config.ssBindings == 0 then config.ssBindings = { { kc = 61, mod = "alt", gesture = "double" } } end
   if #config.pauseBindings == 0 then config.pauseBindings = { { kc = 60, mod = "shift", gesture = "single" } } end
   config.scale = scaleFor(config.sizePreset)
@@ -3842,14 +3898,10 @@ do   -- (blocco: tiene sotto il limite di 200 variabili locali del chunk)
 ------------------------------------------------------------------------
 -- LOOK: valori di default, reset e "Sorprendimi"
 ------------------------------------------------------------------------
-local LOOK_DEFAULTS = {
-  style = "gold", themeMode = "dark", shadowOn = true, shadowIntensity = 0.5, glassOpacity = 0,
-  cornerStyle = "round", animOn = true, animSpeed = "normal", waveStyle = "bars", waveColor = "auto",
-  micPulse = 0.5, glowOn = false, uiFont = "sf", timerFont = "mono", density = "normal", idleOpacity = 1,
-}
+local LOOK_DEFAULTS = config.LOOK.def
 local LOOK_ORDER = { "style", "themeMode", "shadowOn", "shadowIntensity", "glassOpacity", "cornerStyle", "animOn", "animSpeed",
   "waveStyle", "waveColor", "micPulse", "glowOn", "uiFont", "timerFont", "density", "idleOpacity" }
-local function setLook(key, val) config[key] = val; persist(key, val) end
+local function setLook(key, val) val = config.LOOK.clean(key, val); config[key] = val; persist(key, val) end
 local function resetLook()
   for _, k in ipairs(LOOK_ORDER) do setLook(k, LOOK_DEFAULTS[k]) end
   segPrev = {}; togglePrev = {}
