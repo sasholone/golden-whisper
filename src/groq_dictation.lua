@@ -1202,9 +1202,9 @@ do
     rrect(els, cx - 7 * u, cy - 7 * u, 14 * u, 14 * u, 3 * u, { stroke = col, sw = 1.4 * u })
     rrect(els, cx - 3 * u, cy - 3 * u, 6 * u, 6 * u, 1.6 * u, { fill = col })
   end
-  function ICON.micS(els, cx, cy, sz, col) ICON.mic(els, cx, cy, sz * 0.62, col) end
-  function ICON.micM(els, cx, cy, sz, col) ICON.mic(els, cx, cy, sz * 0.84, col) end
-  function ICON.micL(els, cx, cy, sz, col) ICON.mic(els, cx, cy, sz * 1.05, col) end
+  function ICON.szMicS(els, cx, cy, sz, col) ICON.mic(els, cx, cy, sz * 0.62, col) end
+  function ICON.szMicM(els, cx, cy, sz, col) ICON.mic(els, cx, cy, sz * 0.84, col) end
+  function ICON.szMicL(els, cx, cy, sz, col) ICON.mic(els, cx, cy, sz * 1.05, col) end
   -- "Aa" / "09" nel VERO font (kind = sf | rounded | mono)
   function ICON.aaF(kind, str)
     return function(els, cx, cy, sz, col)
@@ -4963,7 +4963,7 @@ local function layoutSettings()
     y = y + bh + GAP
 
     sec("DIMENSIONE", ICON.sizeIcon)
-    segmented("size", { { label = "Minimal", val = "minimal", icon = ICON.micS }, { label = "Standard", val = "standard", icon = ICON.micM }, { label = "Grande", val = "large", icon = ICON.micL } },
+    segmented("size", { { label = "Minimal", val = "minimal", icon = ICON.szMicS }, { label = "Standard", val = "standard", icon = ICON.szMicM }, { label = "Grande", val = "large", icon = ICON.szMicL } },
       config.sizePreset, { y = y })
     y = y + 32 + GAP
 
