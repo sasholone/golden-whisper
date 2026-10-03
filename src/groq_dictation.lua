@@ -4027,8 +4027,16 @@ local function scrollBy(d, i)
   end
 end
 
+-- macOS disabilita un event tap se il callback tarda (UI che laggava) e Hammerspoon non lo riaccende da solo: la rotella smetteva di
+-- funzionare "a caso". Controllo di salute: tap spento -> start() (chiamato ogni secondo dal guard e a ogni apertura/render).
+function SET.tapAlive(t)
+  if not t then return false end
+  local ok, en = pcall(function() return t:isEnabled() end)
+  if ok and en == false then pcall(function() t:start() end); return true end
+  return false
+end
 local function startScrollTap()
-  if scrollTap then return end
+  if scrollTap then SET.tapAlive(scrollTap); return end
   local ev = hs.eventtap.event
   scrollTap = hs.eventtap.new({ ev.types.scrollWheel }, function(e)
     local cv = settingsCanvas
@@ -5489,6 +5497,7 @@ renderSettings = function(opts)
     panelIn("setvis", settingsCanvas, fx, fy, W, tH, 18)
     startScrollTap()
   else
+    startScrollTap()
     -- stessa finestra: header, tab e card restano dove sono; cambia solo il corpo (e la misura, con il centro
     -- orizzontale e il bordo alto fermi). Mai alpha < 1: niente lampeggio.
     local cv = cvOld
@@ -5941,6 +5950,8 @@ M._reassertOverlay = reassertOverlay
 function M._setBehavior(list) config.overlayBehavior = list; if overlay then overlay:behavior(list) end end
 local function guardTick()
   reassertOverlay(false)
+  if settingsCanvas then SET.tapAlive(scrollTap) end
+  SET.tapAlive(dragTap)
   if recording and not paused and not micWarned and segStart then
     if now() - math.max(lastSoundAt, segStart) >= config.silenceWarnSec then
       local noData = now() - math.max(lastRmsAt, segStart) >= config.silenceWarnSec
