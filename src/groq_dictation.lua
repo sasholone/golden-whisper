@@ -693,11 +693,6 @@ end
 local function segPath(i) return string.format("%s/groq_seg_%d.wav", config.workDir, i) end
 local function now() return hs.timer.secondsSinceEpoch() end
 local function fmtTime(t) local m = math.floor(t / 60); local s = math.floor(t % 60); return string.format("%d:%02d", m, s) end
-local function currentElapsed()
-  local e = elapsed
-  if recording and not paused and segStart then e = e + (now() - segStart) end
-  return e
-end
 local function mapLevel(db)
   if not db then return 0 end
   -- il parlato sta tra ~-45 dB (piano) e ~-15 dB (forte): finestra stretta così le barre
@@ -932,6 +927,19 @@ local ICON = {}
 -- e, dentro un timer/callback, l'errore si propaga e puo' innescare tempeste di errori. Qui si ingoia.
 function ICON.log(m) pcall(print, m) end
 function ICON.layersOn() return config.layers ~= false end
+-- secondi del segmento corrente contati DAL MIC VIVO: in connessione / ritentativo / fallback il segmento non conta niente (la ruota gira, il timer
+-- parte da 0:00 quando il mic risponde); ICON.micLive riallinea anche segStart. Il tempo dei segmenti precedenti (pausa/riprendi) sta in `elapsed`.
+function ICON.segDur()
+  if not segStart then return 0 end
+  local mc = ICON.micS
+  if mc and mc.ph and mc.ph ~= "live" then return 0 end
+  return math.max(0, now() - segStart)
+end
+local function currentElapsed()
+  local e = elapsed
+  if recording and not paused and segStart then e = e + ICON.segDur() end
+  return e
+end
 -- La cache dei dispositivi si aggiorna SOLO a riposo (init, ~3 s dopo la registrazione, apertura impostazioni, evento del watcher audio con
 -- debounce): `ffmpeg -list_devices` in parallelo a una registrazione che parte contende AVFoundation e ritarda il mic (visto fino a ~3 s).
 function ICON.devSoon(delay)
@@ -6024,6 +6032,7 @@ function ICON.micLive()
   local mc = ICON.micS
   if not mc or mc.ph == "live" then return end
   mc.ph = "live"; mc.liveAt = now()
+  if segStart then segStart = mc.liveAt end              -- il timer riparte da 0:00 adesso (non dall'avvio / dal ritentativo)
   if ICON.micTimer then ICON.micTimer:stop(); ICON.micTimer = nil end
 end
 function ICON.micLabel(t)             -- testo del timer mentre il mic si connette (nil = mostra il tempo)
@@ -6175,7 +6184,7 @@ stopCurrentSegment = function(newIntent)
 end
 rotate = function()
   if not recording or paused then return end
-  elapsed = elapsed + (now() - (segStart or now())); segStart = nil; stopCurrentSegment("rotate")
+  elapsed = elapsed + ICON.segDur(); segStart = nil; stopCurrentSegment("rotate")
 end
 local function start()
   recoverOrphans(true); cleanupSegments()
@@ -6189,10 +6198,11 @@ local function start()
 end
 function M.stop()
   if not recording then return end
+  local seg = ICON.segDur()                                -- prima di azzerare lo stato mic
   recording = false; stopRotTimer()
   ICON.micS = nil; ICON.devSoon(3)
   if paused then finalizeAndTranscribe()
-  else elapsed = elapsed + (now() - (segStart or now())); stopCurrentSegment("stop") end
+  else elapsed = elapsed + seg; stopCurrentSegment("stop") end
 end
 function M.cancel()
   if not recording then hideOverlay(); cleanupSegments(); return end
@@ -6209,7 +6219,7 @@ function M.togglePause()
     paused = false; segIndex = segIndex + 1; startSegment("fresh")
     if mode == "rec" then setRecordingElements(false) end
   else
-    paused = true; elapsed = elapsed + (now() - (segStart or now())); segStart = nil
+    paused = true; elapsed = elapsed + ICON.segDur(); segStart = nil
     stopCurrentSegment("pause")
     if mode == "rec" then setRecordingElements(true) end
   end
