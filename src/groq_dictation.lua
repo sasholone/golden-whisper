@@ -2782,6 +2782,9 @@ local function buildRecCard(els, ox, oy, s, vertical, isPaused, map, withTips)
     idx.ring1 = add(ring)
     local ring2 = {}; for k, v in pairs(ring) do ring2[k] = v end
     idx.ring2 = add(ring2)
+    -- pulsazione: se gli strati sono attivi l'onda dei cerchi e' fatta con K finestrine statiche (un cerchio ciascuna) la cui alpha di finestra
+    -- scorre a 30 Hz: nessun ridisegno di canvas (vedi ICON.ringTick / P:ripBuild). I due cerchi sopra restano come ripiego (strati spenti).
+    if ICON.layersOn() then idx.rip = { K = 4, cx = bcx, cy = bcy, r0 = br, sw = sc(1.4) } end
     idx.badge = add({ type = "circle", action = "strokeAndFill", fillColor = COL.accentSoft,
       strokeColor = withA(COL.accent, 0.55), strokeWidth = sc(1), center = { x = bcx, y = bcy }, radius = br,
       fillGradient = "linear", fillGradientAngle = COL.multi and 45 or 90,
@@ -3067,6 +3070,63 @@ do
   end
 end
 
+-- pulsazione del mic. STRATI attivi: K finestrine statiche (un cerchio a raggio crescente ciascuna); l'onda e' l'alpha di finestra di ognuna
+-- (dissolvenza incrociata tra raggi vicini): zero ridisegni di canvas, quindi puo' girare a 30 Hz. Senza strati: due cerchi + badge come prima.
+function ICON.ringTick(cv, I, t, active, warn)
+  if not I.ring1 then return end
+  local pk = clampN(config.micPulse == nil and 0.5 or config.micPulse, 0, 1) * 2
+  if not animOn() then pk = 0 end
+  if warn then pk = math.max(pk, 1) end
+  local grow = math.min(0.75, 0.55 * pk)
+  local speed = warn and 1.9 or 0.85
+  local R = I.rip
+  if R and type(cv.ripBuild) == "function" then
+    local gb = math.max(0.25, math.min(0.75, 0.55 * math.max(clampN(config.micPulse == nil and 0.5 or config.micPulse, 0, 1) * 2, warn and 1 or 0)))
+    local key = string.format("%.3f%s", gb, warn and "w" or "n")
+    if R.key ~= key then
+      R.key = key
+      local c1 = warn and COL.warn or (COL.multi and mix(COL.accent, COL.accent2 or COL.accent, 0.5) or COL.accent)
+      cv:ripBuild(R, gb, withA(c1, 1))
+    end
+    local K = R.K
+    local al = R.al
+    if not al then al = {}; R.al = al end
+    for k = 1, K do al[k] = 0 end
+    if active and pk > 0 then
+      for j = 0, 1 do
+        local ph = (t * speed + j * 0.5) % 1
+        local e = 1 - (1 - ph) * (1 - ph)
+        local p = 1 + clampN(e * grow / gb, 0, 1) * (K - 1)         -- posizione fra le finestrine (1..K)
+        local a = 0.55 * math.min(1, pk) * spow(1 - ph, 1.6)
+        local k0 = math.min(K, math.floor(p)); local f = p - k0
+        al[k0] = al[k0] + a * (1 - f)
+        if k0 < K then al[k0 + 1] = al[k0 + 1] + a * f end
+      end
+      for k = 1, K do al[k] = clampN(al[k], 0, 0.8) end
+    end
+    cv:ripSet(al)
+    return
+  end
+  local cols = { warn and COL.warn or COL.accent, warn and COL.warn or (COL.multi and COL.accent2 or COL.accent) }
+  local RL = I.ringLast
+  if not RL then RL = {}; I.ringLast = RL end
+  for k, ri in ipairs({ I.ring1, I.ring2 }) do
+    local ph = (t * speed + (k - 1) * 0.5) % 1
+    local e = 1 - (1 - ph) * (1 - ph)
+    local rad = finite(I.br * (1 + grow * e), I.br)
+    local al = active and 0.55 * math.min(1, pk) * spow(1 - ph, 1.6) or 0
+    local L = RL[k]
+    -- scrive solo cio' che cambia oltre soglia (a riposo / pulsazione 0 niente da aggiornare)
+    if not L or math.abs(rad - L.r) > 0.12 or math.abs(al - L.a) > 0.012 or warn ~= L.w then
+      cv:elementAttribute(ri, "radius", rad)
+      cv:elementAttribute(ri, "strokeColor", withA(cols[k], al))
+      RL[k] = { r = rad, a = al, w = warn }
+    end
+  end
+  local brd = finite(I.br * (1 + (active and 0.035 * pk * math.sin(t * 2 * math.pi * 0.85) or 0)), I.br)
+  if not RL.b or math.abs(brd - RL.b) > 0.06 then cv:elementAttribute(I.badge, "radius", brd); RL.b = brd end
+end
+
 local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
   -- timer + avviso
   guarded("timer", function()
@@ -3111,32 +3171,7 @@ local function hudVisuals(cv, I, t, dt, active, warn, text, onWarn, src)
   end)
 
   -- anelli pulsanti dietro al mic (intensità regolabile; spenti se le animazioni sono off)
-  guarded("rings", function()
-    if not I.ring1 then return end
-    local pk = clampN(config.micPulse == nil and 0.5 or config.micPulse, 0, 1) * 2
-    if not animOn() then pk = 0 end
-    if warn then pk = math.max(pk, 1) end
-    local grow = math.min(0.75, 0.55 * pk)
-    local cols = { warn and COL.warn or COL.accent, warn and COL.warn or (COL.multi and COL.accent2 or COL.accent) }
-    local speed = warn and 1.9 or 0.85
-    local RL = I.ringLast
-    if not RL then RL = {}; I.ringLast = RL end
-    for k, ri in ipairs({ I.ring1, I.ring2 }) do
-      local ph = (t * speed + (k - 1) * 0.5) % 1
-      local e = 1 - (1 - ph) * (1 - ph)
-      local rad = finite(I.br * (1 + grow * e), I.br)
-      local al = active and 0.55 * math.min(1, pk) * spow(1 - ph, 1.6) or 0
-      local L = RL[k]
-      -- scrive solo ciò che cambia oltre soglia (a riposo / pulsazione 0 niente da aggiornare)
-      if not L or math.abs(rad - L.r) > 0.12 or math.abs(al - L.a) > 0.012 or warn ~= L.w then
-        cv:elementAttribute(ri, "radius", rad)
-        cv:elementAttribute(ri, "strokeColor", withA(cols[k], al))
-        RL[k] = { r = rad, a = al, w = warn }
-      end
-    end
-    local brd = finite(I.br * (1 + (active and 0.035 * pk * math.sin(t * 2 * math.pi * 0.85) or 0)), I.br)
-    if not RL.b or math.abs(brd - RL.b) > 0.06 then cv:elementAttribute(I.badge, "radius", brd); RL.b = brd end
-  end)
+  guarded("rings", function() ICON.ringTick(cv, I, t, active, warn) end)
 
   -- particelle dello stile (neve, pipistrelli, ...): ~22 aggiornamenti/s, ferme se le animazioni sono spente o a riposo
   guarded("particles", function()
@@ -3542,6 +3577,36 @@ do
       return out
     end
     function P:layerCount() local n = 0; for _, L in pairs(layers) do if L.cv then n = n + 1 end end return n end
+    -- ONDA DI CERCHI A COSTO ~0: R.K finestrine statiche (un cerchio ciascuna, raggio da R.r0 a R.r0*(1+grow)); cambia solo l'alpha di finestra
+    -- (= alpha della base * L.ra). Nessun ridisegno di canvas: la CPU resta quella di una chiamata alpha() per finestra.
+    function P:ripClear() for k, L in pairs(layers) do if L.rip then P:layerClear(k) end end end
+    function P:ripActive() for _, L in pairs(layers) do if L.rip and L.cv and not L.dead then return true end end return false end
+    function P:ripBuild(R, grow, colr)
+      P:ripClear()
+      local K = math.max(2, R.K or 4)
+      local r1 = R.r0 * (1 + grow)
+      local half = math.ceil(r1 + (R.sw or 1.4) * 0.5 + 2)
+      local box = { x = math.floor(R.cx - half), y = math.floor(R.cy - half), w = 2 * half, h = 2 * half }
+      for k = 1, K do
+        local el = { type = "circle", action = "stroke", strokeColor = colr, strokeWidth = R.sw or 1.4,
+          center = { x = R.cx - box.x, y = R.cy - box.y }, radius = R.r0 + (r1 - R.r0) * (k - 1) / (K - 1) }
+        local key = "rp" .. k
+        P:layerApply({ els = { el }, box = box }, key)
+        local L = layers[key]
+        if L then L.rip, L.rk, L.ra = true, k, 0; pcall(function() L.cv:alpha(0) end) end
+      end
+    end
+    function P:ripSet(al)        -- al[k] = intensita' 0..1 della finestrina k (nil = tutto spento)
+      local ba = base:alpha()
+      for _, L in pairs(layers) do
+        if L.rip and L.cv and not L.dead then
+          local a = al and al[L.rk] or 0
+          if math.abs(a - (L.ra or 0)) > 0.006 or (a == 0 and (L.ra or 0) ~= 0) then
+            L.ra = a; pcall(function() L.cv:alpha(ba * a) end)
+          end
+        end
+      end
+    end
     function P:frame(fr)
       if fr == nil then return base:frame() end
       base:frame(fr)
@@ -3556,7 +3621,7 @@ do
     end
     function P:alpha(a)
       if a == nil then return base:alpha() end
-      base:alpha(a); each(function(cv) cv:alpha(a) end)
+      base:alpha(a); each(function(cv, L) cv:alpha(L.rip and a * (L.ra or 0) or a) end)
       return P
     end
     function P:show()
@@ -3572,7 +3637,7 @@ do
     end
     function P:relayer()                    -- rimette gli strati sopra la base (un click sulla base la porta in primo piano nel suo livello)
       local a = base:alpha()
-      each(function(cv) cv:alpha(a); cv:orderAbove(base) end, true)    -- (e li riallinea alla trasparenza della base: mai strati a mezza alpha)
+      each(function(cv, L) cv:alpha(L.rip and a * (L.ra or 0) or a); cv:orderAbove(base) end, true)    -- (e li riallinea alla trasparenza della base: mai strati a mezza alpha)
       return P
     end
     function P:mouseCallback(f)
@@ -5314,6 +5379,7 @@ function SET.buildLayers(els)
 end
 function SET.applyLayers(cv, specs, els)
   local failed = false
+  pcall(function() cv:ripClear() end)         -- anteprima ricostruita: le finestrine dell'onda di cerchi si ricreano al primo tick
   for _, key in ipairs({ "r1", "r2", "hero", "pv" }) do
     local sp = specs and specs[key] or nil
     local ok, err = pcall(function()
