@@ -3904,7 +3904,7 @@ local LOOK_ORDER = { "style", "themeMode", "shadowOn", "shadowIntensity", "glass
 local function setLook(key, val) val = config.LOOK.clean(key, val); config[key] = val; persist(key, val) end
 local function resetLook()
   for _, k in ipairs(LOOK_ORDER) do setLook(k, LOOK_DEFAULTS[k]) end
-  segPrev = {}; togglePrev = {}
+  segPrev = {}; togglePrev = {}; SET.pill = {}; SET.tog = {}
   applyTheme(); rebuildHUD()
 end
 -- SORPRENDIMI: solo combinazioni valide e belle. Non tocca modo, densita', animazioni, ombra (scelte dell'utente). Regole:
@@ -4188,7 +4188,11 @@ settingsMouse = function(_c, msg, id)
   if id == "tg_shadow" then setLook("shadowOn", not (config.shadowOn ~= false)); rebuildHUD(); renderSettings(); return end
   if id == "tg_glow" then setLook("glowOn", not (config.glowOn == true)); rebuildHUD(); renderSettings(); return end
   if id == "tg_anim" then setLook("animOn", not animOn()); renderSettings(); return end
-  if id == "btn_random" then randomLook(); resetArmAt = 0; renderSettings(); return end
+  if id == "btn_random" then
+    randomLook(); resetArmAt = 0
+    segPrev = {}; togglePrev = {}; SET.pill = {}; SET.tog = {}     -- cambio di massa: niente pillole che scivolano (ognuna ri-fotografava la colonna ~9 volte)
+    renderSettings(); return
+  end
   if id == "btn_reset" then
     if resetArmAt > 0 and (now() - resetArmAt) < 3 then
       resetArmAt = 0; resetLook()
