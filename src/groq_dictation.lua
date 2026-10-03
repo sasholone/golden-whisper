@@ -3907,21 +3907,29 @@ local function resetLook()
   segPrev = {}; togglePrev = {}
   applyTheme(); rebuildHUD()
 end
+-- SORPRENDIMI: solo combinazioni valide e belle. Non tocca modo, densita', animazioni, ombra (scelte dell'utente). Regole:
+--   alone accento: solo su fondo scuro e di rado (25%): su fondo chiaro e' un alone colorato sporco; vetro: >= 0.82 su scuro,
+--   >= 0.93 su chiaro (un vetro molto trasparente su fondo chiaro lascia vedere l'ombra sotto la card); gradiente onda solo su stili multicolore.
 local function randomLook()
   math.randomseed(os.time() + math.floor((hs.timer.secondsSinceEpoch() * 1000) % 100000))
   local function pick(t) return t[math.random(#t)] end
   local function r2(v) return tonumber(string.format("%.2f", v)) end
   local choices = {}
   for _, k in ipairs(FAMILY_ORDER) do if k ~= config.style then choices[#choices + 1] = k end end
-  setLook("style", pick(choices))
+  local st = pick(choices)
+  local dark = (resolveMode() == "dark")
+  local T = (FAMILIES[st] or FAMILIES.gold)[dark and "dark" or "light"]
+  setLook("style", st)
   setLook("waveStyle", pick({ "bars", "thin", "dots", "line" }))
-  setLook("waveColor", math.random() < 0.65 and "gradient" or "accent")
+  setLook("waveColor", (T.multi and math.random() < 0.7) and "gradient" or "accent")
   setLook("cornerStyle", pick({ "round", "round", "medium", "square" }))
-  setLook("glowOn", math.random() < 0.4)
+  setLook("glowOn", dark and math.random() < 0.25)
   setLook("micPulse", r2(0.25 + math.random() * 0.6))
-  setLook("glassOpacity", r2(0.78 + math.random() * 0.22))
+  setLook("glassOpacity", dark and r2(0.82 + math.random() * 0.18) or r2(0.93 + math.random() * 0.07))
   setLook("timerFont", pick({ "mono", "sf", "rounded" }))
   setLook("uiFont", pick({ "sf", "sf", "rounded" }))
+  config.LOOK.fix(config)
+  ICON.hudShape = nil                                    -- niente forma del pack precedente rimasta attiva
   applyTheme(); rebuildHUD()
 end
 
