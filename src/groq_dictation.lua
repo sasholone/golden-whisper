@@ -718,7 +718,12 @@ local function loadHistory()
   local raw = f:read("*a"); f:close()
   local ok, data = pcall(hs.json.decode, raw)
   if not ok or type(data) ~= "table" then return {} end
-  return data
+  -- history.json scritto a mano / corrotto: solo voci {ts numero, text stringa} (un ts non numerico faceva fallire os.date nel pannello)
+  local out = {}
+  for _, e in ipairs(data) do
+    if type(e) == "table" and type(e.text) == "string" then out[#out + 1] = { ts = tonumber(e.ts) or os.time(), text = e.text } end
+  end
+  return out
 end
 local function saveHistoryEntry(text)
   if not text or trim(text) == "" then return end
@@ -6147,7 +6152,7 @@ local function transcribeAll(paths, i, acc)
   if i > #paths then
     local text = trim(table.concat(acc, " "))
     if text == "" then failSaving("Nessun testo") return end
-    saveHistoryEntry(text)
+    pcall(saveHistoryEntry, text)                       -- uno storico illeggibile/disco pieno non deve bloccare incolla e busy
     busy = false; setStatus("✓  Fatto")
     hs.timer.doAfter(0.30, function() pasteText(text) end)
     hs.timer.doAfter(0.85, hideOverlay); cleanupSegments()
@@ -6337,6 +6342,7 @@ local function guardTick()
   reassertOverlay(false)
   if settingsCanvas then SET.tapAlive(scrollTap) end
   SET.tapAlive(dragTap)
+  SET.tapAlive(ICON.hkTap)          -- tap dei tasti: se macOS lo disabilita (callback in ritardo durante un lag) i tasti smettevano di funzionare fino al reload
   if recording and not paused and not micWarned and segStart then
     if now() - math.max(lastSoundAt, segStart) >= config.silenceWarnSec then
       local noData = now() - math.max(lastRmsAt, segStart) >= config.silenceWarnSec
@@ -6525,6 +6531,7 @@ end
 
 local function initHotkeys()
   local T = hs.eventtap.event.types
+  if watcher then watcher:stop() end                 -- init chiamato due volte: niente secondo tap (ogni pressione contava doppio)
   watcher = hs.eventtap.new({ T.flagsChanged, T.keyDown, T.keyUp }, function(e)
     local kc = e:getKeyCode()
     local act, b = matchAction(kc)
@@ -6561,6 +6568,7 @@ local function initHotkeys()
     return (b.mod == "key")
   end)
   watcher:start()
+  ICON.hkTap = watcher
 end
 
 ------------------------------------------------------------------------
