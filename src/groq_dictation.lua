@@ -6054,14 +6054,32 @@ end
 local function transcribeOne(wavPath, cb)
   local key = readKey()
   if not key then cb(false, nil, "Nessuna chiave Groq") return end
-  local args = { "-s", "-S", "https://api.groq.com/openai/v1/audio/transcriptions",
-    "-H", "Authorization: Bearer " .. key, "-F", "model=" .. config.model,
+  -- -w: codice HTTP in coda all'output (senza, un 401/429/500 di Groq usciva con code 0 e il JSON d'errore veniva INCOLLATO come testo);
+  -- tetti di tempo: senza, una connessione appesa lasciava l'app "Trascrivo…" per sempre (busy = nessuna nuova registrazione)
+  local args = { "-s", "-S", "--connect-timeout", "20", "--speed-limit", "1", "--speed-time", "90", "--max-time", "900",
+    "-w", "\n%{http_code}", "https://api.groq.com/openai/v1/audio/transcriptions",
+    "-H", "Authorization: Bearer " .. key, "-F", "model=" .. tostring(config.model),
     "-F", "file=@" .. wavPath, "-F", "response_format=text", "-F", "temperature=0" }
-  if config.language then table.insert(args, "-F"); table.insert(args, "language=" .. config.language) end
+  if config.language then table.insert(args, "-F"); table.insert(args, "language=" .. tostring(config.language)) end
+  local done = false
+  local function fin(...) if done then return end done = true; cb(...) end
   local t = hs.task.new(config.curl, function(code, out, err)
-    if code ~= 0 then cb(false, nil, "Groq errore " .. tostring(code) .. " " .. trim(err)) else cb(true, trim(out)) end
+    if code ~= 0 then
+      fin(false, nil, (code == 28) and "Groq non risponde (timeout)" or ("Groq errore " .. tostring(code) .. " " .. trim(err)))
+      return
+    end
+    out = out or ""
+    local body, http = out:match("^(.*)\n(%d%d%d)%s*$")
+    if not http then body = out end
+    if (http and http ~= "200") or ((not http) and trim(body):match("^{%s*\"error\"")) then
+      local msg
+      pcall(function() local j = hs.json.decode(body); msg = j and j.error and j.error.message end)
+      fin(false, nil, "Groq " .. (http or "errore") .. ((type(msg) == "string" and msg ~= "") and (": " .. msg:sub(1, 120)) or ""))
+      return
+    end
+    fin(true, trim(body))
   end, args)
-  t:start()
+  if not (t and t:start()) then fin(false, nil, "curl non parte") end
 end
 local function transcribeAll(paths, i, acc)
   if i > #paths then
