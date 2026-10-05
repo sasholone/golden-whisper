@@ -968,7 +968,21 @@ end
 local ICON = {}
 -- log che non lancia mai: con un'istanza `hs -c` morta (client ucciso) print() di Hammerspoon lancia "ipc port is no longer valid"
 -- e, dentro un timer/callback, l'errore si propaga e puo' innescare tempeste di errori. Qui si ingoia.
-function ICON.log(m) pcall(print, m) end
+-- log con tetto: al massimo 30 righe ogni 10 s e niente doppioni nella stessa finestra (un errore che si ripete a 30 Hz in due punti
+-- diversi riempiva la console di Hammerspoon all'infinito: la console che cresce senza limite rallenta tutta l'app)
+function ICON.log(m)
+  local L = ICON.logS or { t = 0, n = 0, seen = {}, drop = 0 }
+  ICON.logS = L
+  local t = os.time()
+  if math.abs(t - L.t) >= 10 then
+    if L.drop > 0 then pcall(print, "[GW] (" .. L.drop .. " messaggi ripetuti soppressi)") end
+    L.t = t; L.n = 0; L.seen = {}; L.drop = 0
+  end
+  m = tostring(m)
+  if L.seen[m] or L.n >= 30 then L.drop = L.drop + 1; return end
+  L.seen[m] = true; L.n = L.n + 1
+  pcall(print, m)
+end
 function ICON.layersOn() return config.layers ~= false end
 -- secondi del segmento corrente contati DAL MIC VIVO: in connessione / ritentativo / fallback il segmento non conta niente (la ruota gira, il timer
 -- parte da 0:00 quando il mic risponde); ICON.micLive riallinea anche segStart. Il tempo dei segmenti precedenti (pausa/riprendi) sta in `elapsed`.
@@ -4224,6 +4238,7 @@ local function stopPreview() if previewTimer then previewTimer:stop(); previewTi
 local function stopScrollTap() if scrollTap then scrollTap:stop(); scrollTap = nil end end
 
 closeSettings = function()
+  SET.openSeq = (SET.openSeq or 0) + 1                -- annulla un'apertura ancora in attesa della lista dei mic
   local cv = settingsCanvas
   if not cv then return end
   settingsCanvas = nil; settingsPos = nil
@@ -5914,8 +5929,11 @@ end
 openSettings = function()
   segPrev = {}; togglePrev = {}; resetArmAt = 0; SET.pill = {}; SET.tog = {}
   SET.K.refresh(); SET.K.armAt = 0; SET.K.tipReset(); SET.K.exp = false; SET.K.q = 0
+  SET.openSeq = (SET.openSeq or 0) + 1
+  local seq = SET.openSeq
   getAudioDevices(function(list)
     deviceCache = list; settingsDevices = list
+    if seq ~= SET.openSeq then return end         -- una richiesta piu' recente (o la chiusura) la supera: niente finestra che si riapre da sola
     if not settingsCanvas then SET.sc = { 0, 0 }; SET.W, SET.cap = settingsGeometry(); SET.H = SET.cap end
     renderSettings()
   end)
