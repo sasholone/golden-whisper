@@ -410,6 +410,17 @@ T("W69 material: default solid, set solid|glass persiste e va nello stato, inval
   if C.material ~= "solid" then return "reset_look: " .. tostring(C.material) end
   if C.LOOK.clean("material", nil) ~= "solid" then return "clean(nil)" end
   return true end)
+T("W70 material da settings.lua: glass letto, valore strano ignorato (resta quello corrente), assente -> invariato", function()
+  FAKE[C.settingsPath] = 'return { material = "glass" }'; D.loadS()
+  if C.material ~= "glass" then return "glass non letto: " .. tostring(C.material) end
+  FAKE[C.settingsPath] = 'return { material = "plastica" }'; D.loadS()
+  if C.LOOK.clean("material", C.material) ~= C.material then return "valore non valido in config: " .. tostring(C.material) end
+  FAKE[C.settingsPath] = 'return { material = "solid" }'; D.loadS()
+  if C.material ~= "solid" then return "solid non letto: " .. tostring(C.material) end
+  FAKE[C.settingsPath] = 'return { }'; D.loadS()
+  local w = openWeb(); local s = fresh(w)
+  if s.look.material ~= "solid" then return "stato senza chiave: " .. tostring(s.look.material) end
+  return true end)
 -- asset
 local function themesBase() return (C.keyPath:gsub("/api_key$", "")) .. "/themes" end
 local function vfsAsset(sid, name, size, content, mode)
