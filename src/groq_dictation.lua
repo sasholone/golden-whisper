@@ -752,55 +752,67 @@ end
 local function nBars() return (config.orientation == "vertical") and 9 or 12 end
 local function resetLevels() levels = {}; for _ = 1, nBars() do levels[#levels + 1] = 0 end end
 
-local function recoverOrphans(deferred)
-  local out = hs.execute("ls -1 '" .. config.workDir .. "'/groq_seg_*.wav 2>/dev/null")
+-- Audio orfano (sessione interrotta): rinominato subito fuori dal pattern dei segmenti, poi rimuxato in un ffmpeg FIGLIO asincrono
+-- con tetto di 10 s (se non va: copia semplice). Mai ffmpeg sincrono (hs.execute) sul thread principale: un ffmpeg che si blocca
+-- (coreaudiod inceppato) congelava tutto Hammerspoon, eventtap di tastiera/mouse compresi. onDone(lista dei file recuperati).
+local function recoverOrphans(deferred, onDone)
+  local out = hs.execute("ls -1 '" .. config.workDir .. "'/groq_seg_*.wav 2>/dev/null")   -- solo filesystem: non tocca CoreAudio
   local files = {}
   for l in (out or ""):gmatch("[^\n]+") do files[#files + 1] = l end
-  if #files == 0 then return {} end
-  if deferred then
-    -- nel percorso di avvio registrazione: niente ffmpeg sincrono. I file orfani vengono solo rinominati (fuori dal pattern dei segmenti
-    -- correnti) e recuperati dopo, a registrazione partita.
-    local stamp = os.date("%Y%m%d-%H%M%S")
-    local moved = {}
-    for i, p in ipairs(files) do
-      local np = string.format("%s/groq_orph_%s_%d.wav", config.workDir, stamp, i)
-      if os.rename(p, np) then moved[#moved + 1] = np end
-    end
-    hs.timer.doAfter(2.5, function()
-      local rec = {}
-      hs.execute("mkdir -p '" .. config.recDir .. "'")
-      for i, p in ipairs(moved) do
-        if fileSize(p) > 1000 then
-          local dest = string.format("%s/recovered-%s-%d.wav", config.recDir, stamp, i)
-          hs.execute(string.format("'%s' -y -i '%s' -c copy '%s' 2>/dev/null || cp '%s' '%s'", config.ffmpeg, p, dest, p, dest))
-          rec[#rec + 1] = dest
-        end
-        os.remove(p)
-      end
-      if #rec > 0 then gwAlert("💾 Recuperato audio da una sessione interrotta:\n" .. config.recDir, 8) end
-    end)
-    return {}
-  end
-  hs.execute("mkdir -p '" .. config.recDir .. "'")
+  if #files == 0 then if onDone then onDone({}) end return {} end
   local stamp = os.date("%Y%m%d-%H%M%S")
-  local recovered = {}
+  local moved = {}
   for i, p in ipairs(files) do
-    if fileSize(p) > 1000 then
-      local dest = string.format("%s/recovered-%s-%d.wav", config.recDir, stamp, i)
-      hs.execute(string.format("'%s' -y -i '%s' -c copy '%s' 2>/dev/null || cp '%s' '%s'", config.ffmpeg, p, dest, p, dest))
-      recovered[#recovered + 1] = dest
-    end
-    os.remove(p)
+    local np = string.format("%s/groq_orph_%s_%d.wav", config.workDir, stamp, i)
+    if os.rename(p, np) then moved[#moved + 1] = np end
   end
-  if #recovered > 0 then gwAlert("💾 Recuperato audio da una sessione interrotta:\n" .. config.recDir, 8) end
-  return recovered
+  local rec = {}
+  local function step(i)
+    if i > #moved then
+      if #rec > 0 then gwAlert("💾 Recuperato audio da una sessione interrotta:\n" .. config.recDir, 8) end
+      if onDone then onDone(rec) end
+      return
+    end
+    local p = moved[i]
+    if fileSize(p) <= 1000 then os.remove(p); return step(i + 1) end
+    local dest = string.format("%s/recovered-%s-%d.wav", config.recDir, stamp, i)
+    local fin = false
+    local function finish(ok)
+      if fin then return end
+      fin = true
+      if not ok or fileSize(dest) <= 1000 then                    -- remux non riuscito: copia semplice
+        local a = io.open(p, "rb"); local d = a and a:read("*a"); if a then a:close() end
+        local w = d and io.open(dest, "wb"); if w then w:write(d); w:close() end
+      end
+      if fileSize(dest) > 1000 then rec[#rec + 1] = dest; os.remove(p) end
+      hs.timer.doAfter(0, function() step(i + 1) end)
+    end
+    local t = hs.task.new(config.ffmpeg, function(code) finish(code == 0) end, { "-y", "-i", p, "-c", "copy", dest })
+    if not (t and t:start()) then finish(false); return end
+    hs.timer.doAfter(10, function() if not fin then pcall(function() t:terminate() end); finish(false) end end)
+  end
+  hs.timer.doAfter(deferred and 2.5 or 0.5, function() hs.execute("mkdir -p '" .. config.recDir .. "'"); step(1) end)
+  return {}
 end
 
 ------------------------------------------------------------------------
--- DEVICE AUDIO
+-- DEVICE AUDIO. Mai hs.audiodevice: ogni sua chiamata e' CoreAudio SINCRONO sul thread principale e con coreaudiod inceppato
+-- (cambio profilo AirPods) bloccava Hammerspoon per decine di secondi, eventtap compresi (= PC "bloccato"). La lista viene da
+-- `ffmpeg -list_devices` in un processo figlio: se si blocca, si blocca solo lui (tetto 8 s, poi SIGTERM/SIGKILL); mai due insieme.
 ------------------------------------------------------------------------
+config.DEV = { q = nil }
 local function getAudioDevices(cb)
-  local t = hs.task.new(config.ffmpeg, function(_c, _o, err)
+  local D = config.DEV
+  if D.q then D.q[#D.q + 1] = cb; return end          -- elenco gia' in corso: si aspetta quello
+  D.q = { cb }
+  local done, t = false, nil
+  local function finish(list)
+    if done then return end
+    done = true
+    local q = D.q; D.q = nil
+    for _, f in ipairs(q or {}) do f(list) end
+  end
+  t = hs.task.new(config.ffmpeg, function(_c, _o, err)
     local list, inAudio = {}, false
     for line in (err or ""):gmatch("[^\r\n]+") do
       if line:find("AVFoundation audio devices") then inAudio = true
@@ -810,22 +822,32 @@ local function getAudioDevices(cb)
         if n then list[#list + 1] = { idx = ":" .. n, name = name } end
       end
     end
-    cb(list)
+    finish(list)
   end, { "-f", "avfoundation", "-list_devices", "true", "-i", "" })
-  if not (t and t:start()) then cb({}) end          -- ffmpeg mancante/percorso sbagliato: lista vuota (prima: impostazioni che non si aprivano mai)
+  if not (t and t:start()) then finish({}); return end   -- ffmpeg mancante/percorso sbagliato: lista vuota (prima: impostazioni che non si aprivano mai)
+  hs.timer.doAfter(8, function()
+    if done then return end
+    local pid; pcall(function() pid = t:pid() end)
+    pcall(function() t:terminate() end)
+    hs.timer.doAfter(2, function()
+      local r = false; pcall(function() r = t:isRunning() end)
+      if r == true and pid and pid > 0 then hs.execute(config.kill .. " -KILL " .. pid) end
+    end)
+    finish({})
+  end)
 end
 local deviceCache = {}
-local function refreshDevices() getAudioDevices(function(list) deviceCache = list end) end
--- Fallback quando il mic scelto non c'è (es. AirPods spente): il mic integrato del Mac,
--- mai "il primo della lista" (che può essere il telefono).
+local function refreshDevices() getAudioDevices(function(list) if #list > 0 then deviceCache = list end end) end
+-- Fallback quando il mic scelto non c'è (es. AirPods spente): il mic integrato del Mac, riconosciuto per NOME
+-- ("MacBook Pro Microphone", "Microfono MacBook Air", "Microfono interno", "Built-in Microphone", iMac / Mac mini / Mac Studio / Mac Pro),
+-- mai "il primo della lista" se un integrato c'e' (il primo puo' essere il telefono).
 local function builtinOrFirst()
-  local builtin = {}
-  pcall(function()                                   -- transportType assente / device che sparisce durante la lettura: si usa il primo della lista
-    for _, d in ipairs(hs.audiodevice.allInputDevices() or {}) do
-      if d:transportType() == "Built-in" then builtin[d:name()] = true end
+  for _, d in ipairs(deviceCache) do
+    local n = tostring(d.name or ""):lower()
+    for _, k in ipairs({ "macbook", "built%-in", "integrat", "intern", "imac", "mac mini", "mac studio", "mac pro" }) do
+      if n:find(k) then return d end
     end
-  end)
-  for _, d in ipairs(deviceCache) do if builtin[d.name] then return d end end
+  end
   return deviceCache[1]
 end
 local function resolveMic()
@@ -6294,15 +6316,17 @@ function ICON.micLabel(t)             -- testo del timer mentre il mic si connet
   mc.shown = true
   return (mc.ph == "retry") and "Mic ↻" or ((mc.ph == "fallback") and "Mac…" or "Mic…")
 end
+-- Bluetooth riconosciuto per NOME (niente hs.audiodevice/transportType: CoreAudio sincrono, vedi DEVICE AUDIO). Regola prudente: solo
+-- nomi tipici di cuffie/auricolari wireless; un nome sconosciuto NON e' Bluetooth (al massimo niente fallback automatico, come prima
+-- per i mic USB). Un nome da integrato vince sempre.
+ICON.MIC_BT = { "airpods", "beats", "bluetooth", "buds", "wh%-", "wf%-", "bose", "jabra", "jbl", "plantronics", "poly ", "sennheiser",
+  "headset", "headphone", "cuffie", "auricolar", "shokz", "aftershokz", "nothing ear", "pixel buds" }
 function ICON.micIsBluetooth(name)
-  if not name then return false end
-  local ok, res = pcall(function()
-    for _, d in ipairs(hs.audiodevice.allInputDevices()) do
-      if d:name() == name then return d:transportType() == "Bluetooth" end
-    end
-    return false
-  end)
-  return ok and res or false
+  if type(name) ~= "string" then return false end
+  local n = name:lower()
+  for _, k in ipairs({ "macbook", "built%-in", "integrat", "intern", "imac", "mac mini", "mac studio", "mac pro" }) do if n:find(k) then return false end end
+  for _, k in ipairs(ICON.MIC_BT) do if n:find(k) then return true end end
+  return false
 end
 local startSegment, stopCurrentSegment
 function ICON.micTick()
@@ -6340,7 +6364,12 @@ end
 -- Avviso "non sto registrando": suono + alert + HUD rosso (resta finché l'audio non torna)
 local function warnNoMic(msg)
   micWarned = true
-  local snd = hs.sound.getByName("Basso"); if snd then snd:play() end
+  -- suono in un processo figlio (afplay): hs.sound passa da CoreAudio sul thread principale e l'avviso scatta proprio quando l'audio
+  -- e' in difficolta' (mic Bluetooth che cambia profilo, coreaudiod inceppato) -> rischio di bloccare Hammerspoon
+  pcall(function()
+    local t = hs.task.new("/usr/bin/afplay", function() end, { "/System/Library/Sounds/Basso.aiff" })
+    if t and t:start() then hs.timer.doAfter(4, function() pcall(function() if t:isRunning() then t:terminate() end end) end) end
+  end)
   gwAlert(msg, 4)
 end
 
@@ -6363,7 +6392,8 @@ local function guardTick()
   reassertOverlay(false)
   if settingsCanvas then SET.tapAlive(scrollTap) end
   SET.tapAlive(dragTap)
-  SET.tapAlive(ICON.hkTap)          -- tap dei tasti: se macOS lo disabilita (callback in ritardo durante un lag) i tasti smettevano di funzionare fino al reload
+  SET.tapAlive(ICON.hkTap)
+  if not recording and not busy and now() - (ICON.devPoll or 0) > 60 then ICON.devPoll = now(); ICON.devSoon(0.1) end   -- al posto del watcher CoreAudio          -- tap dei tasti: se macOS lo disabilita (callback in ritardo durante un lag) i tasti smettevano di funzionare fino al reload
   if recording and not paused and not micWarned and segStart then
     if now() - math.max(lastSoundAt, segStart) >= config.silenceWarnSec then
       local noData = now() - math.max(lastRmsAt, segStart) >= config.silenceWarnSec
@@ -6727,14 +6757,15 @@ function M.init()
     end
   end
   hs.execute("mkdir -p '" .. config.workDir .. "' '" .. config.recDir .. "'")
-  local recovered = recoverOrphans()
-  -- audio di una sessione interrotta → ritrascrivi in automatico (clipboard + .txt), senza disturbare
-  if config.autoTranscribeRecovered ~= false and recovered and #recovered > 0 then
-    hs.timer.doAfter(2.0, function() transcribeBackup(recovered, "recuperato") end)
-  end
+  recoverOrphans(false, function(recovered)
+    -- audio di una sessione interrotta → ritrascrivi in automatico (clipboard + .txt), senza disturbare
+    if config.autoTranscribeRecovered ~= false and recovered and #recovered > 0 then
+      hs.timer.doAfter(2.0, function() transcribeBackup(recovered, "recuperato") end)
+    end
+  end)
   refreshDevices()
-  hs.audiodevice.watcher.setCallback(function() ICON.devSoon(1.5) end)
-  hs.audiodevice.watcher.start()
+  -- niente hs.audiodevice.watcher (AudioObjectAddPropertyListener = CoreAudio sincrono all'avvio: con coreaudiod inceppato il reload
+  -- si congelava li'): i dispositivi nuovi si vedono con la lista ffmpeg a riposo (guardia, ~ogni 60 s), dopo lo stop e all'apertura impostazioni
   -- segui il tema di sistema quando themeAuto è attivo
   M._appearanceWatcher = hs.distributednotifications.new(function()
     if config.themeMode == "auto" or config.themeAuto then applyTheme(); rebuildHUD() end
