@@ -7561,7 +7561,11 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
   var GW = root.GW || (root.GW = {});
   var U = GW.util || require('./util.js');
   var O = GW.options || require('./options.js');
-  var SIZES = { general: { w: 432 }, keys: { w: 432 }, theme: { w: 800 } };
+  /* Dimensioni per tab: altezza MASSIMA della finestra (header + tab + corpo). Oltre, il corpo scorre dentro (per colonna nel tab Tema).
+     HARD_MAX_*: tetto assoluto, uguale a ICON.web.maxW / maxH dell'host (la pagina non chiede mai finestre piu' grandi). */
+  var SIZES = { general: { w: 432, maxH: 680 }, keys: { w: 432, maxH: 680 }, theme: { w: 800, maxH: 760 } };
+  var HARD_MAX_W = 820, HARD_MAX_H = 760;
+  function capHeight(tab, h) { var m = (SIZES[tab] || SIZES.general).maxH; return Math.max(1, Math.min(Math.round(h), m, HARD_MAX_H)); }
   function create(store, bridge) {
     var post = function (m) { return bridge.post(m); };
     var sendSetThrottled = {};
@@ -7609,7 +7613,7 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
       dragStart: function (sx, sy) { post({ op: 'drag_start', sx: sx || 0, sy: sy || 0 }); },
       interact: function () { post({ op: 'interact' }); },
       hb: function () { post({ op: 'hb' }); },
-      resizeRequest: function (w, h) { post({ op: 'resize_request', w: Math.round(w), h: Math.round(h) }); },
+      resizeRequest: function (w, h) { post({ op: 'resize_request', w: Math.min(Math.round(w), HARD_MAX_W), h: Math.min(Math.round(h), HARD_MAX_H) }); },
       ready: function () { post({ op: 'ready' }); },
       toggleKeyOpen: function () { store.dispatch({ type: 'ui', patch: { keyOpen: !store.get().ui.keyOpen } }); },
       setCat: function (id) { store.dispatch({ type: 'ui', patch: { cat: id } }); },
@@ -7617,7 +7621,7 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
     };
     return A;
   }
-  GW.actions = { create: create, SIZES: SIZES };
+  GW.actions = { create: create, SIZES: SIZES, capHeight: capHeight, HARD_MAX_W: HARD_MAX_W, HARD_MAX_H: HARD_MAX_H };
   if (typeof module !== 'undefined') module.exports = GW.actions;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
@@ -8448,7 +8452,7 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
       var name = shownTab || 'general', t = T[name];
       var chrome = hdr.offsetHeight + tabbar.offsetHeight + 1;
       var natural = t.natural ? t.natural() : 0;
-      var w = GW.actions.SIZES[name].w, h = Math.max(300, Math.round(chrome + natural + (name === 'theme' ? 0 : 6)));
+      var w = GW.actions.SIZES[name].w, h = GW.actions.capHeight(name, Math.max(300, Math.round(chrome + natural + (name === 'theme' ? 0 : 6))));   // tetto: oltre scorre dentro
       var k = w + 'x' + h; if (k === lastReq) return; lastReq = k;
       A.resizeRequest(w, h);
     }, 90);
@@ -8505,7 +8509,8 @@ end
 -- Pagina: scritta su ~/.config/groq-dictation/ui/settings.html e caricata con url() (cosi' le immagini file:// del tema si vedono).
 ------------------------------------------------------------------------
 ICON.web = (function()
-  local W = { cur = nil, failed = nil, pos = nil, size = { w = 560, h = 640 }, readySec = 4, devs = nil, stylesC = nil }
+  -- maxW/maxH: tetto di sicurezza per resize_request (la pagina non puo' chiedere finestre enormi; l'host clampa comunque a schermo-24)
+  local W = { cur = nil, failed = nil, pos = nil, size = { w = 560, h = 640 }, readySec = 4, devs = nil, stylesC = nil, maxW = 820, maxH = 760 }
   local canvasOpen, canvasClose = openSettings, closeSettings
   local LOOK = config.LOOK
   local LOOK_KEYS = { "style", "themeMode", "glassOpacity", "cornerStyle", "animOn", "animSpeed", "waveStyle", "waveColor", "micPulse",
@@ -9049,7 +9054,7 @@ ICON.web = (function()
     local w, h = tonumber(b.w), tonumber(b.h)
     if not w or not h or w ~= w or h ~= h or w == math.huge or h == math.huge then return end
     local sf = hs.screen.mainScreen():frame()
-    w = math.floor(clampN(w, 240, sf.w)); h = math.floor(clampN(h, 160, sf.h))
+    w = math.floor(clampN(w, 240, math.max(240, math.min(sf.w - 24, W.maxW)))); h = math.floor(clampN(h, 160, math.max(160, math.min(sf.h - 24, W.maxH))))
     local f = inst.wv:frame()
     local top = f.y
     if top + h > sf.y + sf.h then top = math.max(sf.y, sf.y + sf.h - h) end

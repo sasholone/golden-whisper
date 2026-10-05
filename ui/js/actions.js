@@ -5,7 +5,11 @@
   var U = GW.util || require('./util.js');
   var O = GW.options || require('./options.js');
 
-  var SIZES = { general: { w: 432 }, keys: { w: 432 }, theme: { w: 800 } };
+  /* Dimensioni per tab: altezza MASSIMA della finestra (header + tab + corpo). Oltre, il corpo scorre dentro (per colonna nel tab Tema).
+     HARD_MAX_*: tetto assoluto, uguale a ICON.web.maxW / maxH dell'host (la pagina non chiede mai finestre piu' grandi). */
+  var SIZES = { general: { w: 432, maxH: 680 }, keys: { w: 432, maxH: 680 }, theme: { w: 800, maxH: 760 } };
+  var HARD_MAX_W = 820, HARD_MAX_H = 760;
+  function capHeight(tab, h) { var m = (SIZES[tab] || SIZES.general).maxH; return Math.max(1, Math.min(Math.round(h), m, HARD_MAX_H)); }
 
   function create(store, bridge) {
     var post = function (m) { return bridge.post(m); };
@@ -54,7 +58,7 @@
       dragStart: function (sx, sy) { post({ op: 'drag_start', sx: sx || 0, sy: sy || 0 }); },
       interact: function () { post({ op: 'interact' }); },
       hb: function () { post({ op: 'hb' }); },
-      resizeRequest: function (w, h) { post({ op: 'resize_request', w: Math.round(w), h: Math.round(h) }); },
+      resizeRequest: function (w, h) { post({ op: 'resize_request', w: Math.min(Math.round(w), HARD_MAX_W), h: Math.min(Math.round(h), HARD_MAX_H) }); },
       ready: function () { post({ op: 'ready' }); },
       toggleKeyOpen: function () { store.dispatch({ type: 'ui', patch: { keyOpen: !store.get().ui.keyOpen } }); },
       setCat: function (id) { store.dispatch({ type: 'ui', patch: { cat: id } }); },
@@ -62,6 +66,6 @@
     };
     return A;
   }
-  GW.actions = { create: create, SIZES: SIZES };
+  GW.actions = { create: create, SIZES: SIZES, capHeight: capHeight, HARD_MAX_W: HARD_MAX_W, HARD_MAX_H: HARD_MAX_H };
   if (typeof module !== 'undefined') module.exports = GW.actions;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -27,7 +27,7 @@ export const read = (p) => readFileSync(p, 'utf8');
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* pagina costruita (dist) dentro jsdom. real=true simula hs.webview: window.webkit.messageHandlers.gw */
-export async function loadPage({ real = true, html } = {}) {
+export async function loadPage({ real = true, html, setup } = {}) {
   const { JSDOM, VirtualConsole } = require('jsdom');
   const { build } = await import(join(UI, 'build-inline.mjs'));
   const out = join(process.env.TMPDIR || '/tmp', 'gw-test-settings.html');
@@ -39,7 +39,7 @@ export async function loadPage({ real = true, html } = {}) {
   vc.on('error', (e) => errors.push(String(e)));
   const dom = new JSDOM(html || b.html, {
     runScripts: 'dangerously', pretendToBeVisual: true, url: 'file:///x/settings.html', virtualConsole: vc,
-    beforeParse(w) { if (real) w.webkit = { messageHandlers: { gw: { postMessage: (m) => sent.push(JSON.parse(JSON.stringify(m))) } } }; }
+    beforeParse(w) { if (real) w.webkit = { messageHandlers: { gw: { postMessage: (m) => sent.push(JSON.parse(JSON.stringify(m))) } } }; if (setup) setup(w); }
   });
   doms.push(dom);
   return { dom, w: dom.window, d: dom.window.document, sent, errors };

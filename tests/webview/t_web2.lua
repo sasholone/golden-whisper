@@ -376,6 +376,21 @@ T("W67 resize + chiusura durante l'animazione: nessun errore, nessun frame dopo"
   local n = w.nframe or 0; advance(1)
   if (w.nframe or 0) ~= n then return "frame dopo la chiusura" end
   return true end)
+T("W68 resize: tetto di sicurezza w<=820 h<=760 (anche se lo schermo e' enorme), mai oltre schermo-24", function()
+  local w = openWeb(); advance(1)
+  if W.maxW ~= 820 or W.maxH ~= 760 then return "costanti " .. tostring(W.maxW) .. "x" .. tostring(W.maxH) end
+  WV.send({ op = "resize_request", w = 5000, h = 5000 }, w); advance(0.5)
+  if w.fr.w ~= 820 or w.fr.h ~= 760 then return "tetto non applicato: " .. w.fr.w .. "x" .. w.fr.h end
+  WV.send({ op = "resize_request", w = 800, h = 1100 }, w); advance(0.5)
+  if w.fr.h ~= 760 then return "h 1100 -> " .. w.fr.h end
+  WV.send({ op = "resize_request", w = 432, h = 680 }, w); advance(0.5)
+  if w.fr.w ~= 432 or w.fr.h ~= 680 then return "valori sotto il tetto alterati: " .. w.fr.w .. "x" .. w.fr.h end
+  local o = { SCREENT.w, SCREENT.h }
+  SCREENT.w, SCREENT.h = 600, 500
+  WV.send({ op = "resize_request", w = 5000, h = 5000 }, w); advance(0.5)
+  SCREENT.w, SCREENT.h = o[1], o[2]
+  if w.fr.w > 576 or w.fr.h > 476 then return "schermo piccolo: " .. w.fr.w .. "x" .. w.fr.h end
+  return true end)
 -- asset
 local function themesBase() return (C.keyPath:gsub("/api_key$", "")) .. "/themes" end
 local function vfsAsset(sid, name, size, content, mode)

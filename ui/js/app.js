@@ -72,7 +72,7 @@
       var name = shownTab || 'general', t = T[name];
       var chrome = hdr.offsetHeight + tabbar.offsetHeight + 1;
       var natural = t.natural ? t.natural() : 0;
-      var w = GW.actions.SIZES[name].w, h = Math.max(300, Math.round(chrome + natural + (name === 'theme' ? 0 : 6)));
+      var w = GW.actions.SIZES[name].w, h = GW.actions.capHeight(name, Math.max(300, Math.round(chrome + natural + (name === 'theme' ? 0 : 6))));   // tetto: oltre scorre dentro
       var k = w + 'x' + h; if (k === lastReq) return; lastReq = k;
       A.resizeRequest(w, h);
     }, 90);
