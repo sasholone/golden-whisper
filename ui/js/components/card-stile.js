@@ -27,9 +27,16 @@
     if (icon) g.appendChild(U.h('img', { src: icon, alt: '', draggable: 'false' }));
     var el = U.h('button', { class: 'card', type: 'button', role: 'option', 'aria-selected': 'false', data: { id: style.id }, aria: { label: style.name },
       style: GW.theme.cardVars(style), on: { click: function () { onPick(style.id); } } },
-      [g, U.h('span', { class: 'nm', text: style.name }), U.h('span', { class: 'tick', aria: { hidden: 'true' } }, [GW.icons.make('check', 11, { sw: 2.4 })])]);
+      [g, U.h('span', { class: 'nm', text: style.name })]);
     return el;
   }
-  GW.ui.card = card; GW.ui.wavePoints = wavePoints;
+  /* carta corrente: classe + spunta (creata solo per la carta corrente: meno nodi per le altre) */
+  function setCurrent(el, on) {
+    el.classList.toggle('is-cur', !!on); el.setAttribute('aria-selected', on ? 'true' : 'false');
+    var t = el.querySelector('.tick');
+    if (on && !t) el.appendChild(U.h('span', { class: 'tick', aria: { hidden: 'true' } }, [GW.icons.make('check', 11, { sw: 2.4 })]));
+    else if (!on && t) el.removeChild(t);
+  }
+  GW.ui.card = card; GW.ui.cardSetCurrent = setCurrent; GW.ui.wavePoints = wavePoints;
   if (typeof module !== 'undefined') module.exports = { wavePoints: wavePoints };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

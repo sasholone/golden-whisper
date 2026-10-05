@@ -55,7 +55,7 @@
   }
 
   function initialUi() {
-    return { cat: 'all', hoverStyle: null, capture: null, keyOpen: false, keyArmedAt: 0, msg: null, toast: null, devicesBusy: false, ready: false, bridgeMock: false };
+    return { cat: 'all', catTouched: false, hoverStyle: null, capture: null, keyOpen: false, keyArmedAt: 0, msg: null, toast: null, devicesBusy: false, ready: false, bridgeMock: false };
   }
   function initial() {
     return { version: '', tab: 'general', look: O.defaultsLook(), general: O.defaultsGeneral(), keys: { ss: [], pause: [] },
@@ -92,6 +92,8 @@
     s.effectiveMode = raw.effectiveMode === 'light' ? 'light' : raw.effectiveMode === 'dark' ? 'dark' : (s.look.themeMode === 'light' ? 'light' : 'dark');
     s.assets = normAssets(raw.assets);
     if (!s.styles.some(function (st) { return st.id === s.look.style; })) { /* stile sconosciuto: resta l'id, la UI usa il primo */ }
+    /* categoria iniziale = quella dello stile CORRENTE (non 'Tutti'), finche' l'utente non sceglie una categoria */
+    if (!s.ui.catTouched) { var cs = currentStyle(s); if (cs && s.cats.some(function (c) { return c.id === cs.cat; })) s.ui = Object.assign({}, s.ui, { cat: cs.cat }); }
     if (!s.cats.some(function (c) { return c.id === s.ui.cat; })) s.ui = Object.assign({}, s.ui, { cat: 'all' });
     return s;
   }

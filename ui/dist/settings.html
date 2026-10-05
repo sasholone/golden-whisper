@@ -207,8 +207,9 @@ background: var(--grad); box-shadow: 0 8px 22px rgba(0,0,0,.3); opacity: 0; tran
 .cats { flex: none; width: 112px; display: flex; flex-direction: column; gap: 4px; }
 .cats .cat { height: 32px; flex: none; }
 .cards-wrap { flex: 1; min-width: 0; padding-right: 2px; }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; padding: 3px 3px 8px; }
-.card { position: relative; height: 76px; border-radius: var(--r-m); background: var(--row); border: 1px solid var(--divider); content-visibility: auto; contain-intrinsic-size: auto 76px; transition: transform .14s var(--ease-out); will-change: auto; text-align: center; }
+.cards { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 8px; padding: 3px 3px 8px; }
+.cards-sp { grid-column: 1 / -1; }
+.card { position: relative; height: 76px; border-radius: var(--r-m); background: var(--row); border: 1px solid var(--divider); transition: transform .14s var(--ease-out); will-change: auto; text-align: center; }
 .card::after { content: ''; position: absolute; inset: -1px; border-radius: inherit; box-shadow: inset 0 0 0 1.5px var(--ring, var(--accent)); opacity: 0; transition: opacity .14s linear; pointer-events: none; }
 .card:hover { transform: translateY(-1px); }
 .card:hover::after { opacity: .75; }
@@ -492,7 +493,7 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
     return out;
   }
   function initialUi() {
-    return { cat: 'all', hoverStyle: null, capture: null, keyOpen: false, keyArmedAt: 0, msg: null, toast: null, devicesBusy: false, ready: false, bridgeMock: false };
+    return { cat: 'all', catTouched: false, hoverStyle: null, capture: null, keyOpen: false, keyArmedAt: 0, msg: null, toast: null, devicesBusy: false, ready: false, bridgeMock: false };
   }
   function initial() {
     return { version: '', tab: 'general', look: O.defaultsLook(), general: O.defaultsGeneral(), keys: { ss: [], pause: [] },
@@ -528,6 +529,8 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
     s.effectiveMode = raw.effectiveMode === 'light' ? 'light' : raw.effectiveMode === 'dark' ? 'dark' : (s.look.themeMode === 'light' ? 'light' : 'dark');
     s.assets = normAssets(raw.assets);
     if (!s.styles.some(function (st) { return st.id === s.look.style; })) { /* stile sconosciuto: resta l'id, la UI usa il primo */ }
+    /* categoria iniziale = quella dello stile CORRENTE (non 'Tutti'), finche' l'utente non sceglie una categoria */
+    if (!s.ui.catTouched) { var cs = currentStyle(s); if (cs && s.cats.some(function (c) { return c.id === cs.cat; })) s.ui = Object.assign({}, s.ui, { cat: cs.cat }); }
     if (!s.cats.some(function (c) { return c.id === s.ui.cat; })) s.ui = Object.assign({}, s.ui, { cat: 'all' });
     return s;
   }
@@ -910,7 +913,7 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
       resizeRequest: function (w, h) { post({ op: 'resize_request', w: Math.min(Math.round(w), HARD_MAX_W), h: Math.min(Math.round(h), HARD_MAX_H) }); },
       ready: function () { post({ op: 'ready' }); },
       toggleKeyOpen: function () { store.dispatch({ type: 'ui', patch: { keyOpen: !store.get().ui.keyOpen } }); },
-      setCat: function (id) { store.dispatch({ type: 'ui', patch: { cat: id } }); },
+      setCat: function (id) { store.dispatch({ type: 'ui', patch: { cat: id, catTouched: true } }); },
       hoverStyle: function (id) { if (store.get().ui.hoverStyle !== id) store.dispatch({ type: 'ui', patch: { hoverStyle: id } }); }
     };
     return A;
@@ -1199,10 +1202,17 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
     if (icon) g.appendChild(U.h('img', { src: icon, alt: '', draggable: 'false' }));
     var el = U.h('button', { class: 'card', type: 'button', role: 'option', 'aria-selected': 'false', data: { id: style.id }, aria: { label: style.name },
       style: GW.theme.cardVars(style), on: { click: function () { onPick(style.id); } } },
-      [g, U.h('span', { class: 'nm', text: style.name }), U.h('span', { class: 'tick', aria: { hidden: 'true' } }, [GW.icons.make('check', 11, { sw: 2.4 })])]);
+      [g, U.h('span', { class: 'nm', text: style.name })]);
     return el;
   }
-  GW.ui.card = card; GW.ui.wavePoints = wavePoints;
+  /* carta corrente: classe + spunta (creata solo per la carta corrente: meno nodi per le altre) */
+  function setCurrent(el, on) {
+    el.classList.toggle('is-cur', !!on); el.setAttribute('aria-selected', on ? 'true' : 'false');
+    var t = el.querySelector('.tick');
+    if (on && !t) el.appendChild(U.h('span', { class: 'tick', aria: { hidden: 'true' } }, [GW.icons.make('check', 11, { sw: 2.4 })]));
+    else if (!on && t) el.removeChild(t);
+  }
+  GW.ui.card = card; GW.ui.cardSetCurrent = setCurrent; GW.ui.wavePoints = wavePoints;
   if (typeof module !== 'undefined') module.exports = { wavePoints: wavePoints };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
@@ -1563,7 +1573,12 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
     var empty = U.h('div', { class: 'cards-empty', text: 'Nessuno stile in questa categoria', hidden: true });
     cardsScroll.appendChild(empty);
     var left = U.h('div', { class: 'col' }, [hero, U.h('div', { class: 'theme-body' }, [catsEl, cardsScroll])]);
-    var built = { sig: '', cards: {}, chips: {}, order: [] }, lastStyle = null, lastCat = null, hoverId = null, firstShow = true;
+    /* Carte a FINESTRA: nel DOM solo le righe visibili +- BUF righe (spaziatori sopra/sotto per l'altezza). Una carta (e la sua mini onda SVG)
+       nasce solo quando la sua riga entra nella finestra; cambio categoria = si rifa' solo la lista. */
+    var PITCH = 84, ROWH = 76, GAP = 8, BUF = 3, FALLBACK_VH = 480, FALLBACK_COLS = 3;
+    var built = { sig: '', cache: {}, chips: {} }, list = [], win = { r0: -1, r1: -2 }, cols = FALLBACK_COLS;
+    var lastStyle = null, lastCat = null, hoverId = null, active = false, curId = null, picked = false, userScrolled = false, keepCat = null;
+    var spTop = U.h('div', { class: 'cards-sp', 'aria-hidden': 'true' }), spBot = U.h('div', { class: 'cards-sp', 'aria-hidden': 'true' });
     function catName(s, id) { for (var i = 0; i < s.cats.length; i++) if (s.cats[i].id === id) return s.cats[i].name; return ''; }
     function setHero(s, id, isPreview) {
       var st = null; for (var i = 0; i < s.styles.length; i++) if (s.styles[i].id === id) st = s.styles[i];
@@ -1574,20 +1589,82 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
       heroN.textContent = st.name;
       heroS.textContent = (isPreview ? 'Anteprima · ' : 'Stile attuale · ') + catName(s, st.cat);
     }
-    function buildCards(s) {
+    /* categorie (chip) + dati: si rifanno solo se cambiano stili/categorie/asset */
+    function buildData(s) {
       var sig = s.styles.map(function (x) { return x.id + x.name + x.cat; }).join('|') + '#' + s.cats.map(function (c) { return c.id + c.name; }).join('|') + '#' + JSON.stringify(s.assets);
       if (sig === built.sig) return;
-      built.sig = sig; built.cards = {}; built.chips = {}; U.clear(grid); U.clear(catsEl);
+      built.sig = sig; built.cache = {}; built.chips = {}; U.clear(catsEl);
       var counts = { all: s.styles.length };
       s.styles.forEach(function (st) { counts[st.cat] = (counts[st.cat] || 0) + 1; });
       s.cats.forEach(function (c) {
         var ch = UI.chip({ id: c.id, name: c.name, icon: O.CAT_ICONS[c.id] || 'catAll', count: counts[c.id] || 0, onClick: function (id) { A.setCat(id); } });
         ch.el.classList.add('cat'); built.chips[c.id] = ch; catsEl.appendChild(ch.el);
       });
-      var frag = root.document.createDocumentFragment();
-      s.styles.forEach(function (st) { var el = UI.card(st, s.assets, function (id) { A.set('style', id); }); built.cards[st.id] = { el: el, cat: st.cat }; frag.appendChild(el); });
-      grid.appendChild(frag); lastStyle = null; lastCat = null;
+      keepCat = lastCat; lastCat = null; win = { r0: -1, r1: -2 };       // dati rifatti: se la categoria e' la stessa si resta dove si e'
     }
+    function getCard(s, st) {
+      var el = built.cache[st.id];
+      if (!el) {
+        el = built.cache[st.id] = UI.card(st, s.assets, function (id) { picked = true; A.set('style', id); });
+        if (st.id === curId) UI.cardSetCurrent(el, true);
+      }
+      return el;
+    }
+    function layoutCols() {
+      var w = grid.clientWidth;
+      cols = w > 0 ? Math.max(1, Math.floor((w - 6 + GAP) / (84 + GAP))) : FALLBACK_COLS;
+      grid.style.setProperty('--cols', String(cols));
+    }
+    function viewH() { return cardsScroll.clientHeight || FALLBACK_VH; }
+    /* ricostruisce il contenuto della griglia per la finestra di righe corrente (force = anche se la finestra e' uguale) */
+    function renderWindow(force) {
+      var s = S.get(), rows = Math.ceil(list.length / cols);
+      var vh = viewH(), top = Math.min(Math.max(0, cardsScroll.scrollTop - 3), Math.max(0, rows * PITCH - vh));
+      var r0 = Math.max(0, Math.floor(top / PITCH) - BUF), r1 = Math.min(rows - 1, Math.floor((top + vh) / PITCH) + BUF);
+      if (!force && r0 === win.r0 && r1 === win.r1) return;
+      win = { r0: r0, r1: r1 };
+      var frag = root.document.createDocumentFragment();
+      if (r0 > 0) { spTop.style.height = (r0 * PITCH - GAP) + 'px'; frag.appendChild(spTop); }
+      for (var i = r0 * cols; i <= Math.min(list.length - 1, (r1 + 1) * cols - 1); i++) frag.appendChild(getCard(s, list[i]));
+      if (r1 < rows - 1) { spBot.style.height = ((rows - 1 - r1) * PITCH - GAP) + 'px'; frag.appendChild(spBot); }
+      U.clear(grid); grid.appendChild(frag);
+      grid.dataset.count = String(list.length); grid.dataset.rendered = String(grid.querySelectorAll('.card').length);
+    }
+    function curIndex() { for (var i = 0; i < list.length; i++) if (list[i].id === curId) return i; return -1; }
+    function scrollToRow(idx, center) {
+      if (idx < 0) { cardsScroll.scrollTop = 0; return; }
+      var y = Math.floor(idx / cols) * PITCH, vh = viewH();
+      cardsScroll.scrollTop = Math.max(0, center ? y - (vh - ROWH) / 2 : y);
+    }
+    /* nuova lista (categoria cambiata / prima apertura): filtra, mette a posto le colonne, porta la carta corrente in vista */
+    function applyList(s) {
+      var cat = s.ui.cat;
+      list = s.styles.filter(function (st) { return cat === 'all' || st.cat === cat; });
+      empty.hidden = list.length > 0;
+      layoutCols();
+      var idx = curIndex();
+      if (keepCat === cat && userScrolled) cardsScroll.scrollTop = Math.min(cardsScroll.scrollTop, Math.max(0, Math.ceil(list.length / cols) * PITCH - viewH()));
+      else { userScrolled = false; scrollToRow(idx, true); }
+      keepCat = null;
+      renderWindow(true);
+      Object.keys(built.chips).forEach(function (id) { built.chips[id].set(id === cat); });
+      lastCat = cat;
+    }
+    function syncCur(s) {
+      var id = GW.state.currentStyle(s).id;
+      if (id === curId) return;
+      var old = built.cache[curId], nu = built.cache[id]; curId = id;
+      if (old) UI.cardSetCurrent(old, false);
+      if (nu) UI.cardSetCurrent(nu, true);
+    }
+    cardsScroll.addEventListener('scroll', function () { if (active) renderWindow(false); }, { passive: true });
+    ['wheel', 'pointerdown', 'keydown', 'touchstart'].forEach(function (ev) { cardsScroll.addEventListener(ev, function () { userScrolled = true; }, { passive: true }); });
+    /* la finestra cambia misura (resize dell'host): colonne e righe visibili cambiano; se l'utente non ha ancora scorso si ricentra la carta corrente */
+    if (root.ResizeObserver) new root.ResizeObserver(function () {
+      if (!active) return; var c = cols; layoutCols();
+      if (!userScrolled) scrollToRow(curIndex(), true);
+      renderWindow(c !== cols);
+    }).observe(cardsScroll);
     grid.addEventListener('pointerover', function (e) {
       var c = e.target.closest && e.target.closest('.card'); var id = c ? c.dataset.id : null;
       if (id === hoverId) return; hoverId = id; setHero(S.get(), id || S.get().look.style, !!id && id !== S.get().look.style);
@@ -1641,18 +1718,15 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
     var right = U.h('div', { class: 'col' }, [pvHead, preview.el, controls]);
     var el = U.h('div', { class: 'pane-theme' }, [left, right]);
     function update(s) {
-      buildCards(s);
+      buildData(s);
       var L = s.look;
-      if (lastStyle !== L.style || lastCat !== s.ui.cat || !lastStyle) {
-        var curId = GW.state.currentStyle(s).id, anyShown = false;
-        Object.keys(built.cards).forEach(function (id) {
-          var c = built.cards[id], on = id === curId, show = s.ui.cat === 'all' || c.cat === s.ui.cat;
-          c.el.hidden = !show; anyShown = anyShown || show;
-          c.el.classList.toggle('is-cur', on); c.el.setAttribute('aria-selected', on ? 'true' : 'false');
-        });
-        empty.hidden = anyShown;
-        Object.keys(built.chips).forEach(function (id) { built.chips[id].set(id === s.ui.cat); });
-        lastStyle = L.style; lastCat = s.ui.cat;
+      if (active) {
+        if (lastCat !== s.ui.cat) { curId = GW.state.currentStyle(s).id; Object.keys(built.cache).forEach(function (id) { UI.cardSetCurrent(built.cache[id], id === curId); }); applyList(s); lastStyle = L.style; }
+        else if (lastStyle !== L.style) {
+          syncCur(s); lastStyle = L.style;
+          if (!picked) { var ix = curIndex(); if (ix >= 0) { var rr = Math.floor(ix / cols) * PITCH; if (rr < cardsScroll.scrollTop || rr + ROWH > cardsScroll.scrollTop + viewH()) { scrollToRow(ix, true); renderWindow(false); } } }
+        }
+        picked = false;
       }
       if (!hoverId) setHero(s, L.style, false);
       C.mode.set(L.themeMode);
@@ -1674,7 +1748,8 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
       natural: function () { return pvHead.offsetHeight + 8 + preview.el.offsetHeight + 12 + controlsInner.offsetHeight + 24; },
       setActive: function (v) {
         preview.setActive(v);
-        if (v && firstShow) { firstShow = false; var cur = built.cards[S.get().look.style]; if (cur) cardsScroll.scrollTop = Math.max(0, cur.el.getBoundingClientRect().top - cardsScroll.getBoundingClientRect().top + cardsScroll.scrollTop - cardsScroll.clientHeight / 2 + 38); }
+        if (v && !active) { active = true; lastCat = null; update(S.get()); }       // prima apertura (o riapertura): categoria dello stile corrente + scroll alla carta
+        else if (!v) active = false;
       } };
   }
   GW.tabs.theme = { create: create };
@@ -1704,14 +1779,18 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
   var TAB_ITEMS = [{ value: 'general', label: 'Generale', icon: 'sliders' }, { value: 'keys', label: 'Tasti', icon: 'keyboard' }, { value: 'theme', label: 'Tema', icon: 'palette' }];
   var tabs = UI.segmented({ items: TAB_ITEMS, value: 'general', label: 'Sezioni', iconSize: 15, onChange: function (v) { A.setTab(v); } });
   var tabbar = U.h('div', { class: 'tabbar' }, [tabs.el]);
-  /* ---------- pannelli (creati subito: i cambi di tab sono solo cross-fade) ---------- */
-  var T = { general: GW.tabs.general.create(ctx), keys: GW.tabs.keys.create(ctx), theme: GW.tabs.theme.create(ctx) };
+  /* ---------- pannelli: il guscio c'e' subito, il CONTENUTO di ogni tab si costruisce alla prima apertura (meno nodi DOM all'avvio) ---------- */
+  var T = {}, ro = null;
   var panes = U.h('div', { class: 'panes' });
   var P = {};
   GW.state.TABS.forEach(function (name) {
-    P[name] = U.h('div', { class: 'pane', role: 'tabpanel', data: { tab: name } }, [T[name].el]);
+    P[name] = U.h('div', { class: 'pane', role: 'tabpanel', data: { tab: name } });
     panes.appendChild(P[name]);
   });
+  function tabOf(name) {
+    if (!T[name]) { T[name] = GW.tabs[name].create(ctx); P[name].appendChild(T[name].el); if (ro) ro.observe(T[name].inner); }
+    return T[name];
+  }
   var toast = UI.toast(panel);
   U.append(panel, [hdr, tabbar, panes]);
   panel.appendChild(toast.el);
@@ -1725,6 +1804,7 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
     var prev = shownTab, dir = prev ? (GW.state.TABS.indexOf(name) > GW.state.TABS.indexOf(prev) ? 1 : -1) : 1;
     panel.dataset.tab = name; tabs.set(name);
     var nu = P[name], old = prev && P[prev];
+    tabOf(name);
     clearTimeout(hideTimers[name]);
     nu.classList.add('is-shown'); nu.classList.toggle('is-left', dir < 0); nu.classList.remove('is-active');
     void nu.offsetWidth;                                                  // reflow: parte la transizione
@@ -1734,8 +1814,9 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
       hideTimers[prev] = setTimeout(function () { if (shownTab !== prev) old.classList.remove('is-shown', 'is-left'); }, 280);
     }
     shownTab = name;
-    T.theme.setActive(name === 'theme');
-    if (T.general.closeBubbles && name !== 'general') T.general.closeBubbles();
+    tabOf(name);
+    if (T.theme) T.theme.setActive(name === 'theme');
+    if (T.general && T.general.closeBubbles && name !== 'general') T.general.closeBubbles();
     requestResize();
   }
   /* ---------- richiesta di resize (la finestra la ridimensiona Lua; qui niente animazioni di width/height) ---------- */
@@ -1744,6 +1825,7 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
     clearTimeout(resizeT);
     resizeT = setTimeout(function () {
       var name = shownTab || 'general', t = T[name];
+      if (!t) return;
       var chrome = hdr.offsetHeight + tabbar.offsetHeight + 1;
       var natural = t.natural ? t.natural() : 0;
       var w = GW.actions.SIZES[name].w, h = GW.actions.capHeight(name, Math.max(300, Math.round(chrome + natural + (name === 'theme' ? 0 : 6))));   // tetto: oltre scorre dentro
@@ -1752,26 +1834,28 @@ box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layo
     }, 90);
   }
   if (root.ResizeObserver) {
-    var ro = new root.ResizeObserver(requestResize);
-    GW.state.TABS.forEach(function (n) { ro.observe(T[n].inner); });
+    ro = new root.ResizeObserver(requestResize);
   }
   /* ---------- store -> UI ---------- */
-  var msgTimer = 0, lastMsg = null, lastToast = null;
+  var msgTimer = 0, lastMsg = null, lastToast = null, rendered = false;
   function render(s) {
     GW.theme.apply(s);
     ver.textContent = s.version ? 'v' + s.version : '';
     showTab(s.tab);
-    T.general.update(s); T.keys.update(s); T.theme.update(s);
+    rendered = true;
+    Object.keys(T).forEach(function (n) { T[n].update(s); });
     if (s.ui.msg !== lastMsg) {                                           // i messaggi della chiave spariscono dopo 9 s (come in Lua)
       lastMsg = s.ui.msg; clearTimeout(msgTimer);
       if (lastMsg && lastMsg.kind !== 'busy') { var m = lastMsg; msgTimer = setTimeout(function () { if (store.get().ui.msg === m) store.dispatch({ type: 'ui', patch: { msg: null } }); }, 9000); }
     }
     if (s.ui.toast !== lastToast) { lastToast = s.ui.toast; if (lastToast) toast.show(lastToast.text); }
   }
+  store.dispatch({ type: 'ui', patch: { bridgeMock: bridge.isMock } });
+  GW.theme.apply(store.get());
   store.subscribe(render);
   bridge.attach(store);
-  store.dispatch({ type: 'ui', patch: { bridgeMock: bridge.isMock } });
-  render(store.get());
+  /* niente render a vuoto: la pagina e' invisibile finche' Lua non manda lo stato (se tarda, dopo 400 ms si mostra comunque il default) */
+  setTimeout(function () { if (!rendered) render(store.get()); }, 400);
   A.ready();                                                              // Lua risponde con gw.onState(stato completo)
   /* interact: UNA volta, al primo pointerdown (l'host restituisce il focus all'app in primo piano). hb: heartbeat ogni 1000 ms (catena di setTimeout). */
   var interacted = false;

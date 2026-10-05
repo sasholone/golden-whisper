@@ -102,7 +102,7 @@ test('eventi: devices, capture_result, toast', async () => {
 
 test('interact: UNA volta al primo pointerdown; hb: ogni ~1000 ms; Esc con cattura attiva -> capture_cancel', async () => {
   const { w, d, sent } = await loadPage();
-  await sleep(30);
+  w.gw.onState({ tab: 'general' }); await sleep(30);
   assert.equal(sent.filter((m) => m.op === 'hb').length, 1);
   assert.equal(sent.filter((m) => m.op === 'interact').length, 0);
   d.querySelector('.seg-b').dispatchEvent(new w.Event('pointerdown', { bubbles: true }));

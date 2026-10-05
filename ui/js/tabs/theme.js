@@ -22,7 +22,12 @@
     cardsScroll.appendChild(empty);
     var left = U.h('div', { class: 'col' }, [hero, U.h('div', { class: 'theme-body' }, [catsEl, cardsScroll])]);
 
-    var built = { sig: '', cards: {}, chips: {}, order: [] }, lastStyle = null, lastCat = null, hoverId = null, firstShow = true;
+    /* Carte a FINESTRA: nel DOM solo le righe visibili +- BUF righe (spaziatori sopra/sotto per l'altezza). Una carta (e la sua mini onda SVG)
+       nasce solo quando la sua riga entra nella finestra; cambio categoria = si rifa' solo la lista. */
+    var PITCH = 84, ROWH = 76, GAP = 8, BUF = 3, FALLBACK_VH = 480, FALLBACK_COLS = 3;
+    var built = { sig: '', cache: {}, chips: {} }, list = [], win = { r0: -1, r1: -2 }, cols = FALLBACK_COLS;
+    var lastStyle = null, lastCat = null, hoverId = null, active = false, curId = null, picked = false, userScrolled = false, keepCat = null;
+    var spTop = U.h('div', { class: 'cards-sp', 'aria-hidden': 'true' }), spBot = U.h('div', { class: 'cards-sp', 'aria-hidden': 'true' });
 
     function catName(s, id) { for (var i = 0; i < s.cats.length; i++) if (s.cats[i].id === id) return s.cats[i].name; return ''; }
     function setHero(s, id, isPreview) {
@@ -34,20 +39,82 @@
       heroN.textContent = st.name;
       heroS.textContent = (isPreview ? 'Anteprima · ' : 'Stile attuale · ') + catName(s, st.cat);
     }
-    function buildCards(s) {
+    /* categorie (chip) + dati: si rifanno solo se cambiano stili/categorie/asset */
+    function buildData(s) {
       var sig = s.styles.map(function (x) { return x.id + x.name + x.cat; }).join('|') + '#' + s.cats.map(function (c) { return c.id + c.name; }).join('|') + '#' + JSON.stringify(s.assets);
       if (sig === built.sig) return;
-      built.sig = sig; built.cards = {}; built.chips = {}; U.clear(grid); U.clear(catsEl);
+      built.sig = sig; built.cache = {}; built.chips = {}; U.clear(catsEl);
       var counts = { all: s.styles.length };
       s.styles.forEach(function (st) { counts[st.cat] = (counts[st.cat] || 0) + 1; });
       s.cats.forEach(function (c) {
         var ch = UI.chip({ id: c.id, name: c.name, icon: O.CAT_ICONS[c.id] || 'catAll', count: counts[c.id] || 0, onClick: function (id) { A.setCat(id); } });
         ch.el.classList.add('cat'); built.chips[c.id] = ch; catsEl.appendChild(ch.el);
       });
-      var frag = root.document.createDocumentFragment();
-      s.styles.forEach(function (st) { var el = UI.card(st, s.assets, function (id) { A.set('style', id); }); built.cards[st.id] = { el: el, cat: st.cat }; frag.appendChild(el); });
-      grid.appendChild(frag); lastStyle = null; lastCat = null;
+      keepCat = lastCat; lastCat = null; win = { r0: -1, r1: -2 };       // dati rifatti: se la categoria e' la stessa si resta dove si e'
     }
+    function getCard(s, st) {
+      var el = built.cache[st.id];
+      if (!el) {
+        el = built.cache[st.id] = UI.card(st, s.assets, function (id) { picked = true; A.set('style', id); });
+        if (st.id === curId) UI.cardSetCurrent(el, true);
+      }
+      return el;
+    }
+    function layoutCols() {
+      var w = grid.clientWidth;
+      cols = w > 0 ? Math.max(1, Math.floor((w - 6 + GAP) / (84 + GAP))) : FALLBACK_COLS;
+      grid.style.setProperty('--cols', String(cols));
+    }
+    function viewH() { return cardsScroll.clientHeight || FALLBACK_VH; }
+    /* ricostruisce il contenuto della griglia per la finestra di righe corrente (force = anche se la finestra e' uguale) */
+    function renderWindow(force) {
+      var s = S.get(), rows = Math.ceil(list.length / cols);
+      var vh = viewH(), top = Math.min(Math.max(0, cardsScroll.scrollTop - 3), Math.max(0, rows * PITCH - vh));
+      var r0 = Math.max(0, Math.floor(top / PITCH) - BUF), r1 = Math.min(rows - 1, Math.floor((top + vh) / PITCH) + BUF);
+      if (!force && r0 === win.r0 && r1 === win.r1) return;
+      win = { r0: r0, r1: r1 };
+      var frag = root.document.createDocumentFragment();
+      if (r0 > 0) { spTop.style.height = (r0 * PITCH - GAP) + 'px'; frag.appendChild(spTop); }
+      for (var i = r0 * cols; i <= Math.min(list.length - 1, (r1 + 1) * cols - 1); i++) frag.appendChild(getCard(s, list[i]));
+      if (r1 < rows - 1) { spBot.style.height = ((rows - 1 - r1) * PITCH - GAP) + 'px'; frag.appendChild(spBot); }
+      U.clear(grid); grid.appendChild(frag);
+      grid.dataset.count = String(list.length); grid.dataset.rendered = String(grid.querySelectorAll('.card').length);
+    }
+    function curIndex() { for (var i = 0; i < list.length; i++) if (list[i].id === curId) return i; return -1; }
+    function scrollToRow(idx, center) {
+      if (idx < 0) { cardsScroll.scrollTop = 0; return; }
+      var y = Math.floor(idx / cols) * PITCH, vh = viewH();
+      cardsScroll.scrollTop = Math.max(0, center ? y - (vh - ROWH) / 2 : y);
+    }
+    /* nuova lista (categoria cambiata / prima apertura): filtra, mette a posto le colonne, porta la carta corrente in vista */
+    function applyList(s) {
+      var cat = s.ui.cat;
+      list = s.styles.filter(function (st) { return cat === 'all' || st.cat === cat; });
+      empty.hidden = list.length > 0;
+      layoutCols();
+      var idx = curIndex();
+      if (keepCat === cat && userScrolled) cardsScroll.scrollTop = Math.min(cardsScroll.scrollTop, Math.max(0, Math.ceil(list.length / cols) * PITCH - viewH()));
+      else { userScrolled = false; scrollToRow(idx, true); }
+      keepCat = null;
+      renderWindow(true);
+      Object.keys(built.chips).forEach(function (id) { built.chips[id].set(id === cat); });
+      lastCat = cat;
+    }
+    function syncCur(s) {
+      var id = GW.state.currentStyle(s).id;
+      if (id === curId) return;
+      var old = built.cache[curId], nu = built.cache[id]; curId = id;
+      if (old) UI.cardSetCurrent(old, false);
+      if (nu) UI.cardSetCurrent(nu, true);
+    }
+    cardsScroll.addEventListener('scroll', function () { if (active) renderWindow(false); }, { passive: true });
+    ['wheel', 'pointerdown', 'keydown', 'touchstart'].forEach(function (ev) { cardsScroll.addEventListener(ev, function () { userScrolled = true; }, { passive: true }); });
+    /* la finestra cambia misura (resize dell'host): colonne e righe visibili cambiano; se l'utente non ha ancora scorso si ricentra la carta corrente */
+    if (root.ResizeObserver) new root.ResizeObserver(function () {
+      if (!active) return; var c = cols; layoutCols();
+      if (!userScrolled) scrollToRow(curIndex(), true);
+      renderWindow(c !== cols);
+    }).observe(cardsScroll);
     grid.addEventListener('pointerover', function (e) {
       var c = e.target.closest && e.target.closest('.card'); var id = c ? c.dataset.id : null;
       if (id === hoverId) return; hoverId = id; setHero(S.get(), id || S.get().look.style, !!id && id !== S.get().look.style);
@@ -106,18 +173,15 @@
     var el = U.h('div', { class: 'pane-theme' }, [left, right]);
 
     function update(s) {
-      buildCards(s);
+      buildData(s);
       var L = s.look;
-      if (lastStyle !== L.style || lastCat !== s.ui.cat || !lastStyle) {
-        var curId = GW.state.currentStyle(s).id, anyShown = false;
-        Object.keys(built.cards).forEach(function (id) {
-          var c = built.cards[id], on = id === curId, show = s.ui.cat === 'all' || c.cat === s.ui.cat;
-          c.el.hidden = !show; anyShown = anyShown || show;
-          c.el.classList.toggle('is-cur', on); c.el.setAttribute('aria-selected', on ? 'true' : 'false');
-        });
-        empty.hidden = anyShown;
-        Object.keys(built.chips).forEach(function (id) { built.chips[id].set(id === s.ui.cat); });
-        lastStyle = L.style; lastCat = s.ui.cat;
+      if (active) {
+        if (lastCat !== s.ui.cat) { curId = GW.state.currentStyle(s).id; Object.keys(built.cache).forEach(function (id) { UI.cardSetCurrent(built.cache[id], id === curId); }); applyList(s); lastStyle = L.style; }
+        else if (lastStyle !== L.style) {
+          syncCur(s); lastStyle = L.style;
+          if (!picked) { var ix = curIndex(); if (ix >= 0) { var rr = Math.floor(ix / cols) * PITCH; if (rr < cardsScroll.scrollTop || rr + ROWH > cardsScroll.scrollTop + viewH()) { scrollToRow(ix, true); renderWindow(false); } } }
+        }
+        picked = false;
       }
       if (!hoverId) setHero(s, L.style, false);
       C.mode.set(L.themeMode);
@@ -139,7 +203,8 @@
       natural: function () { return pvHead.offsetHeight + 8 + preview.el.offsetHeight + 12 + controlsInner.offsetHeight + 24; },
       setActive: function (v) {
         preview.setActive(v);
-        if (v && firstShow) { firstShow = false; var cur = built.cards[S.get().look.style]; if (cur) cardsScroll.scrollTop = Math.max(0, cur.el.getBoundingClientRect().top - cardsScroll.getBoundingClientRect().top + cardsScroll.scrollTop - cardsScroll.clientHeight / 2 + 38); }
+        if (v && !active) { active = true; lastCat = null; update(S.get()); }       // prima apertura (o riapertura): categoria dello stile corrente + scroll alla carta
+        else if (!v) active = false;
       } };
   }
   GW.tabs.theme = { create: create };

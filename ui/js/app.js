@@ -27,14 +27,18 @@
   var tabs = UI.segmented({ items: TAB_ITEMS, value: 'general', label: 'Sezioni', iconSize: 15, onChange: function (v) { A.setTab(v); } });
   var tabbar = U.h('div', { class: 'tabbar' }, [tabs.el]);
 
-  /* ---------- pannelli (creati subito: i cambi di tab sono solo cross-fade) ---------- */
-  var T = { general: GW.tabs.general.create(ctx), keys: GW.tabs.keys.create(ctx), theme: GW.tabs.theme.create(ctx) };
+  /* ---------- pannelli: il guscio c'e' subito, il CONTENUTO di ogni tab si costruisce alla prima apertura (meno nodi DOM all'avvio) ---------- */
+  var T = {}, ro = null;
   var panes = U.h('div', { class: 'panes' });
   var P = {};
   GW.state.TABS.forEach(function (name) {
-    P[name] = U.h('div', { class: 'pane', role: 'tabpanel', data: { tab: name } }, [T[name].el]);
+    P[name] = U.h('div', { class: 'pane', role: 'tabpanel', data: { tab: name } });
     panes.appendChild(P[name]);
   });
+  function tabOf(name) {
+    if (!T[name]) { T[name] = GW.tabs[name].create(ctx); P[name].appendChild(T[name].el); if (ro) ro.observe(T[name].inner); }
+    return T[name];
+  }
   var toast = UI.toast(panel);
   U.append(panel, [hdr, tabbar, panes]);
   panel.appendChild(toast.el);
@@ -50,6 +54,7 @@
     var prev = shownTab, dir = prev ? (GW.state.TABS.indexOf(name) > GW.state.TABS.indexOf(prev) ? 1 : -1) : 1;
     panel.dataset.tab = name; tabs.set(name);
     var nu = P[name], old = prev && P[prev];
+    tabOf(name);
     clearTimeout(hideTimers[name]);
     nu.classList.add('is-shown'); nu.classList.toggle('is-left', dir < 0); nu.classList.remove('is-active');
     void nu.offsetWidth;                                                  // reflow: parte la transizione
@@ -59,8 +64,9 @@
       hideTimers[prev] = setTimeout(function () { if (shownTab !== prev) old.classList.remove('is-shown', 'is-left'); }, 280);
     }
     shownTab = name;
-    T.theme.setActive(name === 'theme');
-    if (T.general.closeBubbles && name !== 'general') T.general.closeBubbles();
+    tabOf(name);
+    if (T.theme) T.theme.setActive(name === 'theme');
+    if (T.general && T.general.closeBubbles && name !== 'general') T.general.closeBubbles();
     requestResize();
   }
 
@@ -70,6 +76,7 @@
     clearTimeout(resizeT);
     resizeT = setTimeout(function () {
       var name = shownTab || 'general', t = T[name];
+      if (!t) return;
       var chrome = hdr.offsetHeight + tabbar.offsetHeight + 1;
       var natural = t.natural ? t.natural() : 0;
       var w = GW.actions.SIZES[name].w, h = GW.actions.capHeight(name, Math.max(300, Math.round(chrome + natural + (name === 'theme' ? 0 : 6))));   // tetto: oltre scorre dentro
@@ -78,27 +85,29 @@
     }, 90);
   }
   if (root.ResizeObserver) {
-    var ro = new root.ResizeObserver(requestResize);
-    GW.state.TABS.forEach(function (n) { ro.observe(T[n].inner); });
+    ro = new root.ResizeObserver(requestResize);
   }
 
   /* ---------- store -> UI ---------- */
-  var msgTimer = 0, lastMsg = null, lastToast = null;
+  var msgTimer = 0, lastMsg = null, lastToast = null, rendered = false;
   function render(s) {
     GW.theme.apply(s);
     ver.textContent = s.version ? 'v' + s.version : '';
     showTab(s.tab);
-    T.general.update(s); T.keys.update(s); T.theme.update(s);
+    rendered = true;
+    Object.keys(T).forEach(function (n) { T[n].update(s); });
     if (s.ui.msg !== lastMsg) {                                           // i messaggi della chiave spariscono dopo 9 s (come in Lua)
       lastMsg = s.ui.msg; clearTimeout(msgTimer);
       if (lastMsg && lastMsg.kind !== 'busy') { var m = lastMsg; msgTimer = setTimeout(function () { if (store.get().ui.msg === m) store.dispatch({ type: 'ui', patch: { msg: null } }); }, 9000); }
     }
     if (s.ui.toast !== lastToast) { lastToast = s.ui.toast; if (lastToast) toast.show(lastToast.text); }
   }
+  store.dispatch({ type: 'ui', patch: { bridgeMock: bridge.isMock } });
+  GW.theme.apply(store.get());
   store.subscribe(render);
   bridge.attach(store);
-  store.dispatch({ type: 'ui', patch: { bridgeMock: bridge.isMock } });
-  render(store.get());
+  /* niente render a vuoto: la pagina e' invisibile finche' Lua non manda lo stato (se tarda, dopo 400 ms si mostra comunque il default) */
+  setTimeout(function () { if (!rendered) render(store.get()); }, 400);
   A.ready();                                                              // Lua risponde con gw.onState(stato completo)
   /* interact: UNA volta, al primo pointerdown (l'host restituisce il focus all'app in primo piano). hb: heartbeat ogni 1000 ms (catena di setTimeout). */
   var interacted = false;

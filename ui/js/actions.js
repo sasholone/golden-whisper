@@ -61,7 +61,7 @@
       resizeRequest: function (w, h) { post({ op: 'resize_request', w: Math.min(Math.round(w), HARD_MAX_W), h: Math.min(Math.round(h), HARD_MAX_H) }); },
       ready: function () { post({ op: 'ready' }); },
       toggleKeyOpen: function () { store.dispatch({ type: 'ui', patch: { keyOpen: !store.get().ui.keyOpen } }); },
-      setCat: function (id) { store.dispatch({ type: 'ui', patch: { cat: id } }); },
+      setCat: function (id) { store.dispatch({ type: 'ui', patch: { cat: id, catTouched: true } }); },
       hoverStyle: function (id) { if (store.get().ui.hoverStyle !== id) store.dispatch({ type: 'ui', patch: { hoverStyle: id } }); }
     };
     return A;

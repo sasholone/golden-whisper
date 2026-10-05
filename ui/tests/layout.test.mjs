@@ -17,7 +17,7 @@ test('capHeight: general/keys <= 680, theme <= 760, mai oltre 760 assoluto', () 
 
 test('resize_request: h <= 760 per OGNI tab anche con contenuto altissimo (general/keys 680, theme 760), w come da contratto', async () => {
   const { d, sent, w } = await loadPage({ setup: tall(1500) });
-  await sleep(200);
+  w.gw.onState({ tab: 'general' }); await sleep(200);
   const hs = {}; hs.general = sent.filter((m) => m.op === 'resize_request').pop();
   assert.ok(hs.general && hs.general.h === 680, 'prima misura general: ' + JSON.stringify(hs.general));
   for (const tab of ['keys', 'theme', 'general']) {
@@ -35,8 +35,8 @@ test('resize_request: h <= 760 per OGNI tab anche con contenuto altissimo (gener
 });
 
 test('resize_request: contenuto basso -> altezza naturale (sotto il tetto), mai sotto 300', async () => {
-  const { d, sent } = await loadPage({ setup: tall(60) });
-  await sleep(200);
+  const { d, sent, w } = await loadPage({ setup: tall(60) });
+  w.gw.onState({ tab: 'general' }); await sleep(200);
   const rz = sent.filter((m) => m.op === 'resize_request'); assert.ok(rz.length >= 1);
   assert.ok(rz.every((m) => m.h >= 300 && m.h < 680), JSON.stringify(rz));
 });
