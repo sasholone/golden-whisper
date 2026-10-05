@@ -10,16 +10,24 @@ import os, re, sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(ROOT, "src", "groq_dictation.lua")
-PAGES = [os.path.join(ROOT, "ui", "dist", "settings.html"), os.path.join(ROOT, "ui-stub", "settings.html")]
+PAGES = [os.path.join(ROOT, "ui", "dist", "settings.html"),
+         # sorgente alternativa per il build locale finche' i rami non sono uniti (worktree del frontend, sola lettura)
+         os.path.normpath(os.path.join(ROOT, "..", "golden-whisper-webview-ui", "ui", "dist", "settings.html")),
+         os.path.join(ROOT, "ui-stub", "settings.html")]
 BEGIN, END = "-- <<WEB_HTML_BEGIN>>", "-- <<WEB_HTML_END>>"
 LIMIT = 600 * 1024
+
+
+def rel(p):
+    r = os.path.relpath(p, ROOT)
+    return r if not r.startswith("..") else p
 
 
 def page_path():
     for p in PAGES:
         if os.path.isfile(p):
             return p
-    sys.exit("nessuna pagina: manca ui/dist/settings.html e ui-stub/settings.html")
+    sys.exit("nessuna pagina: manca ui/dist/settings.html (e le alternative)")
 
 
 def block(html):
@@ -53,9 +61,9 @@ def main():
     pre, cur, post = split(text)
     if check:
         if cur != want:
-            print("DIVERSO: il blocco in src non coincide con %s (lancia build.py)" % os.path.relpath(p, ROOT))
+            print("DIVERSO: il blocco in src non coincide con %s (lancia build.py)" % rel(p))
             sys.exit(1)
-        print("ok: il blocco coincide con %s" % os.path.relpath(p, ROOT))
+        print("ok: il blocco coincide con %s" % rel(p))
         return
     out = pre + want + post
     if out != text:
@@ -64,7 +72,7 @@ def main():
         os.replace(tmp, SRC)
     sz = len(out.encode("utf-8"))
     print("pagina: %s (%d byte) | src/groq_dictation.lua: %d byte (%.1f KB)%s" % (
-        os.path.relpath(p, ROOT), len(html.encode("utf-8")), sz, sz / 1024,
+        rel(p), len(html.encode("utf-8")), sz, sz / 1024,
         "  [riscritto]" if out != text else "  [invariato]"))
     if sz > LIMIT:
         print("ATTENZIONE: il file supera %d KB" % (LIMIT // 1024))
