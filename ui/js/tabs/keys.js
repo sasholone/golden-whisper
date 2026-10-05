@@ -45,7 +45,7 @@
     }
     function update(s) { renderGroup(gSs, s); renderGroup(gPause, s); }
     update(S.get());
-    return { el: el, inner: inner, update: update };
+    return { el: el, inner: inner, natural: function () { return inner.offsetHeight; }, update: update };
   }
   GW.tabs.keys = { create: create };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

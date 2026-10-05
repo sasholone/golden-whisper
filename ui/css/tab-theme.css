@@ -1,5 +1,5 @@
 /* tab Tema: due colonne (sinistra: stile attuale + categorie + carte; destra: anteprima fissa + controlli) */
-.pane-theme { padding: 4px 16px 16px; display: grid; grid-template-columns: 58fr 42fr; gap: 16px; min-height: 0; }
+.pane-theme { flex: 1; padding: 4px 16px 16px; display: grid; grid-template-columns: 58fr 42fr; grid-template-rows: minmax(0, 1fr); gap: 16px; min-height: 0; }
 .col { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 
 /* hero: stile attuale / anteprima in hover */

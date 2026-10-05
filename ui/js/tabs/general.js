@@ -105,7 +105,7 @@
       size.set(s.general.sizePreset); orient.set(s.general.orientation);
     }
     update(S.get());
-    return { el: el, inner: inner, update: update, closeBubbles: function () { tipTop.close(); tipFold.close(); } };
+    return { el: el, inner: inner, natural: function () { return inner.offsetHeight; }, update: update, closeBubbles: function () { tipTop.close(); tipFold.close(); } };
   }
   GW.tabs.general = { create: create };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
