@@ -820,9 +820,11 @@ local function refreshDevices() getAudioDevices(function(list) deviceCache = lis
 -- mai "il primo della lista" (che può essere il telefono).
 local function builtinOrFirst()
   local builtin = {}
-  for _, d in ipairs(hs.audiodevice.allInputDevices()) do
-    if d:transportType() == "Built-in" then builtin[d:name()] = true end
-  end
+  pcall(function()                                   -- transportType assente / device che sparisce durante la lettura: si usa il primo della lista
+    for _, d in ipairs(hs.audiodevice.allInputDevices() or {}) do
+      if d:transportType() == "Built-in" then builtin[d:name()] = true end
+    end
+  end)
   for _, d in ipairs(deviceCache) do if builtin[d.name] then return d end end
   return deviceCache[1]
 end
@@ -5821,7 +5823,9 @@ end
 renderSettings = function(opts)
   opts = opts or {}
   if not SET.W then SET.W, SET.cap = settingsGeometry(); SET.H = SET.cap end
-  SET.hvHide(); Anim.cancel("setui")
+  -- apertura/chiusura della scheda chiave in corso: i suoi indici valgono solo per il layout vecchio (cambio tab = scritture su elementi
+  -- di un'altra pagina). Se il nuovo layout contiene la scheda, layoutSettings la riavvia da K.q con gli indici nuovi (SET.kAnim)
+  SET.hvHide(); Anim.cancel("setui"); Anim.cancel("setvis", "kx")
   local snapSeg, snapTog = shallow(segPrev), shallow(togglePrev)
   local cvOld = settingsCanvas
   local hFrom = cvOld and clampN(finite(SET.hCur, SET.H), 40, 4000) or nil
