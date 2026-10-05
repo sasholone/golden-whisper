@@ -861,6 +861,7 @@ function Anim.tick()
   for _, ka in ipairs(snapshot) do
     local k, a = ka[1], ka[2]
     if Anim.list[k] == a then
+      if t < a.t0 then a.t0 = t end                 -- orologio tornato indietro (cambio data/ora): niente animazione ferma a p=0 per ore
       local p = clamp01(finite((t - a.t0) / a.dur, 1))
       local okE, ev = pcall(a.ease, p)
       pcall(a.fn, okE and finite(ev, p) or p, p)
@@ -6475,7 +6476,7 @@ end
 function M.togglePause()
   if not recording then return end
   local tp = now()
-  if tp - (ICON.pauseAt or -9) < 0.25 then return end      -- antirimbalzo: pausa/riprendi non si ripetono piu' di ~4 volte/s (doppio click, tasto che rimbalza)
+  if tp - (ICON.pauseAt or -9) < 0.25 and tp >= (ICON.pauseAt or -9) then return end   -- (orologio indietro: non bloccare la pausa)      -- antirimbalzo: pausa/riprendi non si ripetono piu' di ~4 volte/s (doppio click, tasto che rimbalza)
   ICON.pauseAt = tp
   if paused then
     paused = false; segIndex = segIndex + 1; startSegment("fresh")
@@ -6493,7 +6494,7 @@ end
 local watcher = nil
 local function handleDouble(kc, action)
   local t = now(); local last = taps[kc] or 0
-  if (t - last) < config.doubleTapSec then taps[kc] = 0; action() else taps[kc] = t end
+  if (t - last) < config.doubleTapSec and t >= last then taps[kc] = 0; action() else taps[kc] = t end
 end
 
 local function matchAction(kc)
