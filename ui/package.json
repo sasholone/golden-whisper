@@ -1,0 +1,7 @@
+{
+  "name": "gw-ui-dev",
+  "private": true,
+  "type": "commonjs",
+  "scripts": { "test": "node --test tests/", "build": "node build-inline.mjs" },
+  "devDependencies": { "jsdom": "^26.0.0" }
+}

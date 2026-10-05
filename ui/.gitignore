@@ -1,0 +1,4 @@
+node_modules/
+_scratch/
+.DS_Store
+dist/.test-settings.html
