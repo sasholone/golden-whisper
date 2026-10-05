@@ -41,10 +41,10 @@
       light: { bg1: '#fbfaff', bg2: '#e4e0ff', fg: '#15123a', fg2: '#5a5690', accent: '#0aa0c8', grad: ['#0a93ba', '#6240d8', '#d81c86'] }, fx: { bar: 'square' } }
   ];
   var NAMES = {
-    cl: ['Inchiostro', 'Caffè', 'Nebbia', 'Ardesia', 'Bordeaux', 'Platino', 'Rame', 'Avorio', 'Seppia'],
-    fk: ['Cosmo', 'Gelato', 'Cioccolato', 'Bacche', 'Memphis', 'Candy', 'Lava', 'Citrus', 'Pop Art', 'Cometa'],
-    nt: ['Deserto', 'Abissi', 'Matcha', 'Corallo', 'Lavanda', 'Forest', 'Lagoon', 'Muschio', 'Scogliera'],
-    ne: ['Digital Rain', 'Cyber', 'Tokyo', 'Acido', 'UV', 'Synthwave', 'Laser'],
+    cl: ['Gold', 'Mono', 'Inchiostro', 'Caffè', 'Nebbia', 'Ardesia', 'Bordeaux', 'Platino', 'Rame', 'Avorio', 'Seppia'],
+    fk: ['Sunset', 'Cosmo', 'Gelato', 'Cioccolato', 'Bacche', 'Memphis', 'Candy', 'Lava', 'Citrus', 'Pop Art', 'Cometa'],
+    nt: ['Ocean', 'Aurora', 'Deserto', 'Abissi', 'Matcha', 'Corallo', 'Lavanda', 'Forest', 'Lagoon', 'Muschio', 'Scogliera'],
+    ne: ['Neon', 'Digital Rain', 'Cyber', 'Tokyo', 'Acido', 'UV', 'Synthwave', 'Laser'],
     rt: ['Arcade', 'Vapor', 'Pirata', 'Noir', 'Miami', 'LCD', 'Ambra', 'Steam'],
     pp: ['Blue Rush', 'Blocky', 'Turbo Ball', 'Quahog', 'Quest', 'Zap', 'Funghetto'],
     st: ['Spooky', 'Noel', 'Sakura', 'Autunno', 'Estate', 'Primavera', 'Inverno', 'Cuori', 'Brindisi']
@@ -96,7 +96,8 @@
   function init() {
     var styles = buildStyles(70);
     var counts = {}; styles.forEach(function (s) { counts[s.cat] = (counts[s.cat] || 0) + 1; });
-    st = { tab: 'general', look: O.defaultsLook(), styles: styles,
+    var h = (root.location && root.location.hash || '').slice(1);
+    st = { tab: ['general', 'keys', 'theme'].indexOf(h) >= 0 ? h : 'general', look: O.defaultsLook(), styles: styles,
       cats: O.CATS_DEFAULT.slice(),
       general: { micName: DEVICES[1].name, devices: DEVICES.slice(), sizePreset: 'standard', orientation: 'horizontal' },
       keys: { ss: [{ label: 'F5', gesture: 'double' }, { label: '⌥ dx', gesture: 'hold' }], pause: [{ label: 'F6', gesture: 'single' }] },
@@ -144,7 +145,7 @@
       case 'set_tab': st.tab = m.tab; break;
       case 'close': evt('toast', { text: '(mock) Finestra chiusa' }); break;
       case 'resize_request': GW.mock.lastResize = { w: m.w, h: m.h }; break;
-      case 'drag_start': break;
+      case 'drag_start': case 'interact': case 'hb': break;
     }
   }
 

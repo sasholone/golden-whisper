@@ -33,9 +33,9 @@
   }
 
   var FONTS = {
-    sf: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif",
-    rounded: "ui-rounded, 'SF Pro Rounded', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
-    mono: "ui-monospace, 'SF Mono', Menlo, Monaco, monospace"
+    sf: '-apple-system, system-ui, sans-serif',                    // SF
+    rounded: 'ui-rounded, -apple-system, system-ui, sans-serif',  // SF Rounded
+    mono: 'ui-monospace, monospace'
   };
   var DEFAULT_GLASS = 0.95;          // alpha di default dei due toni del vetro (Lua: 0.95 / 0.97)
 

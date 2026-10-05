@@ -43,6 +43,7 @@
     var hud = U.h('div', { class: 'hud' }, [badge, canvas, timer]);
     var el = U.h('div', { class: 'pv', role: 'img', aria: { label: 'Anteprima dell’HUD' } }, [hud, U.h('span', { class: 'pv-hint', text: 'passa il mouse per animare' })]);
 
+    el.dataset.running = '0';
     var hover = false, active = false, raf = 0, last = 0, t0 = 0, dirty = false, lastIcon = '#', dpr = 1, cw = 0, chh = 0;
     var reduce = root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -102,8 +103,8 @@
       badge.style.transform = 'scale(' + (1 + s.look.micPulse * 0.14 * env).toFixed(3) + ')';
       timer.textContent = fmtTime(7 + t);
     }
-    function settle() { badge.style.transform = ''; timer.textContent = '00:07'; draw(null); }
-    function start() { if (!raf && shouldRun()) { t0 = performance.now(); last = 0; raf = root.requestAnimationFrame(frame); } }
+    function settle() { el.dataset.running = '0'; badge.style.transform = ''; timer.textContent = '00:07'; draw(null); }
+    function start() { if (!raf && shouldRun()) { el.dataset.running = '1'; t0 = performance.now(); last = 0; raf = root.requestAnimationFrame(frame); } }
     function stop() { if (raf) { root.cancelAnimationFrame(raf); raf = 0; settle(); } }
     function sync() { if (shouldRun()) start(); else stop(); }
     function scheduleDraw() { if (dirty || raf) return; dirty = true; root.requestAnimationFrame(function () { dirty = false; if (!raf) draw(null); }); }

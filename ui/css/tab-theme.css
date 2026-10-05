@@ -11,7 +11,7 @@
 .hero-w rect { fill: #fff; opacity: .4; }
 
 .theme-body { display: flex; gap: 10px; flex: 1; min-height: 0; margin-top: 12px; }
-.cats { flex: none; width: 104px; display: flex; flex-direction: column; gap: 4px; }
+.cats { flex: none; width: 112px; display: flex; flex-direction: column; gap: 4px; }
 .cats .cat { height: 32px; flex: none; }
 .cards-wrap { flex: 1; min-width: 0; padding-right: 2px; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; padding: 3px 3px 8px; }

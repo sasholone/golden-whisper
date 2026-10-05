@@ -21,7 +21,7 @@
   var closeBtn = U.h('button', { class: 'hdr-x hov', type: 'button', aria: { label: 'Chiudi impostazioni' }, title: 'Chiudi', on: { click: function () { A.close(); } } }, [GW.icons.make('x', 15, { sw: 1.8 })]);
   var hdr = U.h('div', { class: 'hdr' }, [U.h('div', { class: 'hdr-ic' }, [GW.icons.make('gear', 17, { sw: 1.7 })]), U.h('div', { class: 'hdr-title', text: 'Impostazioni' }), ver, closeBtn]);
   /* l'header e' la maniglia: mousedown -> drag_start (Lua sposta la finestra seguendo il mouse). Niente -webkit-app-region. */
-  hdr.addEventListener('mousedown', function (e) { if (e.button === 0 && !(e.target.closest && e.target.closest('button'))) A.dragStart(); });
+  hdr.addEventListener('mousedown', function (e) { if (e.button === 0 && !(e.target.closest && e.target.closest('button'))) A.dragStart(e.screenX, e.screenY); });
 
   var TAB_ITEMS = [{ value: 'general', label: 'Generale', icon: 'sliders' }, { value: 'keys', label: 'Tasti', icon: 'keyboard' }, { value: 'theme', label: 'Tema', icon: 'palette' }];
   var tabs = UI.segmented({ items: TAB_ITEMS, value: 'general', label: 'Sezioni', iconSize: 15, onChange: function (v) { A.setTab(v); } });
@@ -100,4 +100,10 @@
   store.dispatch({ type: 'ui', patch: { bridgeMock: bridge.isMock } });
   render(store.get());
   A.ready();                                                              // Lua risponde con gw.onState(stato completo)
+  /* interact: UNA volta, al primo pointerdown (l'host restituisce il focus all'app in primo piano). hb: heartbeat ogni 1000 ms (catena di setTimeout). */
+  var interacted = false;
+  doc.addEventListener('pointerdown', function () { if (!interacted) { interacted = true; A.interact(); } }, true);
+  (function beat() { A.hb(); setTimeout(beat, 1000); })();
+  /* Esc lo gestisce l'host (chiude la finestra): qui solo capture_cancel se la cattura tasti e' attiva. */
+  doc.addEventListener('keydown', function (e) { if (e.key === 'Escape' && store.get().ui.capture) A.captureCancel(); });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

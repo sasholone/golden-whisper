@@ -1,5 +1,5 @@
 /* icons.js - set di icone SVG inline, griglia 24x24, tratto uniforme 1.5, estremi arrotondati (stile Lucide/Phosphor "line").
-   Disegnate per questo progetto (vedi LICENSES.md). Registro DATI (testabile senza DOM) + costruttore SVG con createElementNS (mai innerHTML).
+   Disegnate per questo progetto (vedi LICENSES.md). Registro DATI (testabile senza DOM) + costruttore SVG con createElementNS (mai HTML da stringa).
    Elementi: ['p', d] path · ['pf', d, opacita'] path pieno · ['c', cx, cy, r] cerchio · ['cf', cx, cy, r] cerchio pieno · ['r', x, y, w, h, rx] rettangolo ·
    ['t', testo, fontKey] testo nel font vero. Definizione: { sw?: spessore, els: [...] }. */
 (function (root) {

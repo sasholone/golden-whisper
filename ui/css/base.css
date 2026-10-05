@@ -12,8 +12,8 @@
   --row: rgba(247,242,230,.05); --row-hover: rgba(247,242,230,.10); --track: rgba(247,242,230,.13); --divider: rgba(247,242,230,.10);
   --warn: #ff5c54; --ok: #4ade80;
   --r-xs: 6px; --r-s: 9px; --r-m: 12px; --r-l: 16px; --r-pill: 999px; --r-hud: 26px;
-  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
-  --font-timer: ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-ui: -apple-system, system-ui, sans-serif;
+  --font-timer: ui-monospace, monospace;
   --density: 1; --idle-opacity: 1; --shadow-k: 1;
   --ease-spring: cubic-bezier(.3,1.35,.5,1); --ease-out: cubic-bezier(.2,.7,.2,1);
   color-scheme: dark;

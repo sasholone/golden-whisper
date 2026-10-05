@@ -9,7 +9,7 @@
 
   /* Operazioni JS -> Lua ammesse (contratto del ponte). */
   var OPS = ['ready', 'set', 'random_look', 'reset_look', 'pick_mic', 'refresh_devices', 'key_paste', 'key_remove', 'open_groq',
-    'capture_start', 'capture_cancel', 'key_remove_binding', 'key_set_gesture', 'set_tab', 'close', 'drag_start', 'resize_request'];
+    'capture_start', 'capture_cancel', 'key_remove_binding', 'key_set_gesture', 'set_tab', 'close', 'drag_start', 'resize_request', 'interact', 'hb'];
 
   var SPEED_MUL = { calm: 1.7, normal: 1, lively: 0.65 };           // moltiplicatore durata (>1 = piu' lento)
   var RADIUS_MUL = { round: 1, medium: 0.55, square: 0.16 };
