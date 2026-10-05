@@ -4400,6 +4400,16 @@ local function startSlider(id)
   local lastT = 0
   local function apply(commit)
     local cv = settingsCanvas; if not cv then return end
+    -- la pagina e' stata ridisegnata durante il trascinamento (messaggio che scade, cambio tab...): gli indici vecchi puntano ad altri
+    -- elementi. Si usa il record nuovo dello stesso slider; se non c'e' piu' (altra pagina) si scrive solo il valore
+    local cur = SET.sliders and SET.sliders[id]
+    if cur ~= sl then
+      if cur and cur.tw and cur.tw > 0 then sl = cur else sl = nil end
+    end
+    if not sl then
+      if commit then persist(def.key, config[def.key]); if def.rebuild then rebuildHUD(); renderSettings() end end
+      return
+    end
     local tn = now()
     if not commit and tn - lastT < 0.016 then return end          -- max ~60 aggiornamenti/s mentre si trascina
     lastT = tn
