@@ -15,9 +15,9 @@
 
 .key-card { padding: 12px; display: grid; gap: 8px; }
 .key-status { display: flex; align-items: center; gap: 10px; padding: 2px 4px 4px; }
-.key-dot { position: relative; width: 16px; height: 16px; border-radius: 50%; background: color-mix(in srgb, var(--warn) 24%, transparent); flex: none; }
+.key-dot { position: relative; width: 16px; height: 16px; border-radius: 50%; background: var(--warn-soft2); flex: none; }
 .key-dot::after { content: ''; position: absolute; inset: 4.5px; border-radius: 50%; background: var(--warn); }
-.key-dot.is-ok { background: color-mix(in srgb, var(--ok) 24%, transparent); }
+.key-dot.is-ok { background: var(--ok-soft); }
 .key-dot.is-ok::after { background: var(--ok); }
 .key-txt { min-width: 0; flex: 1; }
 .key-l1 { font-size: 13px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

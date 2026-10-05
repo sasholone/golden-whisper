@@ -20,7 +20,7 @@
   /* Testo che arriva dal sistema (nomi microfono, messaggi): sempre stringa, senza caratteri di controllo, con tetto. */
   function cleanText(v, max) {
     if (v === null || v === undefined) return '';
-    var s = String(v).replace(/[\u0000-\u001f\u007f-\u009f  ]/g, ' ').trim();
+    var s = String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').trim();
     max = max || 200;
     return s.length > max ? s.slice(0, max - 1) + '…' : s;
   }

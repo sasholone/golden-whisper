@@ -67,7 +67,9 @@
       '--r-l': radiusPx(16, look.cornerStyle) + 'px', '--r-pill': look.cornerStyle === 'square' ? '4px' : look.cornerStyle === 'medium' ? '12px' : '999px',
       '--font-ui': FONTS[look.uiFont] || FONTS.sf, '--font-timer': FONTS[look.timerFont] || FONTS.mono,
       '--density': String(O.DENS[look.density] || 1), '--idle-opacity': String(look.idleOpacity),
-      '--shadow-k': dark ? '1' : '0.55', '--panel-shadow': 'none'
+      '--shadow-k': dark ? '1' : '0.55', '--r-hud': radiusPx(26, look.cornerStyle) + 'px',
+      '--warn-soft': rgba(dark ? '#ff5c54' : '#d93025', 0.14), '--warn-soft2': rgba(dark ? '#ff5c54' : '#d93025', 0.24),
+      '--ok-soft': rgba(dark ? '#4ade80' : '#12904a', 0.24), '--bubble-bg': mix(tk.bg2, tk.accent, 0.07)
     };
     v['--sheen'] = dark ? 'rgba(255,255,255,0.035)' : 'rgba(255,255,255,0.28)';
     return v;
