@@ -581,25 +581,37 @@ end
 -- SETTINGS
 ------------------------------------------------------------------------
 local function loadSettings()
-  local f = io.open(config.settingsPath, "r"); if not f then return end; f:close()
+  -- file mancante o non valido: comunque i tasti di default (prima: nessun tasto attivo, l'app sembrava morta)
+  local function defaults()
+    if #config.ssBindings == 0 then config.ssBindings = { { kc = 61, mod = "alt", gesture = "double" } } end
+    if #config.pauseBindings == 0 then config.pauseBindings = { { kc = 60, mod = "shift", gesture = "single" } } end
+    config.scale = scaleFor(config.sizePreset)
+    applyTheme()
+  end
+  local f = io.open(config.settingsPath, "r"); if not f then defaults(); return end; f:close()
   local ok, s = pcall(dofile, config.settingsPath)
-  if not ok or type(s) ~= "table" then gwAlert("⚠️ settings.lua non valido") return end
-  if s.language ~= nil then config.language = (s.language == "auto") and nil or s.language end
-  if s.micDevice then config.audioDevice = s.micDevice end
-  if s.micName   then config.micName = s.micName end
-  if s.model     then config.model = s.model end
+  if not ok or type(s) ~= "table" then gwAlert("⚠️ settings.lua non valido"); defaults() return end
+  -- tipi: un valore scritto a mano come stringa ("480") o di tipo sbagliato non deve arrivare al codice (un confronto numero/stringa
+  -- in startSegment lasciava ffmpeg avviato senza registrazione)
+  local K = config.LOOK
+  local function str(v) return (type(v) == "string") and v or nil end
+  local function kc(v) v = tonumber(v); return (v and v == math.floor(v) and v >= 0 and v < 512) and v or nil end
+  if s.language ~= nil then config.language = (s.language == "auto") and nil or str(s.language) or config.language end
+  if s.micDevice then config.audioDevice = str(s.micDevice) or ((type(s.micDevice) == "number") and (":" .. math.floor(s.micDevice))) or config.audioDevice end
+  if str(s.micName) then config.micName = s.micName end
+  if str(s.model) then config.model = s.model end
   -- bindings: "kc:mod:gesture;..." (gesto per-tasto); back-compat coi vecchi formati
   if s.ssBindings then config.ssBindings = parseBindings(s.ssBindings, s.ssGesture or "double")
-  elseif s.startStopKeycode then config.ssBindings = { { kc = s.startStopKeycode, mod = s.startStopFlag or KEYCODE_MOD[s.startStopKeycode] or "key", gesture = s.ssGesture or "double" } } end
+  elseif kc(s.startStopKeycode) then local c = kc(s.startStopKeycode); config.ssBindings = { { kc = c, mod = str(s.startStopFlag) or KEYCODE_MOD[c] or "key", gesture = str(s.ssGesture) or "double" } } end
   if s.pauseBindings then config.pauseBindings = parseBindings(s.pauseBindings, s.pauseGesture or "single")
-  elseif s.pauseKeycode then config.pauseBindings = { { kc = s.pauseKeycode, mod = s.pauseFlag or KEYCODE_MOD[s.pauseKeycode] or "key", gesture = s.pauseGesture or "single" } } end
-  if s.doubleTapSec     then config.doubleTapSec = s.doubleTapSec end
-  if s.maxSegmentSec    then config.maxSegmentSec = s.maxSegmentSec end
-  if s.restoreClipboard ~= nil then config.restoreClipboard = s.restoreClipboard end
-  if s.autoUpdate ~= nil then config.autoUpdate = s.autoUpdate end
-  if s.autoTranscribeRecovered ~= nil then config.autoTranscribeRecovered = s.autoTranscribeRecovered end
-  if s.repoDir then config.repoDir = s.repoDir end
-  if s.ffmpeg then config.ffmpeg = s.ffmpeg; config.ffmpegExplicit = true end
+  elseif kc(s.pauseKeycode) then local c = kc(s.pauseKeycode); config.pauseBindings = { { kc = c, mod = str(s.pauseFlag) or KEYCODE_MOD[c] or "key", gesture = str(s.pauseGesture) or "single" } } end
+  if K.asNum(s.doubleTapSec) then config.doubleTapSec = clampN(K.asNum(s.doubleTapSec), 0.15, 2) end
+  if K.asNum(s.maxSegmentSec) then config.maxSegmentSec = clampN(K.asNum(s.maxSegmentSec), 0, 1500) end
+  if s.restoreClipboard ~= nil then config.restoreClipboard = K.asBool(s.restoreClipboard, config.restoreClipboard) end
+  if s.autoUpdate ~= nil then config.autoUpdate = K.asBool(s.autoUpdate, config.autoUpdate) end
+  if s.autoTranscribeRecovered ~= nil then config.autoTranscribeRecovered = K.asBool(s.autoTranscribeRecovered, config.autoTranscribeRecovered) end
+  if str(s.repoDir) then config.repoDir = s.repoDir end
+  if str(s.ffmpeg) then config.ffmpeg = s.ffmpeg; config.ffmpegExplicit = true end
   if s.sizePreset  then config.sizePreset = s.sizePreset end
   if s.orientation then config.orientation = s.orientation end
   if s.style       then config.style = s.style end
@@ -631,26 +643,57 @@ local function loadSettings()
   if s.posX then config.posX = s.posX end
   if s.posY then config.posY = s.posY end
   config.LOOK.fix(config)                       -- tipi, intervalli ed enum validi per ogni chiave di look (invalido -> default)
-  if #config.ssBindings == 0 then config.ssBindings = { { kc = 61, mod = "alt", gesture = "double" } } end
-  if #config.pauseBindings == 0 then config.pauseBindings = { { kc = 60, mod = "shift", gesture = "single" } } end
-  config.scale = scaleFor(config.sizePreset)
-  applyTheme()
+  defaults()
   local rf = io.open(os.getenv("HOME") .. "/.config/groq-dictation/repo_path", "r")
   if rf then local p = rf:read("*a"); rf:close(); p = (p or ""):gsub("%s+$", ""); if p ~= "" then config.repoDir = p end end
 end
 
 -- Scrive una chiave in settings.lua. Numeri e booleani restano tali (prima i bool finivano
 -- tra virgolette: "false" era una stringa e contava come vero), il resto è stringa.
+-- Riscrive SOLO le assegnazioni vere (fuori dai commenti: il settings.lua dell'installer ha "-- micName = ..." e "-- posX / posY = ..."
+-- in commento, e prima il valore finiva li' e si perdeva al riavvio); il valore tra virgolette si sostituisce per intero (un nome di mic
+-- con la virgola spezzava il file); file mancante/vuoto -> creato.
 local function persist(key, value)
-  local f = io.open(config.settingsPath, "r"); if not f then return end
-  local txt = f:read("*a"); f:close()
+  local txt = ""
+  local f = io.open(config.settingsPath, "r")
+  if f then txt = f:read("*a") or ""; f:close() end
   local rhs
   if type(value) == "number" then rhs = tostring(finite(value, 0))
   elseif type(value) == "boolean" then rhs = value and "true" or "false"
-  else rhs = '"' .. (tostring(value):gsub('[\\"\n]', "")) .. '"' end
-  local pat = "%f[%w_]" .. key .. "%s*=%s*[^,\n]+"
-  if txt:find(pat) then txt = txt:gsub(pat, function() return key .. " = " .. rhs end, 1)
-  else txt = txt:gsub("return%s*{", function() return "return {\n  " .. key .. " = " .. rhs .. "," end, 1) end
+  else rhs = '"' .. (tostring(value):gsub('[\\"\n\r]', "")) .. '"' end
+  local lines, found = {}, false
+  for l in (txt .. "\n"):gmatch("([^\n]*)\n") do lines[#lines + 1] = l end
+  for li, l in ipairs(lines) do
+    local q, cpos, i = nil, #l + 1, 1                     -- inizio del commento (fuori dalle stringhe)
+    while i <= #l do
+      local ch = l:sub(i, i)
+      if q then if ch == "\\" then i = i + 1 elseif ch == q then q = nil end
+      elseif ch == '"' or ch == "'" then q = ch
+      elseif l:sub(i, i + 1) == "--" then cpos = i; break end
+      i = i + 1
+    end
+    local code, rest = l:sub(1, cpos - 1), l:sub(cpos)
+    local pos, out = 1, {}
+    while true do
+      local a, b = code:find("%f[%w_]" .. key .. "%s*=%s*", pos)
+      if not a or code:sub(b + 1, b + 1) == "=" then break end
+      local e
+      if code:sub(b + 1, b + 1) == '"' then e = code:find('"', b + 2, true) or #code
+      else e = (code:find("[,}]", b + 1) or (#code + 1)) - 1; while e > b and code:sub(e, e):match("%s") do e = e - 1 end end
+      out[#out + 1] = code:sub(pos, a - 1) .. key .. " = " .. rhs
+      pos = e + 1; found = true
+    end
+    if pos > 1 then lines[li] = table.concat(out) .. code:sub(pos) .. rest end
+  end
+  txt = table.concat(lines, "\n")
+  if not found then
+    local n
+    txt, n = txt:gsub("return%s*{", function() return "return {\n  " .. key .. " = " .. rhs .. "," end, 1)
+    if n == 0 then
+      if txt:gsub("%-%-[^\n]*", ""):match("%S") then return end      -- file scritto a mano in un altro formato: non lo distruggo
+      txt = txt .. "return {\n  " .. key .. " = " .. rhs .. ",\n}\n"
+    end
+  end
   local w = io.open(config.settingsPath, "w"); if w then w:write(txt); w:close() end
 end
 
