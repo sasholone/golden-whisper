@@ -41,6 +41,7 @@ local config = {
   recoveredRetryDone = {},         -- runtime: evita ritentativi in loop sugli stessi file
   git          = "/usr/bin/git",
   repoDir      = os.getenv("HOME") .. "/golden-whisper",
+  settingsUI   = "canvas",     -- finestra Impostazioni: canvas (classica, ripiego) | web (hs.webview; se non parte si ricade su canvas)
   sizePreset   = "standard",   -- standard | large | minimal
   orientation  = "horizontal", -- horizontal | vertical
   style        = "gold",       -- famiglia: gold | mono | ocean | violet | emerald | rose
@@ -626,6 +627,7 @@ local function loadSettings()
   if s.cornerStyle and RADIUS_MUL[s.cornerStyle] then config.cornerStyle = s.cornerStyle end
   if s.animOn ~= nil then config.animOn = bool(s.animOn) end
   if s.layers ~= nil then config.layers = bool(s.layers) end
+  if s.settingsUI == "web" or s.settingsUI == "canvas" then config.settingsUI = s.settingsUI end
   if s.micAutoFallback ~= nil then config.micAutoFallback = bool(s.micAutoFallback) end
   if s.animSpeed and SPEED_MUL[s.animSpeed] then config.animSpeed = s.animSpeed end
   if s.waveStyle then config.waveStyle = s.waveStyle end
@@ -4229,6 +4231,7 @@ local function randomLook()
   ICON.hudShape = nil                                    -- niente forma del pack precedente rimasta attiva
   applyTheme(); rebuildHUD()
 end
+ICON.look = { set = setLook, reset = resetLook, random = randomLook }   -- esportati per la finestra impostazioni web (qui sono locali di blocco)
 
 -- slider del tab Tema: key in config, intervallo, default (se la chiave non c'è)
 local SLIDER_DEFS = {
@@ -4637,6 +4640,7 @@ function K.refresh()
   k = nil
 end
 function K.setMsg(kind, text)
+  if ICON.web then pcall(ICON.web.keyStatus, kind, text) end      -- finestra impostazioni web: evento key_status (mai la chiave: solo testi fissi)
   K.msgId = K.msgId + 1
   local id = K.msgId
   K.msg = { kind = kind, text = text }
@@ -6557,6 +6561,7 @@ startCapture = function(actionKey)
   if ICON.capTap then pcall(function() ICON.capTap:stop() end); ICON.capTap = nil end
   if ICON.capT then ICON.capT:stop(); ICON.capT = nil end
   local tap
+  local function webCap(r) if ICON.web then pcall(ICON.web.capture, r) end end      -- finestra impostazioni web: evento capture_result
   local function endCap() if ICON.capTap == tap then ICON.capTap = nil end; if ICON.capT then ICON.capT:stop(); ICON.capT = nil end; tap:stop() end
   tap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged, hs.eventtap.event.types.keyDown }, function(e)
     local kc, et = e:getKeyCode(), e:getType()
@@ -6566,7 +6571,7 @@ startCapture = function(actionKey)
       if not fn or not e:getFlags()[fn] then return false end   -- aspetta la pressione di un modificatore
       mod = fn
     else
-      if kc == 53 then endCap(); return true end                -- Esc: annulla la cattura (non diventa un tasto)
+      if kc == 53 then endCap(); webCap({ ok = false, reason = "cancel", action = actionKey }); return true end   -- Esc: annulla la cattura (non diventa un tasto)
       mod = "key"
     end
     endCap()
@@ -6574,11 +6579,12 @@ startCapture = function(actionKey)
     local dup = false; for _, b in ipairs(list) do if b.kc == kc then dup = true end end
     if not dup then list[#list + 1] = { kc = kc, mod = mod, gesture = (actionKey == "ss" and "double" or "single") } end
     saveBindings(); if settingsCanvas then renderSettings() end
+    webCap({ ok = true, action = actionKey, dup = dup })
     return (mod == "key")
   end)
   tap:start()
   ICON.capTap = tap
-  ICON.capT = hs.timer.doAfter(10, function() ICON.capT = nil; endCap() end)    -- nessun tasto entro 10 s: cattura annullata
+  ICON.capT = hs.timer.doAfter(10, function() ICON.capT = nil; endCap(); webCap({ ok = false, reason = "timeout", action = actionKey }) end)    -- nessun tasto entro 10 s: cattura annullata
 end
 
 local function initHotkeys()
@@ -6744,6 +6750,574 @@ do
 ]==]
 end
 -- <<WEB_HTML_END>>
+
+------------------------------------------------------------------------
+-- IMPOSTAZIONI WEB: finestra hs.webview + ponte JS<->Lua. Chiave `settingsUI` = "web" | "canvas" (default "canvas": nulla cambia
+-- finche' non la si attiva). La finestra a canvas RESTA ed e' il RIPIEGO: se hs.webview/usercontent manca, la creazione lancia, o la
+-- pagina non manda `ready` entro 4 s, si apre la canvas (e per il resto della sessione si resta li').
+-- Regole anti-blocco: niente hs.audiodevice/hs.sound, niente hs.execute pesanti negli handler, ogni handler in pcall con ICON.log
+-- (che ha il suo tetto). La chiave Groq non passa MAI da qui: il JS vede solo `groq.has` e `groq.mask`.
+-- Tutto in una funzione: nessun nuovo `local` di file (limite 200 del chunk).
+------------------------------------------------------------------------
+ICON.web = (function()
+  local W = { cur = nil, failed = nil, pos = nil, size = { w = 560, h = 640 }, readySec = 4, devs = nil, stylesC = nil }
+  local canvasOpen, canvasClose = openSettings, closeSettings
+  local LOOK = config.LOOK
+  local LOOK_KEYS = { "style", "themeMode", "glassOpacity", "cornerStyle", "animOn", "animSpeed", "waveStyle", "waveColor", "micPulse",
+    "glowOn", "uiFont", "timerFont", "density", "idleOpacity", "shadowOn", "shadowIntensity" }
+  local LOOK_SET = {}; for _, k in ipairs(LOOK_KEYS) do LOOK_SET[k] = true end
+  local SLIDER = { glassOpacity = true, shadowIntensity = true, micPulse = true, idleOpacity = true }   -- trascinamento continuo: persist/rebuild a coda
+  local REBUILD = { style = true, themeMode = true, glassOpacity = true, cornerStyle = true, waveStyle = true, waveColor = true,
+    uiFont = true, timerFont = true, density = true, glowOn = true, shadowOn = true, shadowIntensity = true }
+  local TABS = { general = true, keys = true, theme = true }
+  local EVENTS = { key_status = true, capture_result = true }
+  local function now_() return hs.timer.secondsSinceEpoch() end
+  local function try(obj, name, ...) local f = obj and obj[name]; if f then return pcall(f, obj, ...) end return false end
+  local function log(m) pcall(ICON.log, "[GW] web: " .. tostring(m)) end
+  local function str(s, max)
+    s = tostring(s == nil and "" or s)
+    if not utf8.len(s) then s = s:gsub("[\128-\255]", "?") end
+    if #s > (max or 200) then s = s:sub(1, max or 200); if not utf8.len(s) then s = s:gsub("[\128-\255]", "?") end end
+    return s
+  end
+  local function enc(v)                          -- SEMPRE hs.json.encode: mai concatenare stringhe utente nel JS
+    local ok, s = pcall(hs.json.encode, v)
+    if not ok or type(s) ~= "string" then return nil end
+    return (s:gsub("\226\128\168", "\\u2028"):gsub("\226\128\169", "\\u2029"))
+  end
+  local function hex6(c) local function b(v) return string.format("%02X", math.floor(clampN(v, 0, 1) * 255 + 0.5)) end return "#" .. b(c.red) .. b(c.green) .. b(c.blue) end
+  local function tok(T)
+    local g = {}; for i, c in ipairs(T.grad or {}) do g[i] = hex6(c) end
+    return { bg1 = hex6(T.bg), bg2 = hex6(T.solid), fg = hex6(T.fg), fg2 = hex6(T.fg2), accent = hex6(T.accent), ink = hex6(T.accentInk),
+             on = hex6(T.accentText), grad = g }
+  end
+  local function version()
+    local f = io.open(os.getenv("HOME") .. "/.config/groq-dictation/version", "r"); if not f then return "" end
+    local v = f:read("*a") or ""; f:close(); return str((v:gsub("%s+", "")), 40)
+  end
+
+  -- ---------- stato verso il JS ----------
+  function W.styles()
+    if W.stylesC then return W.stylesC end
+    local list, cats = {}, {}
+    for _, id in ipairs(FAMILY_ORDER) do
+      local F = FAMILIES[id]
+      if F then
+        local fx
+        if type(F.fx) == "table" and (F.fx.icon or F.fx.bar or F.fx.part) then fx = { icon = F.fx.icon, bar = F.fx.bar, part = F.fx.part } end
+        list[#list + 1] = { id = id, name = str(F.name, 60), cat = F.cat or "cl", dark = tok(F.dark), light = tok(F.light), fx = fx }
+      end
+    end
+    for _, c in ipairs(FAMILY_ORDER.cats or {}) do cats[#cats + 1] = { id = c[1], name = c[2] } end
+    W.stylesC = { list = list, cats = cats }
+    return W.stylesC
+  end
+  function W.deviceList()
+    local src = W.devs or deviceCache or {}
+    local out = {}
+    for i, d in ipairs(src) do
+      if i > 64 then break end
+      local n = str(d.name, 120)
+      out[#out + 1] = { name = n, bt = ICON.micIsBluetooth(n) }
+    end
+    return out
+  end
+  function W.keyList(list, defG)
+    local out = {}
+    for i, b in ipairs(list or {}) do if i <= 32 then out[#out + 1] = { label = str(bindLabel(b), 40), gesture = b.gesture or defG } end end
+    return out
+  end
+  function W.state(inst)
+    local look = {}
+    for _, k in ipairs(LOOK_KEYS) do look[k] = LOOK.clean(k, config[k]) end
+    local K = SET.K
+    local st = {
+      version = inst.version, tab = TABS[settingsPage] and settingsPage or "general", look = look,
+      general = { micName = str(config.micName, 120), devices = W.deviceList(),
+                  sizePreset = (config.sizePreset == "large" or config.sizePreset == "minimal") and config.sizePreset or "standard",
+                  orientation = (config.orientation == "vertical") and "vertical" or "horizontal" },
+      keys = { ss = W.keyList(config.ssBindings, "double"), pause = W.keyList(config.pauseBindings, "single") },
+      groq = { has = K.has and true or false, mask = K.has and str(K.mask, 40) or nil },
+      styles = W.styles().list, cats = W.styles().cats, effectiveMode = resolveMode(),
+    }
+    if inst.assetsPending and inst.assets then st.assets = inst.assets; inst.assetsPending = false end
+    return st
+  end
+
+  -- ---------- invio (coalescing: al massimo 1 onState ogni 50 ms) ----------
+  local function evalJS(inst, js)
+    if inst.dead or not inst.wv then return end
+    inst.nEval = (inst.nEval or 0) + 1
+    local ok, e = pcall(inst.wv.evaluateJavaScript, inst.wv, js)
+    if not ok then log("evaluateJavaScript: " .. tostring(e)) end
+  end
+  local function flush(inst)
+    inst.dirty = false; inst.lastPush = now_()
+    local ok, st = pcall(W.state, inst)
+    if not ok then log("stato: " .. tostring(st)); return end
+    local j = enc(st)
+    if not j then log("stato: json non valido"); return end
+    inst.nState = (inst.nState or 0) + 1
+    evalJS(inst, "gw.onState(" .. j .. ")")
+  end
+  function W.push(inst)
+    inst = inst or W.cur
+    if not inst or inst.dead or not inst.ready then return end
+    inst.dirty = true
+    if inst.pushT then return end
+    local dt = now_() - (inst.lastPush or -1)
+    if dt >= 0.05 then flush(inst); return end
+    inst.pushT = hs.timer.doAfter(0.05 - dt + 0.002, function()
+      inst.pushT = nil
+      if not inst.dead and inst.dirty then flush(inst) end
+    end)
+  end
+  function W.event(inst, name, data)
+    inst = inst or W.cur
+    if not inst or inst.dead or not inst.ready or not EVENTS[name] then return end
+    local j = enc(data == nil and {} or data)
+    if j then evalJS(inst, "gw.onEvent('" .. name .. "', " .. j .. ")") end
+  end
+  function W.keyStatus(kind, text)
+    local inst = W.cur; if not inst then return end
+    W.event(inst, "key_status", { kind = str(kind, 10), text = str(text, 200), busy = (kind == "busy") })
+    W.push(inst)
+  end
+  function W.capture(r)
+    local inst = W.cur; if not inst then return end
+    W.event(inst, "capture_result", r); W.push(inst)
+  end
+
+  -- ---------- finestra ----------
+  local function screens()
+    local out = {}
+    local ok, all = pcall(hs.screen.allScreens)
+    if ok and type(all) == "table" then for _, s in ipairs(all) do out[#out + 1] = s:frame() end end
+    if #out == 0 then out[1] = hs.screen.mainScreen():frame() end
+    return out
+  end
+  local function clampFrame(f)                    -- la finestra resta (in buona parte) dentro l'unione degli schermi
+    local a, b, c, d = 1e9, 1e9, -1e9, -1e9
+    for _, s in ipairs(screens()) do a = math.min(a, s.x); b = math.min(b, s.y); c = math.max(c, s.x + s.w); d = math.max(d, s.y + s.h) end
+    local w, h = clampN(f.w, 200, math.max(200, c - a)), clampN(f.h, 140, math.max(140, d - b))
+    return { x = clampN(f.x, a - w + 80, c - 80), y = clampN(f.y, b, math.max(b, d - 40)), w = w, h = h }
+  end
+  local function cspHtml(html)
+    local meta = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " ..
+      "img-src data:; font-src data:; media-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'\">"
+    local s, e = html:find("<[Hh][Ee][Aa][Dd][^>]*>")
+    if s then return html:sub(1, e) .. meta .. html:sub(e + 1) end
+    s, e = html:find("<[Hh][Tt][Mm][Ll][^>]*>")
+    if s then return html:sub(1, e) .. meta .. html:sub(e + 1) end
+    return meta .. html
+  end
+  local function allowedURL(u)                    -- nessuna navigazione fuori da about:blank / data: / file:// della cartella temi
+    if type(u) == "table" then u = u.URL or u.url or u.absoluteString end
+    if u == nil or u == "" then return true end
+    u = tostring(u)
+    if u == "about:blank" or u:sub(1, 5) == "data:" then return true end
+    local themes = "file://" .. os.getenv("HOME") .. "/.config/groq-dictation/themes/"
+    if u:sub(1, #themes) == themes and not u:find("..", 1, true) then return true end
+    return false
+  end
+  function W.available()
+    local ok, m = pcall(function() return hs.webview end)
+    if not ok or type(m) ~= "table" or type(m.new) ~= "function" then return false, "hs.webview assente" end
+    local ok2, uc = pcall(function() return m.usercontent end)
+    if not ok2 or type(uc) ~= "table" or type(uc.new) ~= "function" then return false, "hs.webview.usercontent assente" end
+    if type(ICON.webHtml) ~= "string" or #ICON.webHtml < 20 then return false, "pagina HTML non incollata (build.py)" end
+    return true
+  end
+
+  local OP = {}
+  local function onMsg(inst, msg)
+    if inst.dead or W.cur ~= inst then return end
+    local ok, e = pcall(function()
+      local b = type(msg) == "table" and msg.body
+      if type(b) ~= "table" or type(b.op) ~= "string" then return end
+      local t = now_()
+      if t - (inst.rlT or 0) >= 1 then inst.rlT = t; inst.rlN = 0 end
+      inst.rlN = inst.rlN + 1
+      if inst.rlN > 600 then if inst.rlN == 601 then log("troppi messaggi dal JS: scarto") end return end
+      local f = OP[b.op]
+      if f then f(inst, b) else log("op sconosciuta " .. str(b.op, 40)) end
+    end)
+    if not ok then log("handler: " .. tostring(e)) end
+  end
+
+  function W.stopTimers(inst)
+    for _, k in ipairs({ "readyT", "pushT", "pendT", "animT", "dragGuard", "scanT" }) do
+      local t = inst[k]; inst[k] = nil
+      if t then pcall(function() t:stop() end) end
+    end
+    if inst.dragTap then local t = inst.dragTap; inst.dragTap = nil; pcall(function() t:stop() end) end
+  end
+  function W.flushPend(inst)
+    local keys = {}
+    for k in pairs(inst.pend or {}) do keys[#keys + 1] = k end
+    inst.pend = {}
+    if #keys == 0 then return end
+    table.sort(keys)
+    local rb = false
+    for _, k in ipairs(keys) do persist(k, config[k]); if REBUILD[k] then rb = true end end
+    if rb then rebuildHUD() end
+  end
+  function W.teardown(inst)
+    if not inst or inst.dead then return end
+    pcall(W.flushPend, inst)
+    inst.dead = true
+    if W.cur == inst then W.cur = nil end
+    if inst.wv then
+      local ok, f = pcall(inst.wv.frame, inst.wv)
+      if ok and type(f) == "table" and f.w then W.pos = { cx = f.x + f.w / 2, top = f.y }; W.size = { w = f.w, h = f.h } end
+      try(inst.wv, "hide")
+    end
+    W.stopTimers(inst)
+    if ICON.capTap then pcall(function() ICON.capTap:stop() end); ICON.capTap = nil end      -- cattura tasto in corso: annullata con la finestra
+    if ICON.capT then pcall(function() ICON.capT:stop() end); ICON.capT = nil end
+    -- distruzione DIFFERITA: puo' partire dentro il callback nativo del messaggio JS (cancellare la webview li' dentro e' pericoloso)
+    local wv, uc = inst.wv, inst.uc
+    inst.wv, inst.uc = nil, nil
+    hs.timer.doAfter(0.03, function()
+      if uc then pcall(function() uc:setCallback(nil) end) end
+      if wv then try(wv, "navigationCallback", nil); try(wv, "policyCallback", nil); pcall(function() wv:delete() end) end
+    end)
+  end
+  function W.fail(inst, why)
+    log("impostazioni web non disponibili (" .. tostring(why) .. "): uso la finestra classica")
+    W.failed = tostring(why)
+    W.teardown(inst)
+    canvasOpen()
+  end
+
+  function W.create()
+    local wvm = hs.webview
+    local sf = hs.screen.mainScreen():frame()
+    local sz = W.size
+    local f = { x = sf.x + (sf.w - sz.w) / 2, y = sf.y + (sf.h - sz.h) / 2, w = sz.w, h = sz.h }
+    if W.pos then f.x = W.pos.cx - sz.w / 2; f.y = W.pos.top end
+    f = clampFrame(f)
+    local inst = { ready = false, dead = false, pend = {}, lastPush = -1, version = version(), t0 = now_() }
+    inst.uc = wvm.usercontent.new("gw")
+    inst.uc:setCallback(function(msg) onMsg(inst, msg) end)
+    local okW, wv = pcall(wvm.new, f, {}, inst.uc)
+    if not okW or not wv then
+      pcall(function() inst.uc:setCallback(nil) end)                       -- niente callback orfano
+      error(okW and "hs.webview.new ha restituito nil" or tostring(wv))
+    end
+    inst.wv = wv
+    W.cur = inst
+    local m = wvm.windowMasks or {}
+    try(wv, "windowStyle", (m.borderless or 0) + (m.nonactivating or 128))
+    try(wv, "transparent", true); try(wv, "shadow", false)
+    try(wv, "level", (hs.canvas.windowLevels and hs.canvas.windowLevels.overlay) or 102)
+    local db = (hs.drawing and hs.drawing.windowBehaviors) or {}
+    if not try(wv, "behavior", (db.canJoinAllSpaces or 1) + (db.fullScreenAuxiliary or 256)) then try(wv, "behavior", { "canJoinAllSpaces", "fullScreenAuxiliary" }) end
+    try(wv, "allowTextEntry", false); try(wv, "allowNewWindows", false); try(wv, "privateBrowsing", true); try(wv, "allowGestures", false)
+    try(wv, "policyCallback", function(action, _w, details)
+      if action ~= "navigationAction" and action ~= "navigationResponse" then return false end     -- newWindow, challenge...: no
+      local u = details
+      if type(details) == "table" then u = details.request or details.response or details end
+      return allowedURL(u)
+    end)
+    try(wv, "navigationCallback", function(action)
+      if not inst.ready and not inst.dead and type(action) == "string" and action:find("[Ff]ail") then
+        hs.timer.doAfter(0, function() if W.cur == inst and not inst.ready then W.fail(inst, "caricamento pagina fallito") end end)
+      end
+    end)
+    try(wv, "alpha", 0)
+    wv:html(cspHtml(ICON.webHtml))
+    wv:show()
+    inst.readyT = hs.timer.doAfter(W.readySec, function()
+      inst.readyT = nil
+      if W.cur == inst and not inst.ready then W.fail(inst, "nessun ready entro " .. W.readySec .. " s") end
+    end)
+    return inst
+  end
+
+  function W.refreshDevices(inst)
+    getAudioDevices(function(list)
+      if #list > 0 then deviceCache = list end
+      if inst.dead then return end
+      W.devs = (#list > 0) and list or deviceCache
+      settingsDevices = W.devs
+      W.push(inst)
+    end)
+  end
+  function W.open()
+    if W.cur then                                              -- gia' aperta: in primo piano + stato fresco
+      local inst = W.cur
+      SET.K.refresh(); try(inst.wv, "show"); W.push(inst); W.refreshDevices(inst)
+      return
+    end
+    if config.settingsUI ~= "web" or W.failed then return canvasOpen() end
+    local ok, why = W.available()
+    if not ok then W.failed = why; log(why); return canvasOpen() end
+    SET.K.refresh()
+    local okc, inst = pcall(W.create)
+    if not okc or not inst then
+      if type(inst) ~= "table" and W.cur then W.teardown(W.cur) end
+      W.failed = tostring(inst); log("creazione: " .. tostring(inst)); return canvasOpen()
+    end
+    W.devs = deviceCache
+    W.refreshDevices(inst)
+  end
+  function W.close()
+    local inst = W.cur
+    if inst then W.teardown(inst) end
+  end
+
+  -- ---------- operazioni JS -> Lua ----------
+  function OP.ready(inst)
+    local first = not inst.ready
+    inst.ready = true
+    if inst.readyT then inst.readyT:stop(); inst.readyT = nil end
+    inst.tReady = now_()
+    try(inst.wv, "alpha", 1)
+    if inst.assets then inst.assetsPending = true end
+    inst.lastPush = -1; W.push(inst)
+    if first then W.scanAssets(inst) end
+  end
+  function OP.close(inst) W.teardown(inst) end
+  function OP.fallback(inst) W.fail(inst, "richiesto dalla pagina") end
+  function OP.set_tab(inst, b) if type(b.tab) == "string" and TABS[b.tab] then settingsPage = b.tab end end
+  function OP.set(inst, b)
+    local key, v = b.key, b.value
+    if type(key) ~= "string" then return end
+    if key == "sizePreset" then
+      v = (v == "standard" or v == "large" or v == "minimal") and v or "standard"
+      config.sizePreset = v; config.scale = scaleFor(v); persist("sizePreset", v); rebuildHUD()
+    elseif key == "orientation" then
+      v = (v == "vertical") and "vertical" or "horizontal"
+      config.orientation = v; persist("orientation", v); resetLevels(); rebuildHUD()
+    elseif LOOK_SET[key] then
+      v = LOOK.clean(key, v)
+      if SLIDER[key] then
+        config[key] = v
+        if key == "glassOpacity" then applyTheme() end
+        inst.pend[key] = true; inst.pendAt = now_()
+        if not inst.pendT then
+          local function arm()
+            inst.pendT = hs.timer.doAfter(0.25, function()
+              inst.pendT = nil
+              if inst.dead then return end
+              if now_() - (inst.pendAt or 0) >= 0.24 then W.flushPend(inst) else arm() end
+            end)
+          end
+          arm()
+        end
+      else
+        ICON.look.set(key, v)
+        if key == "style" or key == "themeMode" then applyTheme() end
+        if REBUILD[key] then rebuildHUD() end
+      end
+    else return end
+    W.push(inst)
+  end
+  function OP.random_look(inst) W.flushPend(inst); ICON.look.random(); W.push(inst) end
+  function OP.reset_look(inst) W.flushPend(inst); ICON.look.reset(); W.push(inst) end
+  function OP.pick_mic(inst, b)
+    if type(b.name) ~= "string" then return end
+    for _, list in ipairs({ W.devs or {}, deviceCache or {} }) do
+      for _, d in ipairs(list) do
+        if d.name == b.name then
+          config.audioDevice = d.idx; config.micName = d.name; persist("micDevice", d.idx); persist("micName", d.name)
+          W.push(inst); return
+        end
+      end
+    end
+    log("pick_mic: dispositivo sconosciuto")
+  end
+  function OP.refresh_devices(inst) W.refreshDevices(inst) end
+  function OP.key_paste(inst) SET.K.paste() end
+  function OP.key_remove(inst)
+    os.remove(config.keyPath)
+    SET.K.refresh(); SET.K.exp = false; SET.K.q = 0
+    SET.K.setMsg("info", "Chiave rimossa")
+    W.push(inst)
+  end
+  function OP.open_groq(inst) SET.K.open() end
+  function OP.capture_start(inst, b)
+    if b.action ~= "ss" and b.action ~= "pause" then return end
+    startCapture(b.action)
+  end
+  function OP.capture_cancel(inst)
+    local had = ICON.capTap ~= nil
+    if ICON.capTap then pcall(function() ICON.capTap:stop() end); ICON.capTap = nil end
+    if ICON.capT then pcall(function() ICON.capT:stop() end); ICON.capT = nil end
+    if had then W.capture({ ok = false, reason = "cancel" }) end
+  end
+  local function bindList(a) if a == "ss" then return config.ssBindings elseif a == "pause" then return config.pauseBindings end end
+  function OP.key_remove_binding(inst, b)
+    local list = bindList(b.action); local i = tonumber(b.index)
+    if not list or not i or i ~= math.floor(i) then return end
+    i = i + 1                                                    -- indice JS (da 0) -> Lua
+    if list[i] then table.remove(list, i); saveBindings(); W.push(inst) end
+  end
+  function OP.key_set_gesture(inst, b)
+    local list = bindList(b.action); local i = tonumber(b.index)
+    if not list or not i or i ~= math.floor(i) then return end
+    local okG = (b.action == "ss") and { double = true, single = true, hold = true } or { single = true, double = true }
+    if type(b.gesture) ~= "string" or not okG[b.gesture] then return end
+    i = i + 1
+    if list[i] then list[i].gesture = b.gesture; saveBindings(); W.push(inst) end
+  end
+
+  -- trascinamento finestra: eventtap SOLO durante il drag, con rilascio garantito (mouse su, timeout 15 s, chiusura)
+  function OP.drag_start(inst)
+    if inst.dragTap or not inst.wv then return end
+    local m0 = hs.mouse.absolutePosition(); local f0 = inst.wv:frame()
+    local off = { dx = m0.x - f0.x, dy = m0.y - f0.y }
+    local T = hs.eventtap.event.types
+    local function release()
+      if inst.dragTap then local t = inst.dragTap; inst.dragTap = nil; pcall(function() t:stop() end) end
+      if inst.dragGuard then local t = inst.dragGuard; inst.dragGuard = nil; pcall(function() t:stop() end) end
+      if inst.wv then local ok, f = pcall(inst.wv.frame, inst.wv); if ok and f then W.pos = { cx = f.x + f.w / 2, top = f.y } end end
+    end
+    inst.dragTap = hs.eventtap.new({ T.leftMouseDragged, T.leftMouseUp }, function(e)
+      pcall(function()
+        if inst.dead or not inst.wv then release(); return end
+        if e:getType() == T.leftMouseUp then release(); return end
+        local m = hs.mouse.absolutePosition()
+        local f = inst.wv:frame()
+        local c = clampFrame({ x = m.x - off.dx, y = m.y - off.dy, w = f.w, h = f.h })
+        inst.wv:topLeft({ x = c.x, y = c.y })
+      end)
+      return false
+    end)
+    inst.dragTap:start()
+    local t0 = now_()
+    inst.dragGuard = hs.timer.doEvery(0.25, function()
+      local down = true
+      if hs.mouse and type(hs.mouse.getButtons) == "function" then
+        local ok, bt = pcall(hs.mouse.getButtons)
+        if ok and type(bt) == "table" then down = (bt[1] == true or bt.left == true) end
+      end
+      if inst.dead or not down or now_() - t0 > 15 then release() end
+    end)
+  end
+
+  -- ridimensionamento animato: larghezza centrata sul centro x, bordo alto fisso, dentro lo schermo
+  function OP.resize_request(inst, b)
+    local w, h = tonumber(b.w), tonumber(b.h)
+    if not w or not h or w ~= w or h ~= h or w == math.huge or h == math.huge then return end
+    local sf = hs.screen.mainScreen():frame()
+    w = math.floor(clampN(w, 240, sf.w)); h = math.floor(clampN(h, 160, sf.h))
+    local f = inst.wv:frame()
+    local top = f.y
+    if top + h > sf.y + sf.h then top = math.max(sf.y, sf.y + sf.h - h) end
+    local to = { x = f.x + f.w / 2 - w / 2, y = top, w = w, h = h }
+    to.x = clampN(to.x, sf.x, math.max(sf.x, sf.x + sf.w - w))
+    if inst.animT then inst.animT:stop(); inst.animT = nil end
+    local from = { x = f.x, y = f.y, w = f.w, h = f.h }
+    if math.abs(from.w - to.w) < 1 and math.abs(from.h - to.h) < 1 and math.abs(from.x - to.x) < 1 and math.abs(from.y - to.y) < 1 then return end
+    if inst.tReady and now_() - inst.tReady < 0.6 and not inst.anim1 then       -- la misura iniziale della pagina: subito, senza animare
+      inst.anim1 = true; inst.wv:frame(to); return
+    end
+    inst.anim1 = true
+    local N, i = 8, 0
+    inst.animT = hs.timer.doEvery(1 / 60, function()
+      if inst.dead or not inst.wv then return end
+      i = i + 1
+      local e = 1 - (1 - i / N) ^ 3
+      if i >= N then
+        if inst.animT then inst.animT:stop(); inst.animT = nil end
+        e = 1
+      end
+      pcall(function() inst.wv:frame({ x = from.x + (to.x - from.x) * e, y = from.y + (to.y - from.y) * e,
+        w = from.w + (to.w - from.w) * e, h = from.h + (to.h - from.h) * e }) end)
+    end)
+  end
+
+  -- ---------- asset locali di tema: ~/.config/groq-dictation/themes/<styleId>/*.png|gif|jpg|webp (li mette Sasha, non sono nel repo) ----------
+  -- Metodo: data: URI generati qui (hs.webview con loadHTMLString non puo' leggere file:// e la CSP resta chiusa). SOSTITUIBILE: basta
+  -- ridefinire ICON.web.assetUrl(path, ext, size) -> url|nil. Tetti: 20 file/stile, 5 MB/file, 12 MB totali, ~0,25 s di lavoro per giro.
+  W.MIME = { png = "image/png", gif = "image/gif", jpg = "image/jpeg", jpeg = "image/jpeg", webp = "image/webp" }
+  W.CAP = { files = 20, bytes = 5 * 1024 * 1024, total = 12 * 1024 * 1024 }
+  function W.assetUrl(path, ext, size)
+    local f = io.open(path, "rb"); if not f then return nil end
+    local data = f:read("*a"); f:close()
+    if type(data) ~= "string" or #data == 0 or #data > W.CAP.bytes then return nil end
+    local b64
+    if hs.base64 and hs.base64.encode then local ok, r = pcall(hs.base64.encode, data); if ok and type(r) == "string" then b64 = (r:gsub("[\r\n]", "")) end end
+    if not b64 then return nil end
+    return "data:" .. W.MIME[ext] .. ";base64," .. b64
+  end
+  function W.scanAssets(inst)
+    local base = os.getenv("HOME") .. "/.config/groq-dictation/themes"
+    local okA, aBase = pcall(hs.fs.attributes, base)
+    if not okA or type(aBase) ~= "table" or aBase.mode ~= "directory" then return end          -- nessuna cartella temi: niente da fare
+    local ok, it, dobj = pcall(hs.fs.dir, base)
+    if not ok or type(it) ~= "function" then return end
+    local styles = {}
+    local okl = pcall(function()
+      for name in it, dobj do
+        if #styles >= 200 then break end
+        if type(name) == "string" and FAMILIES[name] then styles[#styles + 1] = name end
+      end
+    end)
+    if not okl or #styles == 0 then return end
+    table.sort(styles)
+    local out, total, idx = {}, 0, 0
+    local function step()
+      inst.scanT = nil
+      if inst.dead then return end
+      local t0 = os.clock()
+      while idx < #styles and os.clock() - t0 < 0.25 do
+        idx = idx + 1
+        local sid = styles[idx]
+        local dir = base .. "/" .. sid
+        local isDir = false
+        pcall(function() local a = hs.fs.symlinkAttributes and hs.fs.symlinkAttributes(dir) or hs.fs.attributes(dir); isDir = a and a.mode == "directory" end)
+        if isDir then
+          local files = {}
+          local ok2, it2, d2 = pcall(hs.fs.dir, dir)
+          if ok2 and type(it2) == "function" then
+            pcall(function() for n in it2, d2 do if type(n) == "string" and n:match("^[%w][%w_%-%.]*$") and #files < 400 then files[#files + 1] = n end end end)
+          end
+          table.sort(files)
+          local cnt = 0
+          for _, n in ipairs(files) do
+            if cnt >= W.CAP.files or total >= W.CAP.total then break end
+            local base_, ext = n:match("^([%w_%-]+)%.(%a+)$")
+            ext = ext and ext:lower()
+            if base_ and W.MIME[ext] then
+              local p = dir .. "/" .. n
+              local a = nil
+              pcall(function() a = hs.fs.symlinkAttributes and hs.fs.symlinkAttributes(p) or hs.fs.attributes(p) end)
+              if a and a.mode == "file" and (a.size or 0) > 0 and a.size <= W.CAP.bytes and total + a.size <= W.CAP.total then
+                local okU, url = pcall(W.assetUrl, p, ext, a.size)
+                if okU and type(url) == "string" then
+                  out[sid] = out[sid] or {}; out[sid][base_] = url
+                  cnt = cnt + 1; total = total + a.size
+                end
+              end
+            end
+          end
+        end
+      end
+      if idx < #styles then inst.scanT = hs.timer.doAfter(0.01, step); return end
+      if next(out) then inst.assets = out; inst.assetsPending = true; W.push(inst) end
+    end
+    inst.scanT = hs.timer.doAfter(0.02, step)
+  end
+
+  -- ---------- instradamento: tutti i punti d'ingresso (menu, bottone HUD, M.settings) passano da qui ----------
+  openSettings = function()
+    local ok, e = pcall(W.open)
+    if not ok then
+      log("apertura: " .. tostring(e)); W.failed = tostring(e)
+      if W.cur then pcall(W.teardown, W.cur) end
+      canvasOpen()
+    end
+  end
+  closeSettings = function()
+    if W.cur then pcall(W.close) end
+    canvasClose()
+  end
+  W.OP = OP
+  return W
+end)()
 
 function M.update() checkUpdate(false) end
 -- Ritrascrive a mano l'audio salvato/recuperato che non ha ancora un testo (.txt) accanto.
