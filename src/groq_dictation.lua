@@ -812,7 +812,7 @@ local function getAudioDevices(cb)
     end
     cb(list)
   end, { "-f", "avfoundation", "-list_devices", "true", "-i", "" })
-  t:start()
+  if not (t and t:start()) then cb({}) end          -- ffmpeg mancante/percorso sbagliato: lista vuota (prima: impostazioni che non si aprivano mai)
 end
 local deviceCache = {}
 local function refreshDevices() getAudioDevices(function(list) deviceCache = list end) end
@@ -5941,12 +5941,18 @@ openSettings = function()
   SET.K.refresh(); SET.K.armAt = 0; SET.K.tipReset(); SET.K.exp = false; SET.K.q = 0
   SET.openSeq = (SET.openSeq or 0) + 1
   local seq = SET.openSeq
-  getAudioDevices(function(list)
-    deviceCache = list; settingsDevices = list
+  local function show()
     if seq ~= SET.openSeq then return end         -- una richiesta piu' recente (o la chiusura) la supera: niente finestra che si riapre da sola
     if not settingsCanvas then SET.sc = { 0, 0 }; SET.W, SET.cap = settingsGeometry(); SET.H = SET.cap end
     renderSettings()
+  end
+  getAudioDevices(function(list)
+    if #list > 0 or #deviceCache == 0 then deviceCache = list end
+    settingsDevices = list
+    show()
   end)
+  -- ffmpeg -list_devices bloccato (device audio in uno stato strano): dopo 4 s la finestra si apre con l'ultima lista nota
+  hs.timer.doAfter(4, function() if seq == SET.openSeq and not settingsCanvas then settingsDevices = deviceCache; show() end end)
 end
 end
 
