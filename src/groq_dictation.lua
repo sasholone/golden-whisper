@@ -3268,6 +3268,7 @@ setStatus = function(text)
       if kind == "ok" then ICON.stat.n = ICON.stat.n + 1 end
       if kind == "ok" and pr.dn and pr.dnT.start then pr.dnT.start(overlay, pr.dn) end
       Anim.run("hud", "result", 0.34, "spring", function(e)
+        if PROC ~= pr or mode ~= "proc" then return end      -- HUD gia' ricostruito (nuova registrazione entro 0,34 s): indici vecchi
         local a = clamp01(e)
         if kind == "ok" then
           if pr.dn then pr.dnT.anim(overlay, pr.dn, e) end
