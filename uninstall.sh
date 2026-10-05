@@ -6,7 +6,7 @@ HS_DIR="$HOME/.hammerspoon"
 CFG_DIR="$HOME/.config/groq-dictation"
 INIT="$HS_DIR/init.lua"
 
-rm -f "$HS_DIR/groq_dictation.lua"
+rm -f "$HS_DIR/groq_dictation.lua" "$HS_DIR/groq_dictation.lua.prev" "$HS_DIR/groq_dictation.lua.new"
 
 # rimuove solo il blocco marcato da init.lua
 if [ -f "$INIT" ]; then

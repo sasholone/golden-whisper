@@ -73,13 +73,13 @@ fi
 KEY_FILE="$CFG_DIR/api_key"
 if [ ! -s "$KEY_FILE" ]; then
   if [ -n "${GROQ_API_KEY:-}" ]; then
-    printf '%s' "$GROQ_API_KEY" > "$KEY_FILE"; chmod 600 "$KEY_FILE"
+    (umask 077; printf '%s' "$GROQ_API_KEY" > "$KEY_FILE"); chmod 600 "$KEY_FILE"
     ok "Chiave Groq presa da \$GROQ_API_KEY"
   else
     say "Serve una chiave Groq (gratis su https://console.groq.com/keys)"
     printf "Incolla la chiave (gsk_...) e premi invio: "
     read -r GKEY
-    printf '%s' "$GKEY" > "$KEY_FILE"; chmod 600 "$KEY_FILE"
+    (umask 077; printf '%s' "$GKEY" > "$KEY_FILE"); chmod 600 "$KEY_FILE"
     ok "Chiave salvata in $KEY_FILE"
   fi
 else

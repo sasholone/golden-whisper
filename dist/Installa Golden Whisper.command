@@ -89,7 +89,7 @@ if [ ! -s "$KEY_FILE" ]; then
   printf "   Incolla la chiave (gsk_...) e premi Invio: "
   read -r GKEY
   if [ -n "${GKEY:-}" ]; then
-    printf '%s' "$GKEY" > "$KEY_FILE"; chmod 600 "$KEY_FILE"
+    (umask 077; printf '%s' "$GKEY" > "$KEY_FILE"); chmod 600 "$KEY_FILE"
     ok "Chiave salvata"
   else
     err "Nessuna chiave inserita — potrai metterla dopo in $KEY_FILE"
