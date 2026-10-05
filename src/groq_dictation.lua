@@ -6587,19 +6587,34 @@ local function writeLocalVersion(v)
 end
 
 local function applyUpdate(newVer)
+  if ICON.updBusy then return end                      -- un download alla volta (controllo all'avvio + giornaliero + manuale)
+  ICON.updBusy = true
   local dest = os.getenv("HOME") .. "/.hammerspoon/groq_dictation.lua"
   local tmp  = dest .. ".new"
   local t = hs.task.new(config.curl, function(code)
-    -- scarica su file temporaneo, poi sostituisci solo se il download è valido
-    if code ~= 0 or fileSize(tmp) < 1000 then
+    ICON.updBusy = false
+    -- scarica su file temporaneo, poi sostituisci solo se il download è valido E il file compila: un file rotto su main (errore di
+    -- sintassi, oltre 200 local, download troncato) dopo il reload lasciava TUTTI senza Golden Whisper e senza piu' auto-update
+    local okFile = (code == 0) and fileSize(tmp) >= 1000
+    if okFile then
+      local fh = io.open(tmp, "r"); local body = fh and fh:read("*a") or ""; if fh then fh:close() end
+      okFile = body:find("function M.init", 1, true) ~= nil and body:find("return M", 1, true) ~= nil and (loadfile(tmp)) ~= nil
+    end
+    if not okFile then
       os.remove(tmp); gwAlert("Golden Whisper: download update fallito"); return
     end
-    os.rename(tmp, dest)
+    do                                                                  -- copia di sicurezza della versione che gira (rientro manuale)
+      local cur = io.open(dest, "r"); local old = cur and cur:read("*a"); if cur then cur:close() end
+      local bk = old and io.open(dest .. ".prev", "w"); if bk then bk:write(old); bk:close() end
+    end
+    if not os.rename(tmp, dest) then                                     -- rename = sostituzione atomica (mai un modulo a meta')
+      os.remove(tmp); gwAlert("Golden Whisper: update non installato (permessi?)"); return
+    end
     writeLocalVersion(newVer)
     gwAlert("⬆️ Golden Whisper aggiornato (" .. newVer .. ") — riavvio appena sei fermo", 4)
     deferReload()
-  end, { "-fsSL", RAW_BASE .. "/src/groq_dictation.lua", "-o", tmp })
-  t:start()
+  end, { "-fsSL", "--max-time", "120", RAW_BASE .. "/src/groq_dictation.lua", "-o", tmp })
+  if not (t and t:start()) then ICON.updBusy = false end
 end
 checkUpdate = function(silent)
   local t = hs.task.new(config.curl, function(code, out)
@@ -6611,7 +6626,7 @@ checkUpdate = function(silent)
       if config.autoUpdate then applyUpdate(rem)
       else gwAlert("⬆️ Golden Whisper: update disponibile (" .. rem .. ")", 5) end
     elseif not silent then gwAlert("Golden Whisper è aggiornato ✓ (" .. loc .. ")", 2) end
-  end, { "-fsSL", RAW_BASE .. "/VERSION" })
+  end, { "-fsSL", "--max-time", "30", RAW_BASE .. "/VERSION" })
   t:start()
 end
 end
