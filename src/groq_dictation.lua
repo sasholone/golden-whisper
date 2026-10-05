@@ -6285,9 +6285,13 @@ startSegment = function(mode_)
   -- il callback di uscita puo' scattare DENTRO start() (ffmpeg che muore subito): in quel caso lo si rimanda a dopo, cosi' _onSegmentFinished
   -- non rientra mai in startSegment/start/togglePause (niente ricorsione sincrona)
   local mine
+  intent = nil                                                      -- un intento ancora pendente era del ffmpeg precedente (il suo callback ora e' ignorato)
   ICON.starting = true
   mine = hs.task.new(config.ffmpeg, function()
     if ICON.starting then ICON.deadAtStart = true; return end
+    -- ffmpeg VECCHIO che chiude in ritardo (pausa/riprendi veloce, stop/annulla + nuovo avvio): non deve azzerare recTask del task nuovo
+    -- (ffmpeg nuovo orfano che registra per sempre) ne' eseguire di nuovo un intento gia' superato
+    if recTask ~= mine then return end
     M._onSegmentFinished()
   end, onStream, args)
   recTask = mine
@@ -6323,8 +6327,26 @@ end
 stopCurrentSegment = function(newIntent)
   stopRotTimer(); intent = newIntent
   if recTask then
-    local pid = recTask:pid()
-    if pid and pid > 0 then hs.execute(config.kill .. " -INT " .. pid) else recTask:terminate() end
+    local victim = recTask
+    local pid = victim:pid()
+    if pid and pid > 0 then hs.execute(config.kill .. " -INT " .. pid) else victim:terminate() end
+    -- ffmpeg che non risponde a SIGINT (device audio bloccato): dopo 3 s SIGTERM, dopo altri 2 s SIGKILL e si va avanti lo stesso
+    -- (altrimenti recTask resta appeso: lo stop non trascrive mai e nessuna nuova registrazione puo' partire)
+    ICON.stopWD = ICON.stopWD or setmetatable({}, { __mode = "k" })
+    if not ICON.stopWD[victim] then
+      ICON.stopWD[victim] = true
+      local function running() local ok, r = pcall(function() return victim:isRunning() end); return ok and r == true end   -- dubbio = no (mai SIGKILL a un pid forse riusato)
+      hs.timer.doAfter(3, function()
+        if recTask ~= victim and not running() then return end
+        pcall(function() victim:terminate() end)
+        hs.timer.doAfter(2, function()
+          if running() and pid and pid > 0 then hs.execute(config.kill .. " -KILL " .. pid) end
+          if recTask ~= victim then return end
+          ICON.log("[GW] ffmpeg non si chiude: SIGKILL e vado avanti")
+          M._onSegmentFinished()
+        end)
+      end)
+    end
   else
     M._onSegmentFinished()   -- ffmpeg già morto: esegui subito l'intento (stop/cancel/…)
   end
@@ -6334,6 +6356,9 @@ rotate = function()
   elapsed = elapsed + ICON.segDur(); segStart = nil; stopCurrentSegment("rotate")
 end
 local function start()
+  -- il ffmpeg della registrazione precedente sta ancora chiudendo (stop/annulla di pochi ms fa): il suo intento (trascrivere/scartare)
+  -- usa `segments`; partire adesso li cancellerebbe. Si riprova a mano tra un attimo (al massimo ~5 s: vedi stopCurrentSegment)
+  if recTask then return end
   recoverOrphans(true); cleanupSegments()
   local dev, fellBack, name = resolveMic()
   config.audioDevice = dev; micName = name
