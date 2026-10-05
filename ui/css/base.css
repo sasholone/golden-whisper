@@ -1,0 +1,77 @@
+/* base.css - reset, pannello radice (UNICO backdrop-filter), header, tab, pannelli, scroll.
+   Regola di performance: si animano SOLO transform e opacity. */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg1: rgba(27,25,20,.95); --bg2: rgba(10,9,7,.97); --bg1-solid: #1b1914; --bg2-solid: #0a0907;
+  --fg: #f7f2e6; --fg2: #b8ad94; --fg3: #7c7360;
+  --accent: #d6af5e; --accent-ink: #ebcb85; --on-accent: #1a1304;
+  --g1: #ebcb85; --g2: #b48b3b; --g3: #b48b3b; --g4: #b48b3b;
+  --grad: linear-gradient(90deg,#ebcb85,#b48b3b); --grad-diag: linear-gradient(135deg,#ebcb85,#b48b3b);
+  --accent-soft: rgba(214,175,94,.2); --accent-faint: rgba(214,175,94,.1);
+  --border: rgba(214,175,94,.36); --border-soft: rgba(214,175,94,.18);
+  --row: rgba(247,242,230,.05); --row-hover: rgba(247,242,230,.10); --track: rgba(247,242,230,.13); --divider: rgba(247,242,230,.10);
+  --warn: #ff5c54; --ok: #4ade80;
+  --r-xs: 6px; --r-s: 9px; --r-m: 12px; --r-l: 16px; --r-pill: 999px; --r-hud: 26px;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-timer: ui-monospace, 'SF Mono', Menlo, monospace;
+  --density: 1; --idle-opacity: 1; --shadow-k: 1;
+  --ease-spring: cubic-bezier(.3,1.35,.5,1); --ease-out: cubic-bezier(.2,.7,.2,1);
+  color-scheme: dark;
+}
+html, body { height: 100%; background: transparent; overflow: hidden; }
+body { font: 400 13px/1.35 var(--font-ui); color: var(--fg); -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none; cursor: default; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; -webkit-appearance: none; appearance: none; text-align: inherit; }
+button:disabled { cursor: default; }
+svg { display: block; flex: none; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+/* ---- pannello radice: l'UNICO con backdrop-filter ---- */
+.panel {
+  position: fixed; inset: 0; display: flex; flex-direction: column; overflow: hidden;
+  background: linear-gradient(160deg, var(--bg1), var(--bg2));
+  -webkit-backdrop-filter: blur(24px) saturate(1.4); backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--border-soft); border-radius: var(--r-l);
+  contain: layout paint;
+}
+.panel::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, var(--sheen, rgba(255,255,255,.035)), transparent 38%); }
+
+/* ---- header (maniglia di trascinamento) ---- */
+.hdr { position: relative; display: flex; align-items: center; gap: 10px; height: 54px; padding: 0 14px 0 18px; flex: none; cursor: grab; }
+.hdr:active { cursor: grabbing; }
+.hdr-ic { width: 30px; height: 30px; border-radius: var(--r-s); display: grid; place-items: center; background: var(--grad-diag); color: var(--on-accent); }
+.hdr-title { flex: 1; font-size: 15px; font-weight: 650; letter-spacing: .1px; }
+.hdr-ver { font: 500 10.5px var(--font-timer); color: var(--fg3); margin-right: 4px; }
+.hdr-x { position: relative; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: var(--fg2); cursor: pointer; }
+
+/* ---- tab ---- */
+.tabbar { flex: none; padding: 0 16px 12px; }
+.tabbar .seg { height: 36px; }
+
+/* ---- pannelli dei tab: cross-fade + translate, mai width/height ---- */
+.panes { position: relative; flex: 1; min-height: 0; border-top: 1px solid transparent; }
+.panes.is-scrolled { border-top-color: var(--divider); }
+.pane { position: absolute; inset: 0; display: none; opacity: 0; transform: translateX(10px); transition: opacity .2s ease-out, transform .24s var(--ease-out); }
+.pane.is-shown { display: flex; flex-direction: column; }
+.pane.is-active { opacity: 1; transform: none; }
+.pane.is-left { transform: translateX(-10px); }
+
+/* ---- scroll nativo, barra sottile che compare solo in hover ---- */
+.scroll { overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; min-height: 0; scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.scroll:hover { scrollbar-color: var(--track) transparent; }
+.scroll::-webkit-scrollbar { width: 7px; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+.scroll::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
+.scroll:hover::-webkit-scrollbar-thumb { background-color: var(--track); }
+.scroll::-webkit-scrollbar-thumb:hover { background-color: var(--fg3); }
+
+/* ---- stage per il MOCK (browser normale): mostra il vetro su uno sfondo vivo ---- */
+html.mock body { background: radial-gradient(1200px 700px at 15% 10%, #7aa7ff 0, transparent 60%), radial-gradient(900px 700px at 90% 90%, #ff9fb1 0, transparent 55%), linear-gradient(135deg, #cfd9ee, #f2dfe6); }
+html.mock .panel { inset: auto; top: 50%; left: 50%; height: min(720px, calc(100vh - 32px)); width: 432px; transform: translate(-50%, -50%); box-shadow: 0 30px 80px rgba(0,0,0,.35), 0 0 0 1px rgba(0,0,0,.2); }
+html.mock .panel[data-tab="theme"] { width: min(800px, calc(100vw - 24px)); }
+.mock-note { position: fixed; left: 12px; bottom: 10px; font: 500 11px var(--font-ui); color: rgba(0,0,0,.55); pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .001ms !important; animation-duration: .001ms !important; }
+}
