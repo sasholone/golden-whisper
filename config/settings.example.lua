@@ -34,4 +34,5 @@ return {
   style       = "gold",                   -- gold | mono | goldlight | monolight
   themeAuto   = false,                    -- true = segue il tema chiaro/scuro del sistema (usa la famiglia di 'style')
   -- posX / posY = centro della card; si salvano da soli quando trascini l'overlay col mouse
+  -- settingsUI = "web",                  -- finestra Impostazioni: "canvas" (classica, default) | "web" (nuova, hs.webview; se non parte si apre la classica)
 }
