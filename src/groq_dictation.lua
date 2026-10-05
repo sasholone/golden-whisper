@@ -4228,6 +4228,7 @@ closeSettings = function()
   if not cv then return end
   settingsCanvas = nil; settingsPos = nil
   stopPreview(); stopScrollTap(); killGhost(); SET.hvKill()
+  if ICON.capTap then pcall(function() ICON.capTap:stop() end); ICON.capTap = nil end     -- cattura tasto in corso: annullata con la finestra
   SET.K.msg = nil; SET.K.armAt = 0; SET.K.tipReset(); SET.K.exp = false; SET.K.q = 0; Anim.cancel("setvis", "kx")
   SET.frame = nil; SET.W = nil; SET.H = nil; SET.cap = nil; SET.hCur = nil; SET.wCur = nil; SET.sc = { 0, 0 }; SET.reg = nil; SET.dy = {}
   SET.pill = {}; SET.tog = {}; SET.cxHome = nil; SET.shellLast = nil; SET.hero = nil
@@ -6475,7 +6476,12 @@ end
 
 startCapture = function(actionKey)
   gwAlert("Premi il tasto per « " .. (actionKey == "ss" and "Avvio / Stop" or "Pausa") .. " »…", 2)
+  -- una cattura alla volta, mai "armata" per sempre: prima, se non si premeva subito un tasto (impostazioni chiuse, ripensamento),
+  -- il PRIMO tasto premuto in qualunque app (anche Esc o una lettera) diventava un tasto di avvio/pausa e da li' veniva mangiato ovunque
+  if ICON.capTap then pcall(function() ICON.capTap:stop() end); ICON.capTap = nil end
+  if ICON.capT then ICON.capT:stop(); ICON.capT = nil end
   local tap
+  local function endCap() if ICON.capTap == tap then ICON.capTap = nil end; if ICON.capT then ICON.capT:stop(); ICON.capT = nil end; tap:stop() end
   tap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged, hs.eventtap.event.types.keyDown }, function(e)
     local kc, et = e:getKeyCode(), e:getType()
     local mod
@@ -6484,16 +6490,19 @@ startCapture = function(actionKey)
       if not fn or not e:getFlags()[fn] then return false end   -- aspetta la pressione di un modificatore
       mod = fn
     else
+      if kc == 53 then endCap(); return true end                -- Esc: annulla la cattura (non diventa un tasto)
       mod = "key"
     end
-    tap:stop()
+    endCap()
     local list = (actionKey == "ss") and config.ssBindings or config.pauseBindings
     local dup = false; for _, b in ipairs(list) do if b.kc == kc then dup = true end end
     if not dup then list[#list + 1] = { kc = kc, mod = mod, gesture = (actionKey == "ss" and "double" or "single") } end
-    saveBindings(); renderSettings()
+    saveBindings(); if settingsCanvas then renderSettings() end
     return (mod == "key")
   end)
   tap:start()
+  ICON.capTap = tap
+  ICON.capT = hs.timer.doAfter(10, function() ICON.capT = nil; endCap() end)    -- nessun tasto entro 10 s: cattura annullata
 end
 
 local function initHotkeys()
