@@ -42,6 +42,8 @@
       density: { type: 'enum', def: 'normal', icon: 'rowsN', section: 'DENSITÀ',
         choices: [ch('compact', 'Compatta', 'rowsC'), ch('normal', 'Normale', 'rowsN'), ch('wide', 'Ampia', 'rowsW')] },
       idleOpacity: { type: 'num', min: 0.3, max: 1, def: 1, icon: 'ghost', section: 'HUD A RIPOSO', label: 'Opacità' },
+      material: { type: 'enum', def: 'solid', icon: 'matSolid', section: 'MATERIALE',
+        choices: [ch('solid', 'Solido', 'matSolid'), ch('glass', 'Vetro', 'matGlass')] },
       style: { type: 'style', def: 'gold', icon: 'palette', section: 'STILE' }
     },
     general: {

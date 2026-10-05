@@ -6,7 +6,7 @@ L'host Lua la carica in un `hs.webview` (WKWebView, GPU) e dialoga col **ponte**
 ## Aprirla subito in un browser (MOCK)
 - Doppio click su `ui/dist/settings.html` (build, un solo file) oppure su `ui/index.html` (sorgenti separati).
 - Fuori da hs.webview non esiste `window.webkit.messageHandlers.gw`: `gw-bridge.js` usa il **mock** (`js/mock.js`): 70 stili generati, 12 microfoni (uno con nome ostile `<script>`), chiave Groq finta (25% di errore al "Incolla"), cattura tasti simulata, "Sorprendimi" vero.
-- Tab iniziale via hash: `settings.html#theme`, `#keys`, `#general`.
+- Tab iniziale via hash: `settings.html#theme`, `#keys`, `#general`. Materiale: `#material=solid` (default) o `#material=glass`; si combinano: `#theme&material=glass&style=ocean&themeMode=light` (qualsiasi chiave di look; cambiando l'hash la pagina si ricarica).
 - Riga bassa a sinistra "MOCK: ..." = sei sul mock.
 
 ## Build
@@ -15,7 +15,7 @@ L'host Lua la carica in un `hs.webview` (WKWebView, GPU) e dialoga col **ponte**
 ## Test
 ```
 cd ui && npm install      # solo per jsdom (devDependency, node_modules ignorata da git)
-node --test tests/         # 60+ test, ~5 s
+node --test tests/         # 78 test, ~6 s
 GW_SMOKE=1 node --test tests/smoke.test.mjs   # UNA volta: Chrome headless, 0 errori console, 70 carte
 ```
 
@@ -25,7 +25,7 @@ GW_SMOKE=1 node --test tests/smoke.test.mjs   # UNA volta: Chrome headless, 0 er
 | op | args | note |
 |---|---|---|
 | `ready` | - | pagina pronta; Lua risponde con `gw.onState(stato)` |
-| `set` | `{key, value}` | chiavi: style, themeMode, glassOpacity, cornerStyle, animOn, animSpeed, waveStyle, waveColor, micPulse, glowOn, uiFont, timerFont, density, idleOpacity, shadowOn, shadowIntensity, sizePreset, orientation. Gli slider mandano al max 1 messaggio / 80 ms + l'ultimo valore garantito |
+| `set` | `{key, value}` | chiavi: style, themeMode, glassOpacity, cornerStyle, animOn, animSpeed, waveStyle, waveColor, micPulse, glowOn, uiFont, timerFont, density, idleOpacity, shadowOn, shadowIntensity, sizePreset, orientation, material (`solid`|`glass`, opzionale in `look`, default `solid`). Gli slider mandano al max 1 messaggio / 80 ms + l'ultimo valore garantito |
 | `random_look` / `reset_look` | - | Sorprendimi / Reset look (la UI chiede doppio tocco per il reset) |
 | `pick_mic` | `{name}` | |
 | `refresh_devices` | - | risposta: evento `devices` |
@@ -38,12 +38,12 @@ GW_SMOKE=1 node --test tests/smoke.test.mjs   # UNA volta: Chrome headless, 0 er
 | `set_tab` | `{tab}` | general / keys / theme |
 | `close` | - | |
 | `drag_start` | `{sx, sy}` | mousedown sull'header (screenX/screenY). Niente `-webkit-app-region` |
-| `resize_request` | `{w, h}` | w=432 (general/keys) o 800 (theme); h = altezza naturale (header+tab+contenuto). L'host clampa. Inviato a cambio tab e quando cambia il contenuto (debounce 90 ms) |
+| `resize_request` | `{w, h}` | w=432 (general/keys) o 800 (theme); h = altezza naturale (header+tab+contenuto) **con tetto**: general/keys 680, theme 760 (oltre, il corpo scorre dentro). L'host clampa a min(schermo-24, 820 x 760). Inviato a cambio tab e quando cambia il contenuto (debounce 90 ms) |
 | `interact` | - | UNA volta, al primo `pointerdown` |
 | `hb` | - | heartbeat ogni 1000 ms |
 
 **Lua -> JS**: la pagina definisce `window.gw = { onState(state), onEvent(name, payload) }`.
-- `onState(state)` sostituisce tutto (la UI e' ottimistica: dopo un `set` si e' gia' aggiornata). Campi mancanti = default sensati (vedi `js/state.js: normalize`). Stato: `{version, tab, look:{...16 chiavi}, general:{micName, devices:[{name,bt}], sizePreset, orientation}, keys:{ss:[{label,gesture}], pause:[...]}, groq:{has,mask}, styles:[{id,name,cat,dark:{bg1,bg2,fg,fg2,accent,grad[]},light:{...},fx:{icon,bar,part}|null}], cats:[{id,name}], effectiveMode, assets:{<styleId>:{icon?,spin?}}}`.
+- `onState(state)` sostituisce tutto (la UI e' ottimistica: dopo un `set` si e' gia' aggiornata). Campi mancanti = default sensati (vedi `js/state.js: normalize`). Stato: `{version, tab, look:{...17 chiavi, `material` opzionale}, general:{micName, devices:[{name,bt}], sizePreset, orientation}, keys:{ss:[{label,gesture}], pause:[...]}, groq:{has,mask}, styles:[{id,name,cat,dark:{bg1,bg2,fg,fg2,accent,grad[]},light:{...},fx:{icon,bar,part}|null}], cats:[{id,name}], effectiveMode, assets:{<styleId>:{icon?,spin?}}}`.
 - `onEvent('key_status', {has, mask, msg, kind:'ok'|'error'|'busy'})`, `('devices', [..])`, `('capture_result', {ok,label,action})`, `('toast', {text})`.
 - Il messaggio `key_status` sparisce da solo dopo 9 s (come in Lua); `busy` resta finche' non arriva un altro stato.
 
@@ -58,7 +58,9 @@ GW_SMOKE=1 node --test tests/smoke.test.mjs   # UNA volta: Chrome headless, 0 er
 - Hover = overlay `::before/::after` con opacity (ombra/sfondo gia' disegnati). Pillola dei segmented = `translateX(var(--i)*100%)`. Switch = knob translateX + overlay opacity.
 - UN solo `backdrop-filter` (il `.panel` radice).
 - Anteprima HUD: `<canvas>` 2D a <= 30 Hz; il loop rAF gira solo con mouse sopra l'anteprima + finestra visibile + tab Tema + `animOn` + niente `prefers-reduced-motion`; altrimenti `cancelAnimationFrame` e un solo disegno statico. `pv.dataset.running` = '1'/'0' (hook di test).
-- 70+ carte: gradienti CSS statici (entrambi i modi pre-calcolati in variabili `--gd/--gl`, il cambio dark/light non costa JS) + un mini SVG statico per carta, `content-visibility:auto`, nessuna animazione per carta. Il filtro categoria usa `hidden`.
+- 70+ carte a FINESTRA di righe: nel DOM solo le righe visibili +-3 (spaziatori sopra/sotto), carta + mini onda SVG create solo quando la riga entra in finestra, spunta solo sulla carta corrente; categoria iniziale = quella dello stile corrente (finche' l'utente non ne sceglie un'altra), scroll alla carta selezionata. Gradienti CSS statici (`--gd/--gl`), nessuna animazione per carta. Cambio categoria = ricostruzione della sola lista. Nodi DOM del tab Tema all'apertura: ~460 totali (prima 1228).
+- Altezza: header + tab fissi; il corpo ha altezza vincolata e scorre dentro per colonna (tab Tema: sinistra = carte, destra = controlli; hero, categorie e anteprima restano fissi). I tab si costruiscono alla prima apertura.
+- Materiali (`data-material` sul root + token in `js/theme.js: applyMaterial`): `solid` (default: pannello alpha .97/.985, bordo accento pieno, ombre statiche a 2 strati, controlli con bordo netto, pillola con ombra di contatto, testo piu' contrastato, niente gloss) e `glass` (morbido, come prima). Cambia solo la finestra, non l'anteprima HUD. Un solo `backdrop-filter` (pannello radice) in entrambi.
 - Scroll nativo (`-webkit-overflow-scrolling`), scrollbar sottile che compare solo in hover. Cambio tab = cross-fade + translate (mai width/height: il resize lo fa Lua via `resize_request`).
 - `prefers-reduced-motion`: tutte le transizioni a ~0.
 - Peso: ~116 KB non compresso (budget 250 KB).

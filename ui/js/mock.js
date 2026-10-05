@@ -93,15 +93,25 @@
   function push() { if (root.gw && root.gw.onState) root.gw.onState(snapshot()); }
   function evt(name, payload) { if (root.gw && root.gw.onEvent) root.gw.onEvent(name, payload); }
 
+  /* cambiando solo l'hash (#material=glass) il browser non ricarica: lo facciamo noi, cosi' si confrontano i materiali con un solo cambio di URL */
+  if (root.addEventListener) root.addEventListener('hashchange', function () { try { root.location.reload(); } catch (e) { /* jsdom */ } });
+
   function init() {
     var styles = buildStyles(70);
     var counts = {}; styles.forEach(function (s) { counts[s.cat] = (counts[s.cat] || 0) + 1; });
-    var h = (root.location && root.location.hash || '').slice(1);
+    var parts = (root.location && root.location.hash || '').slice(1).split(/[&,;]/), h = '', mat = null;     // #theme  #material=glass  #theme&material=solid
+    var extra = {};     // qualsiasi opzione del look: #theme&material=glass&style=ocean&themeMode=light
+    parts.forEach(function (x) {
+      var kv = x.split('=');
+      if (kv.length === 2 && O.scopeOf(kv[0]) === 'look') { if (kv[0] === 'material') mat = kv[1]; else extra[kv[0]] = kv[1]; } else if (!h && kv.length === 1) h = x;
+    });
     st = { tab: ['general', 'keys', 'theme'].indexOf(h) >= 0 ? h : 'general', look: O.defaultsLook(), styles: styles,
       cats: O.CATS_DEFAULT.slice(),
       general: { micName: DEVICES[1].name, devices: DEVICES.slice(), sizePreset: 'standard', orientation: 'horizontal' },
       keys: { ss: [{ label: 'F5', gesture: 'double' }, { label: '⌥ dx', gesture: 'hold' }], pause: [{ label: 'F6', gesture: 'single' }] },
       groq: { has: false, mask: '' } };
+    if (mat) st.look.material = O.clean('material', mat);
+    Object.keys(extra).forEach(function (k) { st.look[k] = O.clean(k, extra[k]); });
   }
 
   function handle(m) {

@@ -8,7 +8,7 @@ const O = GW.options;
 const CONTRACT_OPS = ['ready', 'set', 'random_look', 'reset_look', 'pick_mic', 'refresh_devices', 'key_paste', 'key_remove', 'open_groq', 'capture_start', 'capture_cancel',
   'key_remove_binding', 'key_set_gesture', 'set_tab', 'close', 'drag_start', 'resize_request', 'interact', 'hb'];
 const CONTRACT_SET_KEYS = ['style', 'themeMode', 'glassOpacity', 'cornerStyle', 'animOn', 'animSpeed', 'waveStyle', 'waveColor', 'micPulse', 'glowOn', 'uiFont', 'timerFont',
-  'density', 'idleOpacity', 'shadowOn', 'shadowIntensity', 'sizePreset', 'orientation'];
+  'density', 'idleOpacity', 'shadowOn', 'shadowIntensity', 'sizePreset', 'orientation', 'material'];   // material: nuova chiave opzionale (default 'solid')
 
 test('OPS = contratto', () => assert.deepEqual([...O.OPS].sort(), [...CONTRACT_OPS].sort()));
 test('chiavi di set = contratto (look + general)', () => assert.deepEqual([...O.LOOK_KEYS, ...O.GENERAL_KEYS].sort(), [...CONTRACT_SET_KEYS].sort()));

@@ -78,6 +78,9 @@
     sizeL: { els: micShape(8.4, 2.4, 7.2, 12.4, 'M5 11.6a7 7 0 0 0 14 0', 'M12 18.6v2.9M8.5 21.5h7') },
     orientH: { els: [['r', 2.5, 8, 19, 8, 4]] },
     orientV: { els: [['r', 8, 2.5, 8, 19, 4]] },
+    /* --- materiale: solido (pannello pieno con bordo) / vetro (riflessi diagonali) --- */
+    matSolid: { els: [['r', 4, 4, 16, 16, 3.5], ['pf', 'M7.5 7.5h9v9h-9z', 0.5]] },
+    matGlass: { els: [['r', 4, 4, 16, 16, 3.5], ['p', 'M8.4 15.6l7.2-7.2M8.4 11.4l3-3M12.6 15.6l3-3']] },
     /* --- categorie stile --- */
     catAll: { els: [['r', 4, 4, 6.5, 6.5, 1.6], ['r', 13.5, 4, 6.5, 6.5, 1.6], ['r', 4, 13.5, 6.5, 6.5, 1.6], ['r', 13.5, 13.5, 6.5, 6.5, 1.6]] },
     catGem: { els: [['p', 'M6.5 4h11L21 9l-9 11L3 9z'], ['p', 'M3 9h18M9.5 9 12 4l2.5 5L12 20z']] },

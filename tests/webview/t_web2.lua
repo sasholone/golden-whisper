@@ -1,11 +1,11 @@
 -- WEB 2: operazioni del ponte JS->Lua (set, look, mic, chiave, tasti, capture, drag, resize, asset)
 local LOOKK = { "style", "themeMode", "glassOpacity", "cornerStyle", "animOn", "animSpeed", "waveStyle", "waveColor", "micPulse", "glowOn", "uiFont", "timerFont",
-  "density", "idleOpacity", "shadowOn", "shadowIntensity" }
+  "density", "idleOpacity", "shadowOn", "shadowIntensity", "material" }
 local VALID = {
   style = { "ocean", "sakura", "mono", "blocky" }, themeMode = { "dark", "light", "auto" }, glassOpacity = { 0.5, 0.8, 1 }, cornerStyle = { "round", "medium", "square" },
   animOn = { true, false }, animSpeed = { "calm", "normal", "lively" }, waveStyle = { "bars", "thin", "dots", "line" }, waveColor = { "accent", "gradient", "auto" },
   micPulse = { 0, 0.3, 1 }, glowOn = { true, false }, uiFont = { "sf", "rounded", "mono" }, timerFont = { "mono", "sf", "rounded" }, density = { "compact", "normal", "wide" },
-  idleOpacity = { 0.3, 0.7, 1 }, shadowOn = { true, false }, shadowIntensity = { 0, 0.5, 1 },
+  idleOpacity = { 0.3, 0.7, 1 }, shadowOn = { true, false }, shadowIntensity = { 0, 0.5, 1 }, material = { "solid", "glass" },
 }
 local BAD = { "abc", "", "../../etc/passwd", 0 / 0, math.huge, -math.huge, -5, 99, {}, { 1 }, "true", "false", "0.5", 1e308, string.rep("x", 5000), "\0", "nan", -0.0 }
 local function persisted() local s = FAKE[C.settingsPath]; if not s then return nil end local f = load(s, "=s"); if not f then return false end local ok, t = pcall(f); return ok and t or false end
@@ -390,6 +390,25 @@ T("W68 resize: tetto di sicurezza w<=820 h<=760 (anche se lo schermo e' enorme),
   WV.send({ op = "resize_request", w = 5000, h = 5000 }, w); advance(0.5)
   SCREENT.w, SCREENT.h = o[1], o[2]
   if w.fr.w > 576 or w.fr.h > 476 then return "schermo piccolo: " .. w.fr.w .. "x" .. w.fr.h end
+  return true end)
+T("W69 material: default solid, set solid|glass persiste e va nello stato, invalido -> solid, random_look non lo tocca, reset_look -> solid", function()
+  local w = openWeb()
+  if C.LOOK.def.material ~= "solid" then return "default " .. tostring(C.LOOK.def.material) end
+  if WV.lastState(w) and WV.lastState(w).look.material ~= "solid" then return "stato iniziale " .. tostring(WV.lastState(w).look.material) end
+  WV.send({ op = "set", key = "material", value = "glass" }, w); advance(0.15)
+  if C.material ~= "glass" then return "config " .. tostring(C.material) end
+  local p = persisted(); if not p or p.material ~= "glass" then return "non persistito: " .. tostring(p and p.material) end
+  local s = fresh(w); if s.look.material ~= "glass" then return "stato fresco " .. tostring(s.look.material) end
+  for _, bad in ipairs({ "plastica", "", 5, true, {}, "GLASS", "solid ", 0 / 0 }) do
+    WV.send({ op = "set", key = "material", value = bad }, w); advance(0.05)
+    if C.material ~= "solid" then return "invalido " .. tostring(bad) .. " -> " .. tostring(C.material) end
+  end
+  WV.send({ op = "set", key = "material", value = "glass" }, w); advance(0.1)
+  for i = 1, 5 do WV.send({ op = "random_look" }, w); advance(0.1) end
+  if C.material ~= "glass" then return "random_look ha cambiato il materiale" end
+  WV.send({ op = "reset_look" }, w); advance(0.2)
+  if C.material ~= "solid" then return "reset_look: " .. tostring(C.material) end
+  if C.LOOK.clean("material", nil) ~= "solid" then return "clean(nil)" end
   return true end)
 -- asset
 local function themesBase() return (C.keyPath:gsub("/api_key$", "")) .. "/themes" end

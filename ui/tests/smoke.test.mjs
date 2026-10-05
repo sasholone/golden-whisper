@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { UI } from './helpers.mjs';
 const CH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-test('Chrome headless apre dist/settings.html: 0 errori console, 70 carte', { skip: !process.env.GW_SMOKE }, async () => {
+test('Chrome headless apre dist/settings.html: 0 errori console, carte a finestra (non tutte le 70), data-material', { skip: !process.env.GW_SMOKE }, async () => {
   const p = spawn(CH, ['--headless=new', '--disable-gpu', '--no-first-run', '--user-data-dir=' + join(process.env.TMPDIR || '/tmp', 'gw-smoke'), '--enable-logging=stderr', '--v=0',
     '--virtual-time-budget=4000', '--dump-dom', 'file://' + join(UI, 'dist', 'settings.html') + '#theme']);
   let out = '', err = '';
@@ -14,5 +14,7 @@ test('Chrome headless apre dist/settings.html: 0 errori console, 70 carte', { sk
   await new Promise((r) => { const t = setTimeout(() => { p.kill('SIGKILL'); r(); }, 60000); p.on('exit', () => { clearTimeout(t); r(); }); const iv = setInterval(() => { if (/<\/html>/.test(out)) { clearInterval(iv); setTimeout(() => { p.kill('SIGKILL'); }, 300); } }, 200); });
   const cons = err.split('\n').filter((l) => /CONSOLE|Uncaught/i.test(l));
   assert.deepEqual(cons, []);
-  assert.equal((out.match(/class="card( |")/g) || []).length, 70);
+  const n = (out.match(/class="card( |")/g) || []).length;
+  assert.ok(n >= 6 && n < 70, 'carte nel DOM: ' + n);
+  assert.match(out, /data-material="solid"/);
 });

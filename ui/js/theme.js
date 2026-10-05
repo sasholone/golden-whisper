@@ -42,6 +42,53 @@
   function gradientCss(list, angle) { return 'linear-gradient(' + (angle === undefined ? 90 : angle) + 'deg,' + list.join(',') + ')'; }
   function radiusPx(v, corner) { return Math.max(1.5, Math.round(v * (O.RADIUS_MUL[corner] || 1) * 10) / 10); }
 
+
+  /* MATERIALE del pannello Impostazioni: 'solid' (default, robusto: pannello quasi opaco, bordo accento, ombre statiche a 2 strati, controlli con
+     bordo netto e testo piu' contrastato) oppure 'glass' (morbido: come prima). Cambia SOLO l'aspetto della finestra, mai l'anteprima HUD (--bg1/--bg2 restano il vetro vero). */
+  var MATERIALS = ['solid', 'glass'];
+  var NO_SHADOW = '0 0 0 0 transparent';
+  function materialOf(look) { return look && look.material === 'glass' ? 'glass' : 'solid'; }
+  function applyMaterial(v, tk, dark, look) {
+    var m = materialOf(look), k = dark ? 1 : 0.55, solid = m === 'solid';
+    var blk = function (a) { return 'rgba(0,0,0,' + (Math.round(a * k * 1000) / 1000) + ')'; };
+    var ga = look.glassOpacity > 0 ? U.clamp(look.glassOpacity, 0.5, 1) : DEFAULT_GLASS;
+    var edge = rgba(tk.fg, dark ? 0.20 : 0.17);
+    v['--panel-1'] = solid ? rgba(tk.bg1, 0.97) : rgba(tk.bg1, ga);
+    v['--panel-2'] = solid ? rgba(tk.bg2, 0.985) : rgba(tk.bg2, Math.min(1, ga + 0.02));
+    v['--panel-border'] = solid ? v['--border'] : v['--border-soft'];
+    v['--panel-blur'] = solid ? 'blur(14px) saturate(1.2)' : 'blur(24px) saturate(1.4)';
+    v['--r-panel'] = radiusPx(solid ? 20 : 16, look.cornerStyle) + 'px';
+    v['--r-l'] = radiusPx(solid ? 14 : 16, look.cornerStyle) + 'px';
+    v['--sheen'] = solid ? 'rgba(255,255,255,0)' : v['--sheen'];
+    v['--hi'] = dark ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.9)';
+    v['--hi-soft'] = solid ? (dark ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.7)') : 'rgba(255,255,255,0)';
+    v['--edge'] = solid ? edge : v['--divider'];
+    v['--ring-ctrl'] = solid ? 'inset 0 0 0 1px ' + edge : NO_SHADOW;
+    v['--bw'] = solid ? '1px' : '0px';
+    if (solid) {
+      v['--row'] = rgba(tk.fg, dark ? 0.07 : 0.06); v['--row-hover'] = rgba(tk.fg, dark ? 0.12 : 0.10);
+      v['--track'] = rgba(tk.fg, dark ? 0.20 : 0.16); v['--divider'] = rgba(tk.fg, dark ? 0.15 : 0.13);
+      v['--fg2'] = mix(tk.fg2, tk.fg, 0.2); v['--fg3'] = mix(tk.fg2, tk.bg2, dark ? 0.22 : 0.12);
+    }
+    v['--seg-track'] = solid ? (dark ? 'rgba(0,0,0,0.30)' : rgba(tk.fg, 0.10)) : v['--track'];
+    v['--seg-inset'] = solid ? 'inset 0 1px 2px ' + blk(0.32) : NO_SHADOW;
+    v['--sh-contact'] = solid ? '0 1px 2px ' + blk(0.30) : NO_SHADOW;
+    v['--sh-panel'] = solid ? '0 22px 50px ' + blk(0.30) + ', 0 2px 6px ' + blk(0.34) : '0 20px 50px ' + blk(0.28);
+    v['--sh-pop'] = solid ? '0 10px 24px ' + blk(0.32) + ', 0 1px 3px ' + blk(0.40) : '0 8px 20px ' + blk(0.30);
+    v['--sh-knob'] = solid ? '0 1px 3px rgba(0,0,0,0.55), 0 0 0 1px rgba(0,0,0,0.20)' : '0 1px 2px rgba(0,0,0,0.35)';
+    v['--knob-edge'] = solid ? 'rgba(0,0,0,0.30)' : 'rgba(0,0,0,0.20)';
+    v['--pill-shadow'] = solid ? 'inset 0 1px 0 rgba(255,255,255,' + (dark ? 0.20 : 0.32) + '), 0 1px 3px ' + blk(0.45) + ', 0 0 0 1px rgba(0,0,0,' + (dark ? 0.20 : 0.14) + ')' : NO_SHADOW;
+    v['--btn-edge'] = solid ? v['--border'] : v['--border-soft'];
+    v['--hero-edge'] = solid ? 'rgba(0,0,0,' + (dark ? 0.24 : 0.14) + ')' : 'rgba(0,0,0,0)';
+    v['--sw-ring'] = solid ? 'inset 0 0 0 1px rgba(0,0,0,0.22)' : NO_SHADOW;
+    v['--pv-bg'] = solid ? 'var(--row)' : 'linear-gradient(160deg, var(--accent-faint), transparent 70%), var(--row)';
+    v['--rng-h'] = solid ? '6px' : '5px';
+    v['--fw-title'] = solid ? '700' : '650'; v['--fw-lbl'] = '600';
+    v['--fs-base'] = solid ? '12.5px' : '13px'; v['--fs-lbl'] = solid ? '12.5px' : '13px';
+    v['--fs-sec'] = solid ? '10px' : '10.5px'; v['--ls-sec'] = solid ? '.9px' : '.7px'; v['--row-h'] = solid ? '38px' : '40px';
+    return v;
+  }
+
   /* Mappa nome-variabile -> valore, per stile + modo + look. Pura. */
   function tokens(style, mode, look) {
     var dark = mode !== 'light';
@@ -72,7 +119,7 @@
       '--ok-soft': rgba(dark ? '#4ade80' : '#12904a', 0.24), '--bubble-bg': mix(tk.bg2, tk.accent, 0.07)
     };
     v['--sheen'] = dark ? 'rgba(255,255,255,0.035)' : 'rgba(255,255,255,0.28)';
-    return v;
+    return applyMaterial(v, tk, dark, look);
   }
 
   /* Variabili per carta stile: entrambi i modi, cosi' il cambio dark/light non costa nulla in JS (si sceglie via [data-mode]). */
@@ -93,6 +140,7 @@
     if (el) {
       for (var k in v) el.style.setProperty(k, v[k]);
       el.dataset.mode = state.effectiveMode;
+      el.dataset.material = materialOf(state.look);
       el.dataset.shadow = state.look.shadowOn ? '1' : '0';
       el.dataset.glow = state.look.glowOn ? '1' : '0';
       el.dataset.anim = state.look.animOn ? '1' : '0';
@@ -101,7 +149,7 @@
     return v;
   }
 
-  GW.theme = { rgb: rgb, rgba: rgba, mix: mix, lum: lum, contrast: contrast, onAccent: onAccent, accentInk: accentInk, tokens: tokens, cardVars: cardVars,
+  GW.theme = { MATERIALS: MATERIALS, materialOf: materialOf, rgb: rgb, rgba: rgba, mix: mix, lum: lum, contrast: contrast, onAccent: onAccent, accentInk: accentInk, tokens: tokens, cardVars: cardVars,
     apply: apply, FONTS: FONTS, DEFAULT_GLASS: DEFAULT_GLASS, gradientCss: gradientCss, radiusPx: radiusPx };
   if (typeof module !== 'undefined') module.exports = GW.theme;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

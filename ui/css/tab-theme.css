@@ -3,9 +3,9 @@
 .col { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 
 /* hero: stile attuale / anteprima in hover */
-.hero { position: relative; flex: none; height: 60px; border-radius: var(--r-l); overflow: hidden; display: flex; align-items: center; padding: 0 16px; background: var(--hero-grad, var(--grad)); color: var(--hero-on, var(--on-accent)); }
+.hero { position: relative; flex: none; height: 60px; border-radius: var(--r-l); overflow: hidden; box-shadow: 0 0 0 1px var(--hero-edge), var(--sh-contact); display: flex; align-items: center; padding: 0 16px; background: var(--hero-grad, var(--grad)); color: var(--hero-on, var(--on-accent)); }
 .hero-t { position: relative; min-width: 0; flex: 1; }
-.hero-n { font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hero-n { font-size: 15px; font-weight: var(--fw-title); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hero-s { font-size: 10.5px; opacity: .82; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hero-w { position: relative; flex: none; width: 110px; height: 40px; }
 .hero-w rect { fill: #fff; opacity: .4; }
@@ -18,19 +18,19 @@
 .cards-sp { grid-column: 1 / -1; }
 
 /* carta stile: gradiente statico + mini onda SVG statica + nome. Niente animazioni per carta. */
-.card { position: relative; height: 76px; border-radius: var(--r-m); background: var(--row); border: 1px solid var(--divider); transition: transform .14s var(--ease-out); will-change: auto; text-align: center; }
+.card { position: relative; height: 76px; border-radius: var(--r-m); background: var(--row); border: 1px solid var(--edge); box-shadow: inset 0 1px 0 var(--hi-soft), var(--sh-contact); transition: transform .14s var(--ease-out); will-change: auto; text-align: center; }
 .card::after { content: ''; position: absolute; inset: -1px; border-radius: inherit; box-shadow: inset 0 0 0 1.5px var(--ring, var(--accent)); opacity: 0; transition: opacity .14s linear; pointer-events: none; }
 .card:hover { transform: translateY(-1px); }
 .card:hover::after { opacity: .75; }
 .card.is-cur::after { opacity: 1; box-shadow: inset 0 0 0 2px var(--ring, var(--accent)); }
 .card.is-cur { background: var(--accent-soft); }
-.card .sw-g { position: absolute; left: 5px; right: 5px; top: 5px; height: 42px; border-radius: var(--r-s); background: var(--gd); overflow: hidden; }
+.card .sw-g { position: absolute; left: 5px; right: 5px; top: 5px; height: 42px; border-radius: var(--r-s); background: var(--gd); overflow: hidden; box-shadow: var(--sw-ring); }
 [data-mode="light"] .card .sw-g { background: var(--gl); }
 .card .sw-g svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .card .sw-g svg polyline { stroke: var(--ond); }
 [data-mode="light"] .card .sw-g svg polyline { stroke: var(--onl); }
 .card .sw-g img { position: absolute; left: 5px; top: 5px; width: 16px; height: 16px; object-fit: contain; }
-.card .nm { position: absolute; left: 3px; right: 3px; bottom: 7px; font-size: 10.5px; color: var(--fg2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .nm { position: absolute; left: 3px; right: 3px; bottom: 7px; font-size: 10.5px; font-weight: 500; color: var(--fg2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card.is-cur .nm { color: var(--fg); font-weight: 650; }
 .card .tick { position: absolute; right: 9px; top: 9px; width: 15px; height: 15px; border-radius: 50%; background: var(--ond); color: var(--ad); display: none; place-items: center; }
 [data-mode="light"] .card .tick { background: var(--onl); color: var(--al); }
@@ -38,7 +38,7 @@
 .cards-empty { padding: 20px 8px; font-size: 12px; color: var(--fg3); text-align: center; }
 
 /* anteprima HUD */
-.pv { position: relative; flex: none; height: 104px; border-radius: var(--r-l); border: 1px solid var(--divider); background: linear-gradient(160deg, var(--accent-faint), transparent 70%), var(--row); display: grid; place-items: center; overflow: hidden; }
+.pv { position: relative; flex: none; height: 104px; border-radius: var(--r-l); border: 1px solid var(--edge); background: var(--pv-bg); display: grid; place-items: center; overflow: hidden; }
 .pv-hint { position: absolute; right: 8px; bottom: 5px; font-size: 9.5px; color: var(--fg3); opacity: .8; pointer-events: none; }
 .hud { position: relative; display: flex; align-items: center; gap: calc(10px * var(--density)); padding: calc(9px * var(--density)) calc(14px * var(--density)) calc(9px * var(--density)) calc(10px * var(--density));
   border-radius: var(--r-hud); background: linear-gradient(160deg, var(--bg1), var(--bg2)); border: 1px solid var(--border-soft);

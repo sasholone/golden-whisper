@@ -143,6 +143,7 @@
     C.anim = UI.switchRow({ icon: 'sine2', label: 'Animazioni attive', checked: true, onChange: function (v) { A.set('animOn', v); } });
     C.speed = seg('animSpeed', 'xs'); C.speedWrap = U.h('div', { style: { padding: '0 10px 10px' } }, [C.speed.el]); C.speedSep = UI.sep();
     C.ui = seg('uiFont', 'sm'); C.timer = seg('timerFont', 'sm'); C.dens = seg('density'); C.idle = sl('idleOpacity');
+    C.material = seg('material');
 
     var armTimer = 0;
     C.random = U.h('button', { class: 'btn primary press', type: 'button', on: { click: function () { A.randomLook(); } } }, [GW.icons.make('sparkle', 15), U.h('span', { text: 'Sorprendimi' })]);
@@ -165,6 +166,7 @@
       cs('TIMER', 'clock', [C.timer.el]),
       cs('DENSITÀ', 'rowsN', [C.dens.el]),
       cs('HUD A RIPOSO', 'ghost', [UI.box([C.idle.el])]),
+      cs('MATERIALE', 'matSolid', [C.material.el]),
       U.h('div', { class: 'actions' }, [C.random, C.reset])
     ]);
     var controls = U.h('div', { class: 'controls scroll' }, [controlsInner]);
@@ -195,7 +197,7 @@
       C.pulse.set(L.micPulse);
       C.anim.set(L.animOn, L.animOn ? 'Animazioni attive' : 'Animazioni disattivate');
       C.speedWrap.hidden = C.speedSep.hidden = !L.animOn; C.speed.set(L.animSpeed);
-      C.ui.set(L.uiFont); C.timer.set(L.timerFont); C.dens.set(L.density); C.idle.set(L.idleOpacity);
+      C.ui.set(L.uiFont); C.timer.set(L.timerFont); C.dens.set(L.density); C.idle.set(L.idleOpacity); C.material.set(L.material);
       preview.update(s);
     }
     update(S.get());

@@ -7,7 +7,7 @@ const { state: S, options: O } = GW;
 test('stato iniziale: default = LOOK_DEFAULTS di Lua', () => {
   const s = S.initial();
   assert.deepEqual(s.look, { style: 'gold', themeMode: 'dark', shadowOn: true, shadowIntensity: 0.5, glassOpacity: 0, cornerStyle: 'round', animOn: true,
-    animSpeed: 'normal', waveStyle: 'bars', waveColor: 'auto', micPulse: 0.5, glowOn: false, uiFont: 'sf', timerFont: 'mono', density: 'normal', idleOpacity: 1 });
+    animSpeed: 'normal', waveStyle: 'bars', waveColor: 'auto', micPulse: 0.5, glowOn: false, uiFont: 'sf', timerFont: 'mono', density: 'normal', idleOpacity: 1, material: 'solid' });
   assert.equal(s.general.sizePreset, 'standard'); assert.equal(s.general.orientation, 'horizontal');
 });
 

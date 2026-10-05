@@ -170,7 +170,7 @@ T("W17 stato: forma completa, tutti gli stili, cats, token hex", function()
   for _, st in ipairs(s.styles) do if st.id == "gold" and st.fx ~= nil then return "gold ha fx" end end
   if #s.cats < 2 or s.cats[1].id ~= "all" then return "cats" end
   for _, k in ipairs({ "style", "themeMode", "glassOpacity", "cornerStyle", "animOn", "animSpeed", "waveStyle", "waveColor", "micPulse", "glowOn",
-    "uiFont", "timerFont", "density", "idleOpacity", "shadowOn", "shadowIntensity" }) do if s.look[k] == nil then return "look." .. k .. " mancante" end end
+    "uiFont", "timerFont", "density", "idleOpacity", "shadowOn", "shadowIntensity", "material" }) do if s.look[k] == nil then return "look." .. k .. " mancante" end end
   if type(s.look.animOn) ~= "boolean" or type(s.look.glassOpacity) ~= "number" then return "tipi look" end
   if s.effectiveMode ~= "dark" then return "effectiveMode " .. tostring(s.effectiveMode) end
   if s.general.sizePreset ~= "standard" or s.general.orientation ~= "horizontal" then return "general" end
