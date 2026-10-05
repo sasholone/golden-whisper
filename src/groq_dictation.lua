@@ -6691,6 +6691,60 @@ checkUpdate = function(silent)
 end
 end
 
+------------------------------------------------------------------------
+-- IMPOSTAZIONI WEB (hs.webview). La pagina HTML/CSS/JS e' incollata qui da build.py (l'auto-update scarica SOLO questo file):
+-- NON modificare a mano il blocco tra i marcatori, si rigenera con `python3 build.py` (sorgente: ui/dist/settings.html).
+------------------------------------------------------------------------
+-- <<WEB_HTML_BEGIN>>
+do
+  ICON.webHtml = [==[
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Golden Whisper - segnaposto impostazioni</title>
+<style>
+  html, body { margin: 0; background: transparent; font: 12px -apple-system, system-ui, sans-serif; color: #222; }
+  #card { margin: 24px; padding: 12px; background: rgba(255,255,255,.96); border-radius: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+  #bar { cursor: grab; font-weight: 600; padding: 4px 0 8px; user-select: none; }
+  pre { margin: 0; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  button { margin: 2px; }
+</style>
+</head>
+<body>
+<div id="card">
+  <div id="bar">Segnaposto (ui-stub) <button id="x">chiudi</button></div>
+  <pre id="out">in attesa di onState...</pre>
+</div>
+<script>
+(function () {
+  var post = function (m) { try { window.webkit.messageHandlers.gw.postMessage(m); } catch (e) {} };
+  var out = document.getElementById("out");
+  var log = [];
+  window.gw = {
+    state: null,
+    send: post,
+    onState: function (s) { gw.state = s; render(); },
+    onEvent: function (n, d) { log.push(n + " " + JSON.stringify(d).slice(0, 120)); if (log.length > 12) log.shift(); render(); }
+  };
+  function render() {
+    var s = gw.state || {};
+    out.textContent = "tab=" + s.tab + " effective=" + s.effectiveMode + " style=" + (s.look && s.look.style) +
+      " styles=" + (s.styles && s.styles.length) + " devices=" + (s.general && s.general.devices && s.general.devices.length) +
+      " groq=" + (s.groq && s.groq.has) + "\n--- eventi\n" + log.join("\n");
+  }
+  document.getElementById("x").onclick = function () { post({ op: "close" }); };
+  document.getElementById("bar").onmousedown = function () { post({ op: "drag_start" }); };
+  post({ op: "ready" });
+})();
+</script>
+</body>
+</html>
+]==]
+end
+-- <<WEB_HTML_END>>
+
 function M.update() checkUpdate(false) end
 -- Ritrascrive a mano l'audio salvato/recuperato che non ha ancora un testo (.txt) accanto.
 function M.transcribeRecovered()
