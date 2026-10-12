@@ -41,6 +41,7 @@ local config = {
   recoveredRetryDone = {},         -- runtime: evita ritentativi in loop sugli stessi file
   git          = "/usr/bin/git",
   repoDir      = os.getenv("HOME") .. "/golden-whisper",
+  settingsUI   = "canvas",     -- finestra Impostazioni: canvas (classica, ripiego) | web (hs.webview; se non parte si ricade su canvas)
   sizePreset   = "standard",   -- standard | large | minimal
   orientation  = "horizontal", -- horizontal | vertical
   style        = "gold",       -- famiglia: gold | mono | ocean | violet | emerald | rose
@@ -61,6 +62,7 @@ local config = {
   uiFont       = "sf",         -- sf | rounded | mono (testo UI)
   timerFont    = "mono",       -- mono | sf | rounded
   density      = "normal",     -- compact | normal | wide
+  material     = "solid",      -- solid | glass (solo finestra Impostazioni web: pannelli robusti o vetro morbido)
   idleOpacity  = 1.0,          -- 0.3..1 opacità dell'HUD quando il mouse non è sopra
 }
 
@@ -484,7 +486,7 @@ local function gapK() return dens().gap end
 config.LOOK = { def = {
   style = "gold", themeMode = "dark", shadowOn = true, shadowIntensity = 0.5, glassOpacity = 0,
   cornerStyle = "round", animOn = true, animSpeed = "normal", waveStyle = "bars", waveColor = "auto",
-  micPulse = 0.5, glowOn = false, uiFont = "sf", timerFont = "mono", density = "normal", idleOpacity = 1,
+  micPulse = 0.5, glowOn = false, uiFont = "sf", timerFont = "mono", density = "normal", idleOpacity = 1, material = "solid",
 } }
 do
   local K = config.LOOK
@@ -517,6 +519,7 @@ do
     elseif key == "uiFont" then return oneOf(v, { "sf", "rounded", "mono" }, d)
     elseif key == "timerFont" then return oneOf(v, { "mono", "sf", "rounded" }, d)
     elseif key == "density" then return (type(v) == "string" and DENS[v]) and v or d
+    elseif key == "material" then return oneOf(v, { "solid", "glass" }, d)
     end
     return v
   end
@@ -626,6 +629,7 @@ local function loadSettings()
   if s.cornerStyle and RADIUS_MUL[s.cornerStyle] then config.cornerStyle = s.cornerStyle end
   if s.animOn ~= nil then config.animOn = bool(s.animOn) end
   if s.layers ~= nil then config.layers = bool(s.layers) end
+  if s.settingsUI == "web" or s.settingsUI == "canvas" then config.settingsUI = s.settingsUI end
   if s.micAutoFallback ~= nil then config.micAutoFallback = bool(s.micAutoFallback) end
   if s.animSpeed and SPEED_MUL[s.animSpeed] then config.animSpeed = s.animSpeed end
   if s.waveStyle then config.waveStyle = s.waveStyle end
@@ -635,6 +639,7 @@ local function loadSettings()
   if s.uiFont then config.uiFont = s.uiFont end
   if s.timerFont then config.timerFont = s.timerFont end
   if s.density and DENS[s.density] then config.density = s.density end
+  if s.material == "solid" or s.material == "glass" then config.material = s.material end
   if num(s.idleOpacity) then config.idleOpacity = clampN(num(s.idleOpacity), 0.3, 1) end
   -- migrazione dai vecchi stili/flag
   if config.style == "goldlight" then config.style = "gold"; if not s.themeMode then config.themeMode = "light" end
@@ -4197,7 +4202,7 @@ do   -- (blocco: tiene sotto il limite di 200 variabili locali del chunk)
 ------------------------------------------------------------------------
 local LOOK_DEFAULTS = config.LOOK.def
 local LOOK_ORDER = { "style", "themeMode", "shadowOn", "shadowIntensity", "glassOpacity", "cornerStyle", "animOn", "animSpeed",
-  "waveStyle", "waveColor", "micPulse", "glowOn", "uiFont", "timerFont", "density", "idleOpacity" }
+  "waveStyle", "waveColor", "micPulse", "glowOn", "uiFont", "timerFont", "density", "idleOpacity", "material" }
 local function setLook(key, val) val = config.LOOK.clean(key, val); config[key] = val; persist(key, val) end
 local function resetLook()
   for _, k in ipairs(LOOK_ORDER) do setLook(k, LOOK_DEFAULTS[k]) end
@@ -4229,6 +4234,7 @@ local function randomLook()
   ICON.hudShape = nil                                    -- niente forma del pack precedente rimasta attiva
   applyTheme(); rebuildHUD()
 end
+ICON.look = { set = setLook, reset = resetLook, random = randomLook }   -- esportati per la finestra impostazioni web (qui sono locali di blocco)
 
 -- slider del tab Tema: key in config, intervallo, default (se la chiave non c'è)
 local SLIDER_DEFS = {
@@ -4637,6 +4643,7 @@ function K.refresh()
   k = nil
 end
 function K.setMsg(kind, text)
+  if ICON.web then pcall(ICON.web.keyStatus, kind, text) end      -- finestra impostazioni web: evento key_status (mai la chiave: solo testi fissi)
   K.msgId = K.msgId + 1
   local id = K.msgId
   K.msg = { kind = kind, text = text }
@@ -6162,6 +6169,7 @@ local function failSaving(msg)
   end
   hs.timer.doAfter(2.6, hideOverlay)
 end
+ICON.liveTasks = ICON.liveTasks or {}   -- curl in corso (vedi transcribeOne)
 local function transcribeOne(wavPath, cb)
   local key = readKey()
   if not key then cb(false, nil, "Nessuna chiave Groq") return end
@@ -6173,8 +6181,9 @@ local function transcribeOne(wavPath, cb)
     "-F", "file=@" .. wavPath, "-F", "response_format=text", "-F", "temperature=0" }
   if config.language then table.insert(args, "-F"); table.insert(args, "language=" .. tostring(config.language)) end
   local done = false
-  local function fin(...) if done then return end done = true; cb(...) end
-  local t = hs.task.new(config.curl, function(code, out, err)
+  local t
+  local function fin(...) if done then return end done = true; if t then ICON.liveTasks[t] = nil end; cb(...) end
+  t = hs.task.new(config.curl, function(code, out, err)
     if code ~= 0 then
       fin(false, nil, (code == 28) and "Groq non risponde (timeout)" or ("Groq errore " .. tostring(code) .. " " .. trim(err)))
       return
@@ -6190,6 +6199,7 @@ local function transcribeOne(wavPath, cb)
     end
     fin(true, trim(body))
   end, args)
+  if t then ICON.liveTasks[t] = true end      -- riferimento forte: un hs.task non referenziato puo' essere raccolto dal GC e il callback non scatta mai
   if not (t and t:start()) then fin(false, nil, "curl non parte") end
 end
 local function transcribeAll(paths, i, acc)
@@ -6267,18 +6277,30 @@ function M.transcribeUploaded()
   end)
 end
 
+ICON.fin = ICON.fin or {}               -- timer di finalizeAndTranscribe (tenuti vivi)
 local function finalizeAndTranscribe()
   busy = true; stopUITimer()
   ICON.lastDur = elapsed
   Anim.cancel("hud"); animBusy = false
   setProcessingElements("🎙️  Ricevuto")
   if overlay then overlay:alpha(1); overlay:show(); pinOverlay() end
-  hs.timer.doAfter(0.25, function()
-    local valid = {}
-    for _, p in ipairs(segments) do if fileSize(p) > 1000 then valid[#valid + 1] = p end end
-    if #valid == 0 then failSaving("Audio vuoto") return end
-    setStatus("☁️  Inviato"); transcribeAll(valid, 1, {})
-  end)
+  -- timer in variabili di modulo (ICON.fin): un doAfter non referenziato puo' essere raccolto dal GC prima di scattare -> HUD fermo su "Ricevuto" per sempre.
+  -- Il watchdog (5 s) fa partire comunque la trascrizione se il timer principale non e' scattato; go() parte una volta sola.
+  local started = false
+  local function go()
+    if started then return end
+    started = true
+    if ICON.fin.wd then ICON.fin.wd:stop(); ICON.fin.wd = nil end
+    local ok, e = pcall(function()
+      local valid = {}
+      for _, p in ipairs(segments) do if fileSize(p) > 1000 then valid[#valid + 1] = p end end
+      if #valid == 0 then failSaving("Audio vuoto") return end
+      setStatus("☁️  Inviato"); transcribeAll(valid, 1, {})
+    end)
+    if not ok then print("[GW] finalize errore: " .. tostring(e)); failSaving("Errore interno") end
+  end
+  ICON.fin.t = hs.timer.doAfter(0.25, go)
+  ICON.fin.wd = hs.timer.doAfter(5, go)
 end
 
 ------------------------------------------------------------------------
@@ -6557,6 +6579,7 @@ startCapture = function(actionKey)
   if ICON.capTap then pcall(function() ICON.capTap:stop() end); ICON.capTap = nil end
   if ICON.capT then ICON.capT:stop(); ICON.capT = nil end
   local tap
+  local function webCap(r) if ICON.web then pcall(ICON.web.capture, r) end end      -- finestra impostazioni web: evento capture_result
   local function endCap() if ICON.capTap == tap then ICON.capTap = nil end; if ICON.capT then ICON.capT:stop(); ICON.capT = nil end; tap:stop() end
   tap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged, hs.eventtap.event.types.keyDown }, function(e)
     local kc, et = e:getKeyCode(), e:getType()
@@ -6566,7 +6589,7 @@ startCapture = function(actionKey)
       if not fn or not e:getFlags()[fn] then return false end   -- aspetta la pressione di un modificatore
       mod = fn
     else
-      if kc == 53 then endCap(); return true end                -- Esc: annulla la cattura (non diventa un tasto)
+      if kc == 53 then endCap(); webCap({ ok = false, reason = "cancel", action = actionKey }); return true end   -- Esc: annulla la cattura (non diventa un tasto)
       mod = "key"
     end
     endCap()
@@ -6574,11 +6597,12 @@ startCapture = function(actionKey)
     local dup = false; for _, b in ipairs(list) do if b.kc == kc then dup = true end end
     if not dup then list[#list + 1] = { kc = kc, mod = mod, gesture = (actionKey == "ss" and "double" or "single") } end
     saveBindings(); if settingsCanvas then renderSettings() end
+    webCap({ ok = true, action = actionKey, dup = dup, label = bindLabel({ kc = kc, mod = mod }) })
     return (mod == "key")
   end)
   tap:start()
   ICON.capTap = tap
-  ICON.capT = hs.timer.doAfter(10, function() ICON.capT = nil; endCap() end)    -- nessun tasto entro 10 s: cattura annullata
+  ICON.capT = hs.timer.doAfter(10, function() ICON.capT = nil; endCap(); webCap({ ok = false, reason = "timeout", action = actionKey }) end)    -- nessun tasto entro 10 s: cattura annullata
 end
 
 local function initHotkeys()
@@ -6690,6 +6714,2631 @@ checkUpdate = function(silent)
   t:start()
 end
 end
+
+------------------------------------------------------------------------
+-- IMPOSTAZIONI WEB (hs.webview). La pagina HTML/CSS/JS e' incollata qui da build.py (l'auto-update scarica SOLO questo file):
+-- NON modificare a mano il blocco tra i marcatori, si rigenera con `python3 build.py` (sorgente: ui/dist/settings.html).
+------------------------------------------------------------------------
+-- <<WEB_HTML_BEGIN>>
+do
+  ICON.webHtml = [==[
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: file: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:">
+<title>Golden Whisper - Impostazioni</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+--bg1: rgba(27,25,20,.95); --bg2: rgba(10,9,7,.97); --bg1-solid: #1b1914; --bg2-solid: #0a0907;
+--fg: #f7f2e6; --fg2: #b8ad94; --fg3: #7c7360;
+--accent: #d6af5e; --accent-ink: #ebcb85; --on-accent: #1a1304;
+--g1: #ebcb85; --g2: #b48b3b; --g3: #b48b3b; --g4: #b48b3b;
+--grad: linear-gradient(90deg,#ebcb85,#b48b3b); --grad-diag: linear-gradient(135deg,#ebcb85,#b48b3b);
+--accent-soft: rgba(214,175,94,.2); --accent-faint: rgba(214,175,94,.1);
+--border: rgba(214,175,94,.36); --border-soft: rgba(214,175,94,.18);
+--row: rgba(247,242,230,.05); --row-hover: rgba(247,242,230,.10); --track: rgba(247,242,230,.13); --divider: rgba(247,242,230,.10);
+--warn: #ff5c54; --ok: #4ade80;
+--r-xs: 6px; --r-s: 9px; --r-m: 12px; --r-l: 16px; --r-pill: 999px; --r-hud: 26px;
+--font-ui: -apple-system, system-ui, sans-serif;
+--font-timer: ui-monospace, monospace;
+--density: 1; --idle-opacity: 1; --shadow-k: 1;
+--panel-1: rgba(27,25,20,.97); --panel-2: rgba(10,9,7,.985); --panel-border: var(--border); --panel-blur: blur(14px) saturate(1.2); --r-panel: 20px;
+--edge: rgba(247,242,230,.2); --hi: rgba(255,255,255,.22); --hi-soft: rgba(255,255,255,.07); --ring-ctrl: inset 0 0 0 1px var(--edge); --bw: 1px;
+--seg-track: rgba(0,0,0,.3); --seg-inset: inset 0 1px 2px rgba(0,0,0,.32); --sh-contact: 0 1px 2px rgba(0,0,0,.3);
+--sh-panel: 0 22px 50px rgba(0,0,0,.3), 0 2px 6px rgba(0,0,0,.34); --sh-pop: 0 10px 24px rgba(0,0,0,.32), 0 1px 3px rgba(0,0,0,.4);
+--sh-knob: 0 1px 3px rgba(0,0,0,.55), 0 0 0 1px rgba(0,0,0,.2); --knob-edge: rgba(0,0,0,.3);
+--pill-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 1px 3px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.2);
+--btn-edge: var(--border); --hero-edge: rgba(0,0,0,.24); --sw-ring: inset 0 0 0 1px rgba(0,0,0,.22); --pv-bg: var(--row);
+--rng-h: 6px; --fw-title: 700; --fw-lbl: 600; --fs-base: 12.5px; --fs-lbl: 12.5px; --fs-sec: 10px; --ls-sec: .9px; --row-h: 38px;
+--ease-spring: cubic-bezier(.3,1.35,.5,1); --ease-out: cubic-bezier(.2,.7,.2,1);
+color-scheme: dark;}
+html, body { height: 100%; background: transparent; overflow: hidden; }
+body { font: 400 var(--fs-base)/1.35 var(--font-ui); color: var(--fg); -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none; cursor: default; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; -webkit-appearance: none; appearance: none; text-align: inherit; }
+button:disabled { cursor: default; }
+svg { display: block; flex: none; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.panel {
+position: fixed; inset: 0; display: flex; flex-direction: column; overflow: hidden;
+background: linear-gradient(160deg, var(--panel-1), var(--panel-2));
+-webkit-backdrop-filter: var(--panel-blur); backdrop-filter: var(--panel-blur);
+border: 1px solid var(--panel-border); border-radius: var(--r-panel);
+box-shadow: inset 0 1px 0 var(--hi);
+contain: layout paint;}
+.panel::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, var(--sheen, rgba(255,255,255,.035)), transparent 38%); }
+.hdr { position: relative; display: flex; align-items: center; gap: 10px; height: 54px; padding: 0 14px 0 18px; flex: none; cursor: grab; }
+.hdr:active { cursor: grabbing; }
+.hdr-ic { width: 30px; height: 30px; border-radius: var(--r-s); display: grid; place-items: center; background: var(--grad-diag); color: var(--on-accent); box-shadow: var(--pill-shadow); }
+.hdr-title { flex: 1; font-size: 15px; font-weight: var(--fw-title); letter-spacing: 0; }
+.hdr-ver { font: 500 10.5px var(--font-timer); color: var(--fg3); margin-right: 4px; }
+.hdr-x { position: relative; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: var(--fg2); cursor: pointer; }
+.tabbar { flex: none; padding: 0 16px 12px; }
+.tabbar .seg { height: 36px; }
+.panes { position: relative; flex: 1; min-height: 0; border-top: 1px solid transparent; }
+.panes.is-scrolled { border-top-color: var(--divider); }
+.pane { position: absolute; inset: 0; display: none; opacity: 0; transform: translateX(10px); transition: opacity .2s ease-out, transform .24s var(--ease-out); }
+.pane.is-shown { display: flex; flex-direction: column; }
+.pane.is-active { opacity: 1; transform: none; }
+.pane.is-left { transform: translateX(-10px); }
+.scroll { overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; min-height: 0; scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.scroll:hover { scrollbar-color: var(--track) transparent; }
+.scroll::-webkit-scrollbar { width: 7px; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+.scroll::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
+.scroll:hover::-webkit-scrollbar-thumb { background-color: var(--track); }
+.scroll::-webkit-scrollbar-thumb:hover { background-color: var(--fg3); }
+html.mock body { background: radial-gradient(1200px 700px at 15% 10%, #7aa7ff 0, transparent 60%), radial-gradient(900px 700px at 90% 90%, #ff9fb1 0, transparent 55%), linear-gradient(135deg, #cfd9ee, #f2dfe6); }
+html.mock .panel { inset: auto; top: 50%; left: 50%; height: min(720px, calc(100vh - 32px)); width: 432px; transform: translate(-50%, -50%); box-shadow: inset 0 1px 0 var(--hi), var(--sh-panel); }
+html.mock .panel[data-tab="theme"] { width: min(800px, calc(100vw - 24px)); }
+.mock-note { position: fixed; left: 12px; bottom: 10px; font: 500 11px var(--font-ui); color: rgba(0,0,0,.55); pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+*, *::before, *::after { transition-duration: .001ms !important; animation-duration: .001ms !important; }}
+
+.hov { position: relative; isolation: isolate; }
+.hov::before { content: ''; position: absolute; inset: 0; border-radius: inherit; background: var(--row-hover); opacity: 0; transition: opacity .14s linear; z-index: -1; pointer-events: none; }
+.hov:hover::before { opacity: 1; }
+.press { transition: transform .12s var(--ease-out); }
+.press:active { transform: scale(.985); }
+.sec { display: flex; align-items: center; gap: 7px; margin: 0 2px 8px; font-size: var(--fs-sec); font-weight: 700; letter-spacing: var(--ls-sec); text-transform: uppercase; color: var(--fg3); }
+.sec .ic { color: var(--fg3); }
+.sec-gap { margin-top: calc(18px * var(--density)); }
+.sec-wrap { position: relative; margin-bottom: calc(16px * var(--density)); }
+.box { position: relative; background: var(--row); border: 1px solid var(--edge); border-radius: var(--r-m); box-shadow: inset 0 1px 0 var(--hi-soft), var(--sh-contact); }
+.box > .sep { height: 1px; margin: 0 16px; background: var(--divider); }
+.row { position: relative; display: flex; align-items: center; gap: 10px; min-height: var(--row-h); padding: 0 16px; border-radius: var(--r-s); }
+.row .lbl { flex: 1; min-width: 0; font-size: var(--fs-lbl); font-weight: var(--fw-lbl); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .ic { color: var(--fg3); }
+.row.is-on .ic { color: var(--accent-ink); }
+.muted { color: var(--fg3); }
+.seg { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 3px; background: var(--seg-track); border: var(--bw) solid var(--edge); box-shadow: var(--seg-inset); border-radius: var(--r-m); }
+.seg-pill { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / var(--n, 2)); border-radius: calc(var(--r-m) - 3px);
+background: var(--grad); box-shadow: var(--pill-shadow); transform: translateX(calc(var(--i, 0) * 100%)); transition: transform .26s var(--ease-spring); will-change: transform; }
+.seg-b { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; padding: 0 6px; font-size: 12px; font-weight: 600; color: var(--fg2); border-radius: calc(var(--r-m) - 3px); white-space: nowrap; }
+.seg-b span { overflow: hidden; text-overflow: ellipsis; }
+.seg-b.is-sel { color: var(--on-accent); }
+.seg.sm .seg-b { font-size: 10.5px; padding: 0 3px; gap: 4px; }
+.seg.xs { padding: 2px; border-radius: var(--r-s); }
+.seg.xs .seg-pill { top: 2px; bottom: 2px; left: 2px; width: calc((100% - 4px) / var(--n, 2)); border-radius: calc(var(--r-s) - 2px); }
+.seg.xs .seg-b { font-size: 10.5px; }
+.sw { position: relative; flex: none; width: 42px; height: 24px; border-radius: 12px; background: var(--track); overflow: hidden; }
+.sw::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: var(--ring-ctrl); pointer-events: none; }
+.sw::before { content: ''; position: absolute; inset: 0; background: var(--grad); opacity: 0; transition: opacity .2s linear; }
+.sw[aria-checked="true"]::before { opacity: 1; }
+.sw i { position: absolute; top: 2.5px; left: 2.5px; width: 19px; height: 19px; border-radius: 50%; background: #fff; box-shadow: var(--sh-knob); transform: translateX(0); transition: transform .26s var(--ease-spring); will-change: transform; }
+.sw[aria-checked="true"] i { transform: translateX(18px); }
+.slider { display: flex; align-items: center; gap: 10px; min-height: var(--row-h); padding: 0 16px; }
+.slider .ic { color: var(--fg3); }
+.slider .lbl { width: 70px; font-size: var(--fs-lbl); font-weight: var(--fw-lbl); color: var(--fg2); }
+.slider .val { width: 38px; text-align: right; font: 500 12px var(--font-timer); color: var(--fg3); font-variant-numeric: tabular-nums; }
+.rng { -webkit-appearance: none; appearance: none; flex: 1; min-width: 0; height: 24px; background: transparent; cursor: pointer; --r: .5; --p: calc(8.5px + (100% - 17px) * var(--r)); }
+.rng::-webkit-slider-runnable-track { height: var(--rng-h); border-radius: 3px; background: var(--grad) 0 0 / var(--p) 100% no-repeat, var(--track); box-shadow: var(--ring-ctrl); }
+.rng::-webkit-slider-thumb { -webkit-appearance: none; width: 17px; height: 17px; margin-top: calc((var(--rng-h) - 17px) / 2); border-radius: 50%; background: #fff; border: 1px solid var(--knob-edge); box-shadow: var(--sh-knob); }
+.rng:focus-visible { outline-offset: 0; border-radius: 6px; }
+.rng:disabled { opacity: .4; }
+.btn { position: relative; isolation: isolate; display: flex; align-items: center; justify-content: center; gap: 8px; height: 38px; padding: 0 14px; border-radius: var(--r-m); font-size: 12.5px; font-weight: 650; overflow: hidden; }
+.btn.primary { background: var(--grad); color: var(--on-accent); box-shadow: var(--pill-shadow); }
+.btn.primary::after { content: ''; position: absolute; inset: 0; background: #fff; opacity: 0; transition: opacity .14s linear; z-index: -1; pointer-events: none; }
+.btn.primary:hover::after { opacity: .2; }
+.btn.primary { z-index: 0; }
+.btn.primary::after { z-index: 0; }
+.btn.primary > * { position: relative; z-index: 1; }
+.btn.soft { background: var(--row); border: 1px solid var(--btn-edge); box-shadow: var(--sh-contact); color: var(--accent-ink); }
+.btn.soft::before { content: ''; position: absolute; inset: 0; background: var(--accent-soft); opacity: 0; transition: opacity .14s linear; z-index: -1; pointer-events: none; }
+.btn.soft:hover::before { opacity: 1; }
+.btn.danger { background: var(--row); border: 1px solid var(--edge); box-shadow: var(--sh-contact); color: var(--fg2); height: 32px; font-size: 11.5px; }
+.btn.danger.is-armed { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
+.btn.dashed { border: 1px dashed var(--btn-edge); color: var(--accent-ink); background: transparent; }
+.btn.dashed::before { content: ''; position: absolute; inset: 0; background: var(--accent-faint); opacity: 0; transition: opacity .14s linear; z-index: -1; pointer-events: none; }
+.btn.dashed:hover::before { opacity: 1; }
+.btn[disabled] { opacity: .6; }
+.btn-ic { position: relative; isolation: isolate; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: var(--fg2); flex: none; }
+.btn-ic::before { content: ''; position: absolute; inset: 0; border-radius: 50%; background: var(--row-hover); opacity: 0; transition: opacity .14s linear; z-index: -1; }
+.btn-ic:hover::before { opacity: 1; }
+.btn-ic.is-spin svg { animation: gw-spin .9s linear 1; }
+@keyframes gw-spin { to { transform: rotate(360deg); } }
+.chip { position: relative; isolation: isolate; display: flex; align-items: center; gap: 7px; height: 100%; width: 100%; padding: 0 10px; border-radius: var(--r-s); font-size: 11.5px; font-weight: 600; color: var(--fg2); overflow: hidden; }
+.chip .ic { color: var(--fg3); }
+.chip .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip .ct { font: 500 10.5px var(--font-timer); color: var(--fg3); }
+.chip::before { content: ''; position: absolute; inset: 0; background: var(--row-hover); opacity: 0; transition: opacity .14s linear; z-index: -1; }
+.chip:hover::before { opacity: 1; }
+.chip::after { content: ''; position: absolute; inset: 0; background: var(--grad); opacity: 0; transition: opacity .16s linear; z-index: -2; }
+.chip.is-sel { color: var(--on-accent); box-shadow: var(--pill-shadow); }
+.chip.is-sel .ic, .chip.is-sel .ct { color: var(--on-accent); }
+.chip.is-sel::after { opacity: 1; }
+.info-btn { position: relative; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; color: var(--fg2); border: 1.2px solid var(--fg3); background: var(--row); flex: none; }
+.info-btn[aria-expanded="true"] { color: var(--accent-ink); border-color: var(--accent); }
+.bubble { position: absolute; left: 0; right: 0; z-index: 20; padding: 12px 14px; border-radius: var(--r-l); border: 1px solid var(--border);
+background: var(--bubble-bg); box-shadow: var(--sh-pop);
+opacity: 0; transform: translateY(6px); pointer-events: none; transition: opacity .18s linear, transform .22s var(--ease-out); }
+.bubble.is-open { opacity: 1; transform: none; pointer-events: auto; }
+.bubble h4 { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; }
+.bubble ol { list-style: none; display: grid; gap: 6px; }
+.bubble li { font-size: 11.5px; color: var(--fg2); line-height: 1.4; }
+.toast { position: absolute; left: 50%; bottom: 14px; z-index: 40; max-width: calc(100% - 40px); padding: 8px 14px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--on-accent);
+background: var(--grad); box-shadow: var(--sh-pop); opacity: 0; transform: translate(-50%, 8px); pointer-events: none; transition: opacity .2s linear, transform .26s var(--ease-out); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toast.is-on { opacity: 1; transform: translate(-50%, 0); }
+
+.pane-pad { padding: 4px 16px 18px; }
+.mic-list { padding: 4px; }
+.mic { position: relative; width: 100%; display: flex; align-items: center; gap: 12px; height: 34px; padding: 0 12px 0 10px; border-radius: var(--r-s); font-size: 12.5px; color: var(--fg2); }
+.mic .dot { position: relative; width: 18px; height: 18px; border-radius: 50%; border: 1.4px solid var(--fg3); display: grid; place-items: center; flex: none; color: var(--on-accent); }
+.mic .dot::before { content: ''; position: absolute; inset: -1.4px; border-radius: 50%; background: var(--grad-diag); opacity: 0; transition: opacity .16s linear; }
+.mic .dot svg { position: relative; opacity: 0; transition: opacity .16s linear; }
+.mic.is-cur { color: var(--fg); font-weight: 650; }
+.mic.is-cur .dot { border-color: transparent; }
+.mic.is-cur .dot::before, .mic.is-cur .dot svg { opacity: 1; }
+.mic .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mic .bt { color: var(--fg3); }
+.mic-empty { padding: 10px 14px; color: var(--fg2); font-size: 12.5px; }
+.sec-tools { margin-left: auto; }
+.key-card { padding: 12px; display: grid; gap: 8px; }
+.key-status { display: flex; align-items: center; gap: 10px; padding: 2px 4px 4px; }
+.key-dot { position: relative; width: 16px; height: 16px; border-radius: 50%; background: var(--warn-soft2); flex: none; }
+.key-dot::after { content: ''; position: absolute; inset: 4.5px; border-radius: 50%; background: var(--warn); }
+.key-dot.is-ok { background: var(--ok-soft); }
+.key-dot.is-ok::after { background: var(--ok); }
+.key-txt { min-width: 0; flex: 1; }
+.key-l1 { font-size: 13px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-l1.mono { font-family: var(--font-timer); font-weight: 500; }
+.key-l2 { font-size: 11px; color: var(--fg3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-l2.ok { color: var(--ok); } .key-l2.error { color: var(--warn); } .key-l2.busy { color: var(--fg2); }
+.key-fold { padding: 0; }
+.key-head { width: 100%; height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-radius: var(--r-m); }
+.key-head .mask { margin-left: auto; font: 500 12px var(--font-timer); color: var(--fg3); max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-head .mask.ok { color: var(--ok); } .key-head .mask.error { color: var(--warn); }
+.key-head .chev { transition: transform .22s var(--ease-out); color: var(--fg2); }
+.key-fold.is-open .chev { transform: rotate(180deg); }
+.key-body { display: none; padding: 0 12px 12px; gap: 8px; opacity: 0; transition: opacity .2s linear; }
+.key-fold.is-open .key-body { display: grid; }
+.key-fold.is-shown .key-body { opacity: 1; }
+.key-body .msg { display: flex; align-items: center; gap: 8px; padding: 2px 4px; font-size: 11px; color: var(--fg3); }
+.key-body .msg span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-body .msg.ok span { color: var(--ok); } .key-body .msg.error span { color: var(--warn); }
+
+.bind { display: flex; align-items: center; gap: 10px; padding: 9px 10px; margin-bottom: 8px; }
+.kcap { flex: none; min-width: 46px; height: 28px; padding: 0 10px; display: grid; place-items: center; border-radius: var(--r-xs); background: var(--track); border: 1px solid var(--edge); box-shadow: var(--sh-contact); font: 600 13px var(--font-timer); color: var(--accent-ink); }
+.bind .seg { flex: 1; min-width: 0; height: 26px; }
+.bind-empty { padding: 12px 14px; font-size: 12px; color: var(--fg3); margin-bottom: 8px; }
+.add-key.is-capturing { color: var(--accent-ink); border-style: solid; border-color: var(--accent); }
+.add-key .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); opacity: .5; }
+.hint { margin: 2px 4px 14px; font-size: 11px; color: var(--fg3); }
+
+.pane-theme { flex: 1; padding: 4px 16px 16px; display: grid; grid-template-columns: 58fr 42fr; grid-template-rows: minmax(0, 1fr); gap: 16px; min-height: 0; }
+.col { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.hero { position: relative; flex: none; height: 60px; border-radius: var(--r-l); overflow: hidden; box-shadow: 0 0 0 1px var(--hero-edge), var(--sh-contact); display: flex; align-items: center; padding: 0 16px; background: var(--hero-grad, var(--grad)); color: var(--hero-on, var(--on-accent)); }
+.hero-t { position: relative; min-width: 0; flex: 1; }
+.hero-n { font-size: 15px; font-weight: var(--fw-title); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hero-s { font-size: 10.5px; opacity: .82; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hero-w { position: relative; flex: none; width: 110px; height: 40px; }
+.hero-w rect { fill: #fff; opacity: .4; }
+.theme-body { display: flex; gap: 10px; flex: 1; min-height: 0; margin-top: 12px; }
+.cats { flex: none; width: 112px; display: flex; flex-direction: column; gap: 4px; }
+.cats .cat { height: 32px; flex: none; }
+.cards-wrap { flex: 1; min-width: 0; padding-right: 2px; }
+.cards { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 8px; padding: 3px 3px 8px; }
+.cards-sp { grid-column: 1 / -1; }
+.card { position: relative; height: 76px; border-radius: var(--r-m); background: var(--row); border: 1px solid var(--edge); box-shadow: inset 0 1px 0 var(--hi-soft), var(--sh-contact); transition: transform .14s var(--ease-out); will-change: auto; text-align: center; }
+.card::after { content: ''; position: absolute; inset: -1px; border-radius: inherit; box-shadow: inset 0 0 0 1.5px var(--ring, var(--accent)); opacity: 0; transition: opacity .14s linear; pointer-events: none; }
+.card:hover { transform: translateY(-1px); }
+.card:hover::after { opacity: .75; }
+.card.is-cur::after { opacity: 1; box-shadow: inset 0 0 0 2px var(--ring, var(--accent)); }
+.card.is-cur { background: var(--accent-soft); }
+.card .sw-g { position: absolute; left: 5px; right: 5px; top: 5px; height: 42px; border-radius: var(--r-s); background: var(--gd); overflow: hidden; box-shadow: var(--sw-ring); }
+[data-mode="light"] .card .sw-g { background: var(--gl); }
+.card .sw-g svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.card .sw-g svg polyline { stroke: var(--ond); }
+[data-mode="light"] .card .sw-g svg polyline { stroke: var(--onl); }
+.card .sw-g img { position: absolute; left: 5px; top: 5px; width: 16px; height: 16px; object-fit: contain; }
+.card .nm { position: absolute; left: 3px; right: 3px; bottom: 7px; font-size: 10.5px; font-weight: 500; color: var(--fg2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card.is-cur .nm { color: var(--fg); font-weight: 650; }
+.card .tick { position: absolute; right: 9px; top: 9px; width: 15px; height: 15px; border-radius: 50%; background: var(--ond); color: var(--ad); display: none; place-items: center; }
+[data-mode="light"] .card .tick { background: var(--onl); color: var(--al); }
+.card.is-cur .tick { display: grid; }
+.cards-empty { padding: 20px 8px; font-size: 12px; color: var(--fg3); text-align: center; }
+.pv { position: relative; flex: none; height: 104px; border-radius: var(--r-l); border: 1px solid var(--edge); background: var(--pv-bg); display: grid; place-items: center; overflow: hidden; }
+.pv-hint { position: absolute; right: 8px; bottom: 5px; font-size: 9.5px; color: var(--fg3); opacity: .8; pointer-events: none; }
+.hud { position: relative; display: flex; align-items: center; gap: calc(10px * var(--density)); padding: calc(9px * var(--density)) calc(14px * var(--density)) calc(9px * var(--density)) calc(10px * var(--density));
+border-radius: var(--r-hud); background: linear-gradient(160deg, var(--bg1), var(--bg2)); border: 1px solid var(--border-soft);
+box-shadow: var(--hud-shadow, none); opacity: var(--idle-opacity); contain: layout paint style; }
+.hud-badge { position: relative; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--grad-diag); color: var(--on-accent); transform: scale(1); will-change: transform; flex: none; }
+.hud-badge img { width: 22px; height: 22px; object-fit: contain; }
+.hud-wave { display: block; width: calc(96px + (var(--density) - 1) * 70px); height: 30px; }
+.hud-timer { font: 600 13px var(--font-timer); color: var(--fg); font-variant-numeric: tabular-nums; min-width: 38px; text-align: right; }
+.controls { flex: 1; min-height: 0; margin-top: 12px; padding: 0 4px 4px 0; }
+.csec { margin-bottom: calc(16px * var(--density)); content-visibility: auto; contain-intrinsic-size: auto 90px; }
+.csec .seg { height: 32px; }
+.csec .seg + .seg { margin-top: 10px; }
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding-bottom: 8px; }
+.actions .btn { padding: 0 8px; }
+.actions .btn.is-armed { color: var(--warn); border-color: var(--warn); }
+
+</style>
+</head>
+<body>
+<div id="app" class="panel" role="dialog" aria-label="Impostazioni"></div>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {});
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+  function isNum(v) { return typeof v === 'number' && isFinite(v); }
+  function asNum(v) {
+    if (typeof v === 'string' && v.trim() !== '') v = Number(v);
+    return isNum(v) ? v : null;
+  }
+  function asBool(v, d) {
+    if (v === true || v === 'true' || v === 1 || v === '1') return true;
+    if (v === false || v === 'false' || v === 0 || v === '0') return false;
+    return d;
+  }
+  /* Testo che arriva dal sistema (nomi microfono, messaggi): sempre stringa, senza caratteri di controllo, con tetto. */
+  function cleanText(v, max) {
+    if (v === null || v === undefined) return '';
+    var s = String(v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').trim();
+    max = max || 200;
+    return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  }
+  var HEX = /^#?[0-9a-fA-F]{6}$/;
+  function cleanHex(v, d) {
+    if (typeof v !== 'string' || !HEX.test(v.trim())) return d;
+    v = v.trim();
+    return (v[0] === '#' ? v : '#' + v).toLowerCase();
+  }
+  /* URL asset: solo file:, data:image, blob:. Mai http(s). */
+  function cleanUrl(v) {
+    if (typeof v !== 'string') return null;
+    if (/^(file:\/\/|blob:|data:image\/(png|gif|jpeg|webp|svg\+xml);)/i.test(v) && v.length < 2e6) return v;
+    return null;
+  }
+  /* h('div', {class:'x', text:'ciao', on:{click:fn}, aria:{label:'..'}, data:{id:'..'}, style:{'--p':'1'}}, [children]) */
+  function h(tag, attrs, kids) {
+    var el = document.createElement(tag);
+    if (attrs) {
+      for (var k in attrs) {
+        var v = attrs[k];
+        if (v === undefined || v === null || v === false) continue;
+        if (k === 'class') el.className = v;
+        else if (k === 'text') el.textContent = v;
+        else if (k === 'on') { for (var ev in v) el.addEventListener(ev, v[ev]); }
+        else if (k === 'aria') { for (var a in v) el.setAttribute('aria-' + a, v[a]); }
+        else if (k === 'data') { for (var d in v) el.dataset[d] = v[d]; }
+        else if (k === 'style') { for (var s in v) el.style.setProperty(s, v[s]); }
+        else if (k === 'props') { for (var p in v) el[p] = v[p]; }
+        else el.setAttribute(k, v === true ? '' : v);
+      }
+    }
+    append(el, kids);
+    return el;
+  }
+  function append(el, kids) {
+    if (kids === undefined || kids === null) return el;
+    if (!Array.isArray(kids)) kids = [kids];
+    for (var i = 0; i < kids.length; i++) {
+      var c = kids[i];
+      if (c === null || c === undefined || c === false) continue;
+      if (Array.isArray(c)) append(el, c);
+      else el.appendChild(typeof c === 'object' ? c : document.createTextNode(String(c)));
+    }
+    return el;
+  }
+  function svg(tag, attrs, kids) {
+    var el = document.createElementNS(SVGNS, tag);
+    if (attrs) for (var k in attrs) { if (attrs[k] !== undefined && attrs[k] !== null) el.setAttribute(k, attrs[k]); }
+    if (kids) for (var i = 0; i < kids.length; i++) el.appendChild(kids[i]);
+    return el;
+  }
+  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
+  function throttle(fn, ms) {
+    var last = 0, timer = null, pendingArgs = null;
+    function run() { timer = null; last = Date.now(); var a = pendingArgs; pendingArgs = null; fn.apply(null, a); }
+    var t = function () {
+      pendingArgs = arguments;
+      var wait = ms - (Date.now() - last);
+      if (wait <= 0) { if (timer) { clearTimeout(timer); timer = null; } run(); }
+      else if (!timer) timer = setTimeout(run, wait);
+    };
+    t.flush = function () { if (timer) { clearTimeout(timer); timer = null; if (pendingArgs) run(); } };
+    return t;
+  }
+  GW.util = { SVGNS: SVGNS, clamp: clamp, isNum: isNum, asNum: asNum, asBool: asBool, cleanText: cleanText, cleanHex: cleanHex,
+    cleanUrl: cleanUrl, h: h, svg: svg, append: append, clear: clear, throttle: throttle };
+  if (typeof module !== 'undefined') module.exports = GW.util;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {});
+  var U = GW.util || require('./util.js');
+  var VERSION_CONTRACT = 1;
+  /* Operazioni JS -> Lua ammesse (contratto del ponte). */
+  var OPS = ['ready', 'set', 'random_look', 'reset_look', 'pick_mic', 'refresh_devices', 'key_paste', 'key_remove', 'open_groq',
+    'capture_start', 'capture_cancel', 'key_remove_binding', 'key_set_gesture', 'set_tab', 'close', 'drag_start', 'resize_request', 'interact', 'hb'];
+  var SPEED_MUL = { calm: 1.7, normal: 1, lively: 0.65 };           // moltiplicatore durata (>1 = piu' lento)
+  var RADIUS_MUL = { round: 1, medium: 0.55, square: 0.16 };
+  var DENS = { compact: 0.72, normal: 1, wide: 1.22 };
+  function ch(value, label, icon) { return { value: value, label: label, icon: icon }; }
+  var SCHEMA = {
+    look: {
+      themeMode: { type: 'enum', def: 'dark', icon: 'auto', section: 'MODO',
+        choices: [ch('dark', 'Dark', 'moon'), ch('light', 'Light', 'sun'), ch('auto', 'Auto', 'auto')] },
+      shadowOn: { type: 'bool', def: true, icon: 'shadow', section: 'OMBRA E ALONE' },
+      shadowIntensity: { type: 'num', min: 0, max: 1, def: 0.5, icon: 'shadow', label: 'Intensità' },
+      glowOn: { type: 'bool', def: false, icon: 'glow', section: 'OMBRA E ALONE' },
+      glassOpacity: { type: 'num0', min: 0.5, max: 1, def: 0, uiDef: 0.95, icon: 'glass', section: 'VETRO', label: 'Opacità' },
+      cornerStyle: { type: 'enum', def: 'round', icon: 'cornerMd', section: 'ANGOLI',
+        choices: [ch('square', 'Squadrati', 'cornerSq'), ch('medium', 'Medi', 'cornerMd'), ch('round', 'Tondi', 'cornerRd')] },
+      waveStyle: { type: 'enum', def: 'bars', icon: 'wvBars', section: 'ONDA',
+        choices: [ch('bars', 'Barre', 'wvBars'), ch('thin', 'Sottili', 'wvThin'), ch('dots', 'Punti', 'wvDots'), ch('line', 'Linea', 'wvLine')] },
+      waveColor: { type: 'enum', def: 'auto', icon: 'dotGrad', section: 'ONDA',
+        choices: [ch('accent', 'Accento', 'dotAcc'), ch('gradient', 'Gradiente', 'dotGrad')] },   // 'auto' valido ma non mostrato
+      micPulse: { type: 'num', min: 0, max: 1, def: 0.5, icon: 'micPulse', section: 'PULSAZIONE MIC', label: 'Intensità' },
+      animOn: { type: 'bool', def: true, icon: 'sine2', section: 'ANIMAZIONI' },
+      animSpeed: { type: 'enum', def: 'normal', icon: 'sine2', section: 'ANIMAZIONI',
+        choices: [ch('calm', 'Calme', 'sine1'), ch('normal', 'Normali', 'sine2'), ch('lively', 'Vivaci', 'sine3')] },
+      uiFont: { type: 'enum', def: 'sf', icon: 'aa', section: 'TESTO',
+        choices: [ch('sf', 'SF', 'aaSf'), ch('rounded', 'Arrotondato', 'aaRounded'), ch('mono', 'Mono', 'aaMono')] },
+      timerFont: { type: 'enum', def: 'mono', icon: 'clock', section: 'TIMER',
+        choices: [ch('mono', 'Mono', 'tnMono'), ch('sf', 'SF', 'tnSf'), ch('rounded', 'Arrotondato', 'tnRounded')] },
+      density: { type: 'enum', def: 'normal', icon: 'rowsN', section: 'DENSITÀ',
+        choices: [ch('compact', 'Compatta', 'rowsC'), ch('normal', 'Normale', 'rowsN'), ch('wide', 'Ampia', 'rowsW')] },
+      idleOpacity: { type: 'num', min: 0.3, max: 1, def: 1, icon: 'ghost', section: 'HUD A RIPOSO', label: 'Opacità' },
+      material: { type: 'enum', def: 'solid', icon: 'matSolid', section: 'MATERIALE',
+        choices: [ch('solid', 'Solido', 'matSolid'), ch('glass', 'Vetro', 'matGlass')] },
+      style: { type: 'style', def: 'gold', icon: 'palette', section: 'STILE' }
+    },
+    general: {
+      sizePreset: { type: 'enum', def: 'standard', icon: 'sizeM', section: 'DIMENSIONE',
+        choices: [ch('minimal', 'Minimal', 'sizeS'), ch('standard', 'Standard', 'sizeM'), ch('large', 'Grande', 'sizeL')] },
+      orientation: { type: 'enum', def: 'horizontal', icon: 'orientH', section: 'ORIENTAMENTO',
+        choices: [ch('horizontal', 'Orizzontale', 'orientH'), ch('vertical', 'Verticale', 'orientV')] }
+    }
+  };
+  var LOOK_KEYS = Object.keys(SCHEMA.look);
+  var GENERAL_KEYS = Object.keys(SCHEMA.general);
+  var CAT_ICONS = { all: 'catAll', cl: 'catGem', fk: 'sparkle', nt: 'catLeaf', ne: 'catBolt', rt: 'catRetro', pp: 'catPop', st: 'catSnow' };
+  var CATS_DEFAULT = [{ id: 'all', name: 'Tutti' }, { id: 'cl', name: 'Classici' }, { id: 'fk', name: 'Funky' }, { id: 'nt', name: 'Natura' },
+    { id: 'ne', name: 'Neon' }, { id: 'rt', name: 'Retro' }, { id: 'pp', name: 'Pop' }, { id: 'st', name: 'Stagioni' }];
+  var GESTURES = {
+    ss: [ch('double', '2 tap'), ch('single', '1 tap'), ch('hold', 'hold')],
+    pause: [ch('single', '1 tap'), ch('double', '2 tap')]
+  };
+  var KEY_STEPS = ['1) Premi «Prendi / crea la chiave»: si apre il sito Groq.',
+    '2) Registrati (è gratis: bastano Google o email, nessuna carta).',
+    '3) Premi «Create API Key», dai un nome qualsiasi e conferma.',
+    '4) Copia la chiave (inizia con gsk_).',
+    '5) Torna qui e premi «Incolla chiave».'];
+  function schemaOf(key) { return SCHEMA.look[key] || SCHEMA.general[key] || null; }
+  function scopeOf(key) { return SCHEMA.look[key] ? 'look' : SCHEMA.general[key] ? 'general' : null; }
+  function defaultOf(key) { var s = schemaOf(key); return s ? s.def : undefined; }
+  /* Valore valido per la chiave (invalido -> default). Come K.clean in Lua. */
+  function clean(key, v) {
+    var s = schemaOf(key); if (!s) return v;
+    switch (s.type) {
+      case 'enum':
+        if (key === 'waveColor') return (v === 'accent' || v === 'gradient' || v === 'auto') ? v : s.def;
+        for (var i = 0; i < s.choices.length; i++) if (s.choices[i].value === v) return v;
+        return s.def;
+      case 'bool': return U.asBool(v, s.def);
+      case 'num': { var n = U.asNum(v); return U.clamp(n === null ? s.def : n, s.min, s.max); }
+      case 'num0': { var m = U.asNum(v); if (m === null || m <= 0) return 0; return U.clamp(m, s.min, s.max); }
+      case 'style': return (typeof v === 'string' && /^[a-z0-9_\-]{1,40}$/i.test(v)) ? v : s.def;
+    }
+    return v;
+  }
+  function defaultsLook() { var o = {}; LOOK_KEYS.forEach(function (k) { o[k] = SCHEMA.look[k].def; }); return o; }
+  function defaultsGeneral() { var o = { micName: '', devices: [] }; GENERAL_KEYS.forEach(function (k) { o[k] = SCHEMA.general[k].def; }); return o; }
+  /* Tutte le icone richieste dallo schema (per il test "ogni opzione ha un'icona"). */
+  function requiredIcons() {
+    var out = {};
+    [SCHEMA.look, SCHEMA.general].forEach(function (grp) {
+      Object.keys(grp).forEach(function (k) {
+        var s = grp[k]; if (s.icon) out[s.icon] = 1;
+        (s.choices || []).forEach(function (c) { if (c.icon) out[c.icon] = 1; });
+      });
+    });
+    Object.keys(CAT_ICONS).forEach(function (k) { out[CAT_ICONS[k]] = 1; });
+    return Object.keys(out);
+  }
+  GW.options = { VERSION_CONTRACT: VERSION_CONTRACT, OPS: OPS, SCHEMA: SCHEMA, LOOK_KEYS: LOOK_KEYS, GENERAL_KEYS: GENERAL_KEYS,
+    SPEED_MUL: SPEED_MUL, RADIUS_MUL: RADIUS_MUL, DENS: DENS, CAT_ICONS: CAT_ICONS, CATS_DEFAULT: CATS_DEFAULT, GESTURES: GESTURES,
+    KEY_STEPS: KEY_STEPS, schemaOf: schemaOf, scopeOf: scopeOf, defaultOf: defaultOf, clean: clean, defaultsLook: defaultsLook,
+    defaultsGeneral: defaultsGeneral, requiredIcons: requiredIcons };
+  if (typeof module !== 'undefined') module.exports = GW.options;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {});
+  var U = GW.util || require('./util.js');
+  var O = GW.options || require('./options.js');
+  var TABS = ['general', 'keys', 'theme'];
+  function fallbackStyle() {
+    return { id: 'gold', name: 'Gold', cat: 'cl',
+      dark: { bg1: '#1b1914', bg2: '#0a0907', fg: '#f7f2e6', fg2: '#b8ad94', accent: '#d6af5e', grad: ['#ebcb85', '#b48b3b'] },
+      light: { bg1: '#fffcf3', bg2: '#f4e8ce', fg: '#2a2012', fg2: '#6e5d3d', accent: '#b3822a', grad: ['#cb9c3a', '#966a1b'] }, fx: null };
+  }
+  function normTokens(t, d) {
+    t = t || {};
+    var g = Array.isArray(t.grad) ? t.grad.map(function (c) { return U.cleanHex(c, null); }).filter(Boolean).slice(0, 7) : [];
+    var acc = U.cleanHex(t.accent, d.accent);
+    if (g.length === 0) g = [acc, acc];
+    if (g.length === 1) g = [g[0], g[0]];
+    return { bg1: U.cleanHex(t.bg1, d.bg1), bg2: U.cleanHex(t.bg2, d.bg2), fg: U.cleanHex(t.fg, d.fg), fg2: U.cleanHex(t.fg2, d.fg2), accent: acc, grad: g };
+  }
+  function normStyle(s) {
+    if (!s || typeof s !== 'object') return null;
+    var id = typeof s.id === 'string' && /^[a-z0-9_\-]{1,40}$/i.test(s.id) ? s.id : null;
+    if (!id) return null;
+    var f = fallbackStyle();
+    var fx = null;
+    if (s.fx && typeof s.fx === 'object') {
+      var bar = s.fx.bar; if (['round', 'square', 'pixel', 'ghost'].indexOf(bar) < 0) bar = null;
+      fx = { icon: s.fx.icon ? U.cleanText(s.fx.icon, 30) : null, bar: bar, part: s.fx.part ? U.cleanText(s.fx.part, 30) : null };
+    }
+    return { id: id, name: U.cleanText(s.name || id, 40), cat: U.cleanText(s.cat || 'cl', 8),
+      dark: normTokens(s.dark, f.dark), light: normTokens(s.light, f.light), fx: fx };
+  }
+  function normBindings(list) {
+    if (!Array.isArray(list)) return [];
+    return list.slice(0, 12).map(function (b) {
+      b = b || {};
+      var g = ['single', 'double', 'hold'].indexOf(b.gesture) >= 0 ? b.gesture : 'single';
+      return { label: U.cleanText(b.label, 40) || '?', gesture: g };
+    });
+  }
+  function normAssets(a) {
+    var out = {};
+    if (!a || typeof a !== 'object') return out;
+    Object.keys(a).slice(0, 200).forEach(function (id) {
+      if (!/^[a-z0-9_\-]{1,40}$/i.test(id) || !a[id] || typeof a[id] !== 'object') return;
+      var o = {};
+      Object.keys(a[id]).slice(0, 8).forEach(function (k) { var u = U.cleanUrl(a[id][k]); if (u) o[k] = u; });
+      if (Object.keys(o).length) out[id] = o;
+    });
+    return out;
+  }
+  function initialUi() {
+    return { cat: 'all', catTouched: false, hoverStyle: null, capture: null, keyOpen: false, keyArmedAt: 0, msg: null, toast: null, devicesBusy: false, ready: false, bridgeMock: false };
+  }
+  function initial() {
+    return { version: '', tab: 'general', look: O.defaultsLook(), general: O.defaultsGeneral(), keys: { ss: [], pause: [] },
+      groq: { has: false, mask: '' }, styles: [fallbackStyle()], cats: O.CATS_DEFAULT.slice(), effectiveMode: 'dark', assets: {}, ui: initialUi() };
+  }
+  /* Stato completo da Lua -> stato valido (campi mancanti = default sensati). Mantiene ui. */
+  function normalize(raw, prev) {
+    var s = initial();
+    if (prev && prev.ui) s.ui = prev.ui;
+    if (!raw || typeof raw !== 'object') return prev || s;
+    s.version = U.cleanText(raw.version, 20);
+    s.tab = TABS.indexOf(raw.tab) >= 0 ? raw.tab : 'general';
+    var look = raw.look || {};
+    O.LOOK_KEYS.forEach(function (k) { s.look[k] = O.clean(k, look[k]); });
+    var gen = raw.general || {};
+    O.GENERAL_KEYS.forEach(function (k) { s.general[k] = O.clean(k, gen[k]); });
+    s.general.micName = U.cleanText(gen.micName, 160);
+    s.general.devices = Array.isArray(gen.devices) ? gen.devices.slice(0, 64).map(function (d) {
+      if (typeof d === 'string') d = { name: d };
+      return { name: U.cleanText(d && d.name, 160), bt: U.asBool(d && d.bt, false) };
+    }).filter(function (d) { return d.name; }) : [];
+    var keys = raw.keys || {};
+    s.keys = { ss: normBindings(keys.ss), pause: normBindings(keys.pause) };
+    var gq = raw.groq || {};
+    s.groq = { has: U.asBool(gq.has, false), mask: U.cleanText(gq.mask, 40) };
+    var styles = Array.isArray(raw.styles) ? raw.styles.slice(0, 400).map(normStyle).filter(Boolean) : [];
+    s.styles = styles.length ? styles : [fallbackStyle()];
+    var cats = Array.isArray(raw.cats) ? raw.cats.map(function (c) {
+      return (c && typeof c.id === 'string') ? { id: U.cleanText(c.id, 8), name: U.cleanText(c.name || c.id, 24) } : null;
+    }).filter(Boolean) : [];
+    s.cats = cats.length ? cats : O.CATS_DEFAULT.slice();
+    if (!s.cats.some(function (c) { return c.id === 'all'; })) s.cats.unshift({ id: 'all', name: 'Tutti' });
+    s.effectiveMode = raw.effectiveMode === 'light' ? 'light' : raw.effectiveMode === 'dark' ? 'dark' : (s.look.themeMode === 'light' ? 'light' : 'dark');
+    s.assets = normAssets(raw.assets);
+    if (!s.styles.some(function (st) { return st.id === s.look.style; })) { /* stile sconosciuto: resta l'id, la UI usa il primo */ }
+    /* categoria iniziale = quella dello stile CORRENTE (non 'Tutti'), finche' l'utente non sceglie una categoria */
+    if (!s.ui.catTouched) { var cs = currentStyle(s); if (cs && s.cats.some(function (c) { return c.id === cs.cat; })) s.ui = Object.assign({}, s.ui, { cat: cs.cat }); }
+    if (!s.cats.some(function (c) { return c.id === s.ui.cat; })) s.ui = Object.assign({}, s.ui, { cat: 'all' });
+    return s;
+  }
+  function currentStyle(s) {
+    for (var i = 0; i < s.styles.length; i++) if (s.styles[i].id === s.look.style) return s.styles[i];
+    return s.styles[0];
+  }
+  function withUi(s, patch) { return Object.assign({}, s, { ui: Object.assign({}, s.ui, patch) }); }
+  function setIn(obj, key, val) { var o = Object.assign({}, obj); o[key] = val; return o; }
+  /* Reducer puro. Mai muta lo stato in ingresso. */
+  function reduce(s, a) {
+    switch (a.type) {
+      case 'replace': return normalize(a.state, s);
+      case 'set': {
+        var scope = O.scopeOf(a.key); if (!scope) return s;
+        var v = O.clean(a.key, a.value);
+        var n = Object.assign({}, s); n[scope] = setIn(s[scope], a.key, v);
+        if (a.key === 'themeMode') n.effectiveMode = v === 'auto' ? s.effectiveMode : v;
+        return n;
+      }
+      case 'reset_look': return Object.assign({}, s, { look: O.defaultsLook(), effectiveMode: 'dark' });
+      case 'tab': return TABS.indexOf(a.tab) >= 0 ? Object.assign({}, s, { tab: a.tab }) : s;
+      case 'pick_mic': return Object.assign({}, s, { general: setIn(s.general, 'micName', U.cleanText(a.name, 160)) });
+      case 'remove_binding': {
+        if (a.action !== 'ss' && a.action !== 'pause') return s;
+        var list = s.keys[a.action].filter(function (_, i) { return i !== a.index; });
+        return Object.assign({}, s, { keys: setIn(s.keys, a.action, list) });
+      }
+      case 'set_gesture': {
+        if (a.action !== 'ss' && a.action !== 'pause') return s;
+        if (['single', 'double', 'hold'].indexOf(a.gesture) < 0) return s;
+        var l2 = s.keys[a.action].map(function (b, i) { return i === a.index ? { label: b.label, gesture: a.gesture } : b; });
+        return Object.assign({}, s, { keys: setIn(s.keys, a.action, l2) });
+      }
+      case 'ui': return withUi(s, a.patch);
+      case 'event': return reduceEvent(s, a.name, a.payload || {});
+    }
+    return s;
+  }
+  function reduceEvent(s, name, p) {
+    switch (name) {
+      case 'key_status': {
+        var kind = ['ok', 'error', 'busy'].indexOf(p.kind) >= 0 ? p.kind : 'ok';
+        var n = Object.assign({}, s, { groq: { has: p.has === undefined ? s.groq.has : U.asBool(p.has, s.groq.has),
+          mask: p.mask === undefined ? s.groq.mask : U.cleanText(p.mask, 40) } });
+        var text = U.cleanText(p.msg, 140);
+        return withUi(n, { msg: text ? { text: text, kind: kind } : (kind === 'busy' ? { text: 'Controllo…', kind: 'busy' } : null) });
+      }
+      case 'devices': {
+        var devs = normalize({ general: { devices: Array.isArray(p) ? p : p.devices } }, s).general.devices;
+        return withUi(Object.assign({}, s, { general: setIn(s.general, 'devices', devs) }), { devicesBusy: false });
+      }
+      case 'capture_result': return withUi(s, { capture: null });
+      case 'toast': { var t = U.cleanText(p.text, 120); return withUi(s, { toast: t ? { text: t, id: Date.now() + Math.random() } : null }); }
+    }
+    return s;
+  }
+  function createStore(start) {
+    var state = start || initial();
+    var subs = [];
+    return {
+      get: function () { return state; },
+      dispatch: function (a) { var prev = state; state = reduce(state, a); if (state !== prev) subs.slice().forEach(function (f) { f(state, prev, a); }); return state; },
+      subscribe: function (f) { subs.push(f); return function () { subs = subs.filter(function (x) { return x !== f; }); }; }
+    };
+  }
+  GW.state = { TABS: TABS, initial: initial, initialUi: initialUi, normalize: normalize, reduce: reduce, createStore: createStore, currentStyle: currentStyle };
+  if (typeof module !== 'undefined') module.exports = GW.state;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {});
+  var U = GW.util || require('./util.js');
+  var O = GW.options || require('./options.js');
+  function rgb(hex) { var n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+  function toHex(c) { return '#' + c.map(function (v) { return ('0' + Math.round(U.clamp(v, 0, 255)).toString(16)).slice(-2); }).join(''); }
+  function rgba(hex, a) { var c = rgb(hex); return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + (Math.round(a * 1000) / 1000) + ')'; }
+  function mix(a, b, t) { var x = rgb(a), y = rgb(b); return toHex([x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t]); }
+  function lum(hex) {
+    var c = rgb(hex).map(function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+  function contrast(a, b) { var x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); }
+  /* Testo SU riempimento accento: bianco o inchiostro scuro, vince il contrasto minimo piu' alto su accento + stop del gradiente. */
+  function onAccent(tk) {
+    var fills = [tk.accent].concat(tk.grad);
+    function minC(c) { return Math.min.apply(null, fills.map(function (f) { return contrast(c, f); })); }
+    var ink = mix(tk.bg2, '#000000', 0.82);
+    return minC('#ffffff') >= minC(ink) ? '#ffffff' : ink;
+  }
+  /* Accento usato COME TESTO su sfondo del pannello: schiarito (dark) / scurito (light) fino a un contrasto leggibile. */
+  function accentInk(tk, dark) {
+    var c = tk.accent;
+    for (var i = 0; i < 8; i++) {
+      if (dark ? lum(c) >= 0.33 : lum(c) <= 0.17) break;
+      c = dark ? mix(c, '#ffffff', 0.15) : mix(c, '#000000', 0.14);
+    }
+    return c;
+  }
+  var FONTS = {
+    sf: '-apple-system, system-ui, sans-serif',                    // SF
+    rounded: 'ui-rounded, -apple-system, system-ui, sans-serif',  // SF Rounded
+    mono: 'ui-monospace, monospace'
+  };
+  var DEFAULT_GLASS = 0.95;          // alpha di default dei due toni del vetro (Lua: 0.95 / 0.97)
+  function gradientCss(list, angle) { return 'linear-gradient(' + (angle === undefined ? 90 : angle) + 'deg,' + list.join(',') + ')'; }
+  function radiusPx(v, corner) { return Math.max(1.5, Math.round(v * (O.RADIUS_MUL[corner] || 1) * 10) / 10); }
+  /* MATERIALE del pannello Impostazioni: 'solid' (default, robusto: pannello quasi opaco, bordo accento, ombre statiche a 2 strati, controlli con
+     bordo netto e testo piu' contrastato) oppure 'glass' (morbido: come prima). Cambia SOLO l'aspetto della finestra, mai l'anteprima HUD (--bg1/--bg2 restano il vetro vero). */
+  var MATERIALS = ['solid', 'glass'];
+  var NO_SHADOW = '0 0 0 0 transparent';
+  function materialOf(look) { return look && look.material === 'glass' ? 'glass' : 'solid'; }
+  function applyMaterial(v, tk, dark, look) {
+    var m = materialOf(look), k = dark ? 1 : 0.55, solid = m === 'solid';
+    var blk = function (a) { return 'rgba(0,0,0,' + (Math.round(a * k * 1000) / 1000) + ')'; };
+    var ga = look.glassOpacity > 0 ? U.clamp(look.glassOpacity, 0.5, 1) : DEFAULT_GLASS;
+    var edge = rgba(tk.fg, dark ? 0.20 : 0.17);
+    v['--panel-1'] = solid ? rgba(tk.bg1, 0.97) : rgba(tk.bg1, ga);
+    v['--panel-2'] = solid ? rgba(tk.bg2, 0.985) : rgba(tk.bg2, Math.min(1, ga + 0.02));
+    v['--panel-border'] = solid ? v['--border'] : v['--border-soft'];
+    v['--panel-blur'] = solid ? 'blur(14px) saturate(1.2)' : 'blur(24px) saturate(1.4)';
+    v['--r-panel'] = radiusPx(solid ? 20 : 16, look.cornerStyle) + 'px';
+    v['--r-l'] = radiusPx(solid ? 14 : 16, look.cornerStyle) + 'px';
+    v['--sheen'] = solid ? 'rgba(255,255,255,0)' : v['--sheen'];
+    v['--hi'] = dark ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.9)';
+    v['--hi-soft'] = solid ? (dark ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.7)') : 'rgba(255,255,255,0)';
+    v['--edge'] = solid ? edge : v['--divider'];
+    v['--ring-ctrl'] = solid ? 'inset 0 0 0 1px ' + edge : NO_SHADOW;
+    v['--bw'] = solid ? '1px' : '0px';
+    if (solid) {
+      v['--row'] = rgba(tk.fg, dark ? 0.07 : 0.06); v['--row-hover'] = rgba(tk.fg, dark ? 0.12 : 0.10);
+      v['--track'] = rgba(tk.fg, dark ? 0.20 : 0.16); v['--divider'] = rgba(tk.fg, dark ? 0.15 : 0.13);
+      v['--fg2'] = mix(tk.fg2, tk.fg, 0.2); v['--fg3'] = mix(tk.fg2, tk.bg2, dark ? 0.22 : 0.12);
+    }
+    v['--seg-track'] = solid ? (dark ? 'rgba(0,0,0,0.30)' : rgba(tk.fg, 0.10)) : v['--track'];
+    v['--seg-inset'] = solid ? 'inset 0 1px 2px ' + blk(0.32) : NO_SHADOW;
+    v['--sh-contact'] = solid ? '0 1px 2px ' + blk(0.30) : NO_SHADOW;
+    v['--sh-panel'] = solid ? '0 22px 50px ' + blk(0.30) + ', 0 2px 6px ' + blk(0.34) : '0 20px 50px ' + blk(0.28);
+    v['--sh-pop'] = solid ? '0 10px 24px ' + blk(0.32) + ', 0 1px 3px ' + blk(0.40) : '0 8px 20px ' + blk(0.30);
+    v['--sh-knob'] = solid ? '0 1px 3px rgba(0,0,0,0.55), 0 0 0 1px rgba(0,0,0,0.20)' : '0 1px 2px rgba(0,0,0,0.35)';
+    v['--knob-edge'] = solid ? 'rgba(0,0,0,0.30)' : 'rgba(0,0,0,0.20)';
+    v['--pill-shadow'] = solid ? 'inset 0 1px 0 rgba(255,255,255,' + (dark ? 0.20 : 0.32) + '), 0 1px 3px ' + blk(0.45) + ', 0 0 0 1px rgba(0,0,0,' + (dark ? 0.20 : 0.14) + ')' : NO_SHADOW;
+    v['--btn-edge'] = solid ? v['--border'] : v['--border-soft'];
+    v['--hero-edge'] = solid ? 'rgba(0,0,0,' + (dark ? 0.24 : 0.14) + ')' : 'rgba(0,0,0,0)';
+    v['--sw-ring'] = solid ? 'inset 0 0 0 1px rgba(0,0,0,0.22)' : NO_SHADOW;
+    v['--pv-bg'] = solid ? 'var(--row)' : 'linear-gradient(160deg, var(--accent-faint), transparent 70%), var(--row)';
+    v['--rng-h'] = solid ? '6px' : '5px';
+    v['--fw-title'] = solid ? '700' : '650'; v['--fw-lbl'] = '600';
+    v['--fs-base'] = solid ? '12.5px' : '13px'; v['--fs-lbl'] = solid ? '12.5px' : '13px';
+    v['--fs-sec'] = solid ? '10px' : '10.5px'; v['--ls-sec'] = solid ? '.9px' : '.7px'; v['--row-h'] = solid ? '38px' : '40px';
+    return v;
+  }
+  /* Mappa nome-variabile -> valore, per stile + modo + look. Pura. */
+  function tokens(style, mode, look) {
+    var dark = mode !== 'light';
+    var tk = dark ? style.dark : style.light;
+    var g = tk.grad.slice();
+    var ga = look.glassOpacity > 0 ? U.clamp(look.glassOpacity, 0.5, 1) : DEFAULT_GLASS;
+    var a2 = Math.min(1, ga + 0.02);
+    var fg3 = mix(tk.fg2, tk.bg2, dark ? 0.40 : 0.25);
+    var ink = accentInk(tk, dark);
+    var v = {
+      '--bg1': rgba(tk.bg1, ga), '--bg2': rgba(tk.bg2, a2), '--bg1-solid': tk.bg1, '--bg2-solid': tk.bg2,
+      '--fg': tk.fg, '--fg2': tk.fg2, '--fg3': fg3,
+      '--accent': tk.accent, '--accent-ink': ink, '--on-accent': onAccent(tk),
+      '--g1': g[0], '--g2': g[1] || g[0], '--g3': g[2] || g[g.length - 1], '--g4': g[3] || g[g.length - 1],
+      '--grad': gradientCss(g, 90), '--grad-diag': gradientCss(g, 135),
+      '--accent-soft': rgba(tk.accent, dark ? 0.20 : 0.15), '--accent-faint': rgba(tk.accent, dark ? 0.10 : 0.08),
+      '--border': rgba(tk.accent, dark ? 0.36 : 0.42), '--border-soft': rgba(tk.accent, dark ? 0.18 : 0.24),
+      '--row': rgba(tk.fg, dark ? 0.05 : 0.045), '--row-hover': rgba(tk.fg, dark ? 0.10 : 0.085),
+      '--track': rgba(tk.fg, dark ? 0.13 : 0.11), '--divider': rgba(tk.fg, dark ? 0.10 : 0.09),
+      '--warn': dark ? '#ff5c54' : '#d93025', '--ok': dark ? '#4ade80' : '#12904a',
+      '--glass-alpha': String(ga),
+      '--r-xs': radiusPx(6, look.cornerStyle) + 'px', '--r-s': radiusPx(9, look.cornerStyle) + 'px', '--r-m': radiusPx(12, look.cornerStyle) + 'px',
+      '--r-l': radiusPx(16, look.cornerStyle) + 'px', '--r-pill': look.cornerStyle === 'square' ? '4px' : look.cornerStyle === 'medium' ? '12px' : '999px',
+      '--font-ui': FONTS[look.uiFont] || FONTS.sf, '--font-timer': FONTS[look.timerFont] || FONTS.mono,
+      '--density': String(O.DENS[look.density] || 1), '--idle-opacity': String(look.idleOpacity),
+      '--shadow-k': dark ? '1' : '0.55', '--r-hud': radiusPx(26, look.cornerStyle) + 'px',
+      '--warn-soft': rgba(dark ? '#ff5c54' : '#d93025', 0.14), '--warn-soft2': rgba(dark ? '#ff5c54' : '#d93025', 0.24),
+      '--ok-soft': rgba(dark ? '#4ade80' : '#12904a', 0.24), '--bubble-bg': mix(tk.bg2, tk.accent, 0.07)
+    };
+    v['--sheen'] = dark ? 'rgba(255,255,255,0.035)' : 'rgba(255,255,255,0.28)';
+    return applyMaterial(v, tk, dark, look);
+  }
+  /* Variabili per carta stile: entrambi i modi, cosi' il cambio dark/light non costa nulla in JS (si sceglie via [data-mode]). */
+  function cardVars(style) {
+    return { '--gd': gradientCss(style.dark.grad, 90), '--gl': gradientCss(style.light.grad, 90), '--ond': onAccent(style.dark), '--onl': onAccent(style.light),
+      '--ad': style.dark.accent, '--al': style.light.accent };
+  }
+  var lastSig = '';
+  /* Applica i token al documento. Salta se nulla e' cambiato (evita ricalcolo stile). */
+  function apply(state, el) {
+    el = el || (typeof document !== 'undefined' ? document.documentElement : null);
+    var style = GW.state.currentStyle(state);
+    var v = tokens(style, state.effectiveMode, state.look);
+    var sig = state.effectiveMode + '|' + JSON.stringify(v);
+    if (sig === lastSig) return v;
+    lastSig = sig;
+    if (el) {
+      for (var k in v) el.style.setProperty(k, v[k]);
+      el.dataset.mode = state.effectiveMode;
+      el.dataset.material = materialOf(state.look);
+      el.dataset.shadow = state.look.shadowOn ? '1' : '0';
+      el.dataset.glow = state.look.glowOn ? '1' : '0';
+      el.dataset.anim = state.look.animOn ? '1' : '0';
+      el.style.setProperty('color-scheme', state.effectiveMode);
+    }
+    return v;
+  }
+  GW.theme = { MATERIALS: MATERIALS, materialOf: materialOf, rgb: rgb, rgba: rgba, mix: mix, lum: lum, contrast: contrast, onAccent: onAccent, accentInk: accentInk, tokens: tokens, cardVars: cardVars,
+    apply: apply, FONTS: FONTS, DEFAULT_GLASS: DEFAULT_GLASS, gradientCss: gradientCss, radiusPx: radiusPx };
+  if (typeof module !== 'undefined') module.exports = GW.theme;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {});
+  function rays(cx, cy, r1, r2, n, rot) {
+    var d = '';
+    for (var i = 0; i < n; i++) {
+      var a = (rot || 0) + i * 2 * Math.PI / n, c = Math.cos(a), s = Math.sin(a);
+      d += 'M' + (cx + r1 * c).toFixed(2) + ' ' + (cy + r1 * s).toFixed(2) + 'L' + (cx + r2 * c).toFixed(2) + ' ' + (cy + r2 * s).toFixed(2);
+    }
+    return d;
+  }
+  function micShape(bx, by, bw, bh, arc, stem) { return [['r', bx, by, bw, bh, bw / 2], ['p', arc], ['p', stem]]; }
+  function sine(n, amp) {
+    var w = 20 / n, h = w / 2, k = w * 0.33;
+    var d = 'M2 12';
+    for (var i = 0; i < n; i++) d += 'c' + k.toFixed(2) + ' ' + (-amp) + ' ' + (h - k).toFixed(2) + ' ' + (-amp) + ' ' + h.toFixed(2) + ' 0s' + (h - k).toFixed(2) + ' ' + amp + ' ' + h.toFixed(2) + ' 0';
+    return d;
+  }
+  var D = {
+    /* --- sezioni / generali --- */
+    gear: { els: [['c', 12, 12, 3], ['c', 12, 12, 6.6], ['p', rays(12, 12, 6.6, 9.4, 8, Math.PI / 8)]] },
+    mic: { els: micShape(9, 3, 6, 11, 'M5.5 11a6.5 6.5 0 0 0 13 0', 'M12 17.5V21M9 21h6') },
+    keyboard: { els: [['r', 2.5, 5.5, 19, 13, 2.5], ['p', 'M6.5 9.5h.01M10 9.5h.01M14 9.5h.01M17.5 9.5h.01M6.5 13h.01M10 13h.01M14 13h.01M17.5 13h.01M8 16h8']] },
+    palette: { els: [['p', 'M12 3.2a8.8 8.8 0 1 0 0 17.6c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1 .8-1.7 1.8-1.7H17a3.9 3.9 0 0 0 3.9-3.9c0-4.2-4-7.7-8.9-7.7z'], ['p', 'M7.5 11.5h.01M10 7.8h.01M14.5 7.8h.01']] },
+    sliders: { els: [['p', 'M4 7h3M11.5 7H20M4 17h8.5M17 17h3'], ['c', 9.25, 7, 2.25], ['c', 14.75, 17, 2.25]] },
+    key: { els: [['c', 8, 15.5, 3.8], ['p', 'M10.8 12.7 20 3.5M16.2 7.3l2.8 2.8M13.6 9.9l2 2']] },
+    info: { els: [['c', 12, 12, 9], ['p', 'M12 11v5.2M12 7.9h.01']] },
+    check: { els: [['p', 'M5 12.5l4.5 4.5L19 7.5']] },
+    x: { els: [['p', 'M6 6l12 12M18 6L6 18']] },
+    plus: { els: [['p', 'M12 5v14M5 12h14']] },
+    trash: { els: [['p', 'M4 7h16M9.5 7V4.5h5V7M6.5 7l.8 12.5h9.4L17.5 7M10 11v5M14 11v5']] },
+    external: { els: [['p', 'M7 17 17 7M9 7h8v8']] },
+    eye: { els: [['p', 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z'], ['c', 12, 12, 2.8]] },
+    chevron: { els: [['p', 'M6 9l6 6 6-6']] },
+    bluetooth: { els: [['p', 'M7 7.5l10 9-5 4.5V3l5 4.5-10 9']] },
+    refresh: { els: [['p', 'M19.5 12a7.5 7.5 0 1 1-2.2-5.3'], ['p', 'M19.5 4.5V9H15']] },
+    play: { els: [['p', 'M8 5.5v13l11-6.5z']] },
+    pause: { sw: 2.2, els: [['p', 'M8.5 5.5v13M15.5 5.5v13']] },
+    paste: { els: [['p', 'M8.5 4.5H7a2 2 0 0 0-2 2V19a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6.5a2 2 0 0 0-2-2h-1.5'], ['r', 8.5, 2.8, 7, 3.4, 1.2], ['p', 'M9 13h6M9 16.5h4']] },
+    warn: { els: [['p', 'M12 4 2.8 19.5h18.4z'], ['p', 'M12 10v4.2M12 17h.01']] },
+    sparkle: { els: [['p', 'M10.5 4l1.6 4.9 4.9 1.6-4.9 1.6-1.6 4.9-1.6-4.9L4 10.5l4.9-1.6z'], ['p', 'M18.5 15v5M16 17.5h5']] },
+    reset: { els: [['p', 'M4.3 12a7.8 7.8 0 1 0 2.3-5.5L4 9'], ['p', 'M4 4.2V9h4.8']] },
+    ghost: { els: [['p', 'M5 20.5V11a7 7 0 0 1 14 0v9.5l-2.33-1.8L14.33 20.5 12 18.7l-2.33 1.8-2.34-1.8z'], ['p', 'M9.5 11h.01M14.5 11h.01']] },
+    clock: { els: [['c', 12, 12, 9], ['p', 'M12 7v5l3 2']] },
+    /* --- tema: modo, ombra, vetro, ... --- */
+    moon: { els: [['p', 'M20 14.5A8.5 8.5 0 1 1 9.5 4a6.7 6.7 0 0 0 10.5 10.5z']] },
+    sun: { els: [['c', 12, 12, 3.6], ['p', rays(12, 12, 6.6, 8.9, 8, 0)]] },
+    glow: { els: [['c', 12, 12, 3.6], ['p', rays(12, 12, 6.6, 8.9, 8, 0)]] },
+    auto: { els: [['c', 12, 12, 8.5], ['pf', 'M12 3.5a8.5 8.5 0 0 0 0 17z']] },
+    shadow: { els: [['r', 4, 4, 11.5, 11.5, 2.5], ['p', 'M18.5 8.5v8a2 2 0 0 1-2 2h-8']] },
+    glass: { els: [['p', 'M12 3.5s6 6.2 6 10.6a6 6 0 0 1-12 0C6 9.7 12 3.5 12 3.5z'], ['p', 'M9.2 14.6a2.9 2.9 0 0 0 2.2 2.4']] },
+    micPulse: { els: [['r', 9.5, 6, 5, 8.5, 2.5], ['p', 'M7.2 12.4a4.8 4.8 0 0 0 9.6 0M12 17.2v3'], ['p', 'M4.2 9.2c-.8 1.9-.8 4.1 0 6M19.8 9.2c.8 1.9.8 4.1 0 6']] },
+    cornerSq: { els: [['p', 'M4.5 20V4.5H20']] },
+    cornerMd: { els: [['p', 'M4.5 20v-9a6.5 6.5 0 0 1 6.5-6.5h9']] },
+    cornerRd: { els: [['p', 'M4.5 20v-5.5A10 10 0 0 1 14.5 4.5H20']] },
+    wvBars: { sw: 3, els: [['p', 'M4.5 10v4M9.2 6v12M14 9v6M18.8 4.5v15']] },
+    wvThin: { sw: 1.3, els: [['p', 'M3.5 10v4M6.5 7v10M9.5 5v14M12.5 8.5v7M15.5 6v12M18.5 8.5v7M21 10.5v3']] },
+    wvDots: { els: [['cf', 4.5, 12, 1.3], ['cf', 8, 9, 1.3], ['cf', 8, 15, 1.3], ['cf', 11.5, 6, 1.3], ['cf', 11.5, 12, 1.3], ['cf', 11.5, 18, 1.3], ['cf', 15, 9, 1.3], ['cf', 15, 15, 1.3], ['cf', 18.5, 12, 1.3]] },
+    wvLine: { els: [['p', 'M2.5 12c1.6 0 2-6.5 3.6-6.5S8.2 18.5 9.8 18.5 12 5.5 13.8 5.5s1.8 13 3.4 13 1.4-6.5 3.3-6.5']] },
+    dotAcc: { els: [['cf', 12, 12, 5.5], ['c', 12, 12, 8.5]] },
+    dotGrad: { els: [['c', 12, 12, 8.5], ['pf', 'M12 6.5a5.5 5.5 0 0 1 0 11z', 1], ['pf', 'M12 6.5a5.5 5.5 0 0 0 0 11z', 0.35]] },
+    sine1: { els: [['p', sine(1, 7)]] },
+    sine2: { els: [['p', sine(2, 6)]] },
+    sine3: { els: [['p', sine(3, 5)]] },
+    aa: { els: [['t', 'Aa', 'sf']] }, aaSf: { els: [['t', 'Aa', 'sf']] }, aaRounded: { els: [['t', 'Aa', 'rounded']] }, aaMono: { els: [['t', 'Aa', 'mono']] },
+    tnMono: { els: [['t', '09', 'mono']] }, tnSf: { els: [['t', '09', 'sf']] }, tnRounded: { els: [['t', '09', 'rounded']] },
+    rowsC: { els: [['p', 'M5 5.5h14M5 9h14M5 12.5h14M5 16h14M5 19.5h14']] },
+    rowsN: { els: [['p', 'M5 6h14M5 10.7h14M5 15.3h14M5 20h14']] },
+    rowsW: { els: [['p', 'M5 5.5h14M5 12h14M5 18.5h14']] },
+    sizeS: { els: micShape(10.4, 8.6, 3.2, 5.8, 'M8.6 13.4a3.4 3.4 0 0 0 6.8 0', 'M12 16.9v1.9') },
+    sizeM: { els: micShape(9.4, 5.2, 5.2, 9.2, 'M7 12.4a5 5 0 0 0 10 0', 'M12 17.4v3') },
+    sizeL: { els: micShape(8.4, 2.4, 7.2, 12.4, 'M5 11.6a7 7 0 0 0 14 0', 'M12 18.6v2.9M8.5 21.5h7') },
+    orientH: { els: [['r', 2.5, 8, 19, 8, 4]] },
+    orientV: { els: [['r', 8, 2.5, 8, 19, 4]] },
+    /* --- materiale: solido (pannello pieno con bordo) / vetro (riflessi diagonali) --- */
+    matSolid: { els: [['r', 4, 4, 16, 16, 3.5], ['pf', 'M7.5 7.5h9v9h-9z', 0.5]] },
+    matGlass: { els: [['r', 4, 4, 16, 16, 3.5], ['p', 'M8.4 15.6l7.2-7.2M8.4 11.4l3-3M12.6 15.6l3-3']] },
+    /* --- categorie stile --- */
+    catAll: { els: [['r', 4, 4, 6.5, 6.5, 1.6], ['r', 13.5, 4, 6.5, 6.5, 1.6], ['r', 4, 13.5, 6.5, 6.5, 1.6], ['r', 13.5, 13.5, 6.5, 6.5, 1.6]] },
+    catGem: { els: [['p', 'M6.5 4h11L21 9l-9 11L3 9z'], ['p', 'M3 9h18M9.5 9 12 4l2.5 5L12 20z']] },
+    catLeaf: { els: [['p', 'M20 4C11 4 5 8.5 5 15.5c0 1.8.4 3.2.8 4.5C14.5 20 20 14 20 4z'], ['p', 'M5.8 20C9 15 12 11.5 16 9']] },
+    catBolt: { els: [['p', 'M13 3 5 13.5h6L10 21l8-10.5h-6z']] },
+    catRetro: { els: [['r', 3, 7, 18, 13, 2.5], ['p', 'M8.5 3.2 12 7l3.5-3.8']] },
+    catPop: { els: [['p', 'M12 3.5l2.6 5.5 6 .8-4.4 4.2 1.1 6-5.3-2.9-5.3 2.9 1.1-6L3.4 9.8l6-.8z']] },
+    catSnow: { els: [['p', 'M12 3v18M4.2 7.5l15.6 9M4.2 16.5l15.6-9'], ['p', 'M9.5 4.5 12 6.5l2.5-2M9.5 19.5l2.5-2 2.5 2']] }
+  };
+  function has(name) { return Object.prototype.hasOwnProperty.call(D, name); }
+  function names() { return Object.keys(D); }
+  /* costruttore SVG (solo browser) */
+  function make(name, size, opts) {
+    var U = GW.util, def = D[name] || D.info;
+    opts = opts || {};
+    var svg = U.svg('svg', { viewBox: '0 0 24 24', width: size || 16, height: size || 16, fill: 'none', stroke: 'currentColor',
+      'stroke-width': opts.sw || def.sw || 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false' });
+    svg.setAttribute('class', 'ic' + (opts.cls ? ' ' + opts.cls : ''));
+    def.els.forEach(function (e) {
+      var k = e[0], n;
+      if (k === 'p') n = U.svg('path', { d: e[1] });
+      else if (k === 'pf') { n = U.svg('path', { d: e[1], fill: 'currentColor', stroke: 'none' }); if (e[2] !== undefined) n.setAttribute('opacity', e[2]); }
+      else if (k === 'c') n = U.svg('circle', { cx: e[1], cy: e[2], r: e[3] });
+      else if (k === 'cf') n = U.svg('circle', { cx: e[1], cy: e[2], r: e[3], fill: 'currentColor', stroke: 'none' });
+      else if (k === 'r') n = U.svg('rect', { x: e[1], y: e[2], width: e[3], height: e[4], rx: e[5] || 0 });
+      else if (k === 't') {
+        n = U.svg('text', { x: 12, y: 16.4, 'text-anchor': 'middle', fill: 'currentColor', stroke: 'none', 'font-size': 13.5, 'font-weight': 700 });
+        n.setAttribute('style', 'font-family:' + (GW.theme ? GW.theme.FONTS[e[2]] : 'sans-serif'));
+        n.textContent = e[1];
+      }
+      if (n) svg.appendChild(n);
+    });
+    return svg;
+  }
+  GW.icons = { defs: D, has: has, names: names, make: make };
+  if (typeof module !== 'undefined') module.exports = GW.icons;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {});
+  var O = GW.options || require('./options.js');
+  function nativeHandler() {
+    try { return root.webkit && root.webkit.messageHandlers && root.webkit.messageHandlers.gw || null; } catch (e) { return null; }
+  }
+  var native = nativeHandler();
+  var bridge = {
+    isMock: !native,
+    log: [],                       // ultimi messaggi inviati (debug / test)
+    post: function (msg) {
+      if (!msg || typeof msg.op !== 'string' || O.OPS.indexOf(msg.op) < 0) { return false; }   // solo op del contratto
+      var clean;
+      try { clean = JSON.parse(JSON.stringify(msg)); } catch (e) { return false; }
+      bridge.log.push(clean); if (bridge.log.length > 50) bridge.log.shift();
+      if (native) { try { native.postMessage(clean); } catch (e) { return false; } }
+      else if (GW.mock && GW.mock.handle) GW.mock.handle(clean);
+      return true;
+    },
+    /* Definisce window.gw (Lua -> JS). onState sostituisce lo stato; onEvent applica un evento parziale. */
+    attach: function (store) {
+      root.gw = {
+        onState: function (state) { store.dispatch({ type: 'replace', state: state }); },
+        onEvent: function (name, payload) { store.dispatch({ type: 'event', name: String(name), payload: payload }); }
+      };
+      return root.gw;
+    }
+  };
+  GW.bridge = bridge;
+  if (typeof module !== 'undefined') module.exports = bridge;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {});
+  var U = GW.util || require('./util.js');
+  var O = GW.options || require('./options.js');
+  /* Dimensioni per tab: altezza MASSIMA della finestra (header + tab + corpo). Oltre, il corpo scorre dentro (per colonna nel tab Tema).
+     HARD_MAX_*: tetto assoluto, uguale a ICON.web.maxW / maxH dell'host (la pagina non chiede mai finestre piu' grandi). */
+  var SIZES = { general: { w: 432, maxH: 680 }, keys: { w: 432, maxH: 680 }, theme: { w: 800, maxH: 760 } };
+  var HARD_MAX_W = 820, HARD_MAX_H = 760;
+  function capHeight(tab, h) { var m = (SIZES[tab] || SIZES.general).maxH; return Math.max(1, Math.min(Math.round(h), m, HARD_MAX_H)); }
+  function create(store, bridge) {
+    var post = function (m) { return bridge.post(m); };
+    var sendSetThrottled = {};
+    var A = {
+      /* Cambia una opzione: la UI si aggiorna subito, poi {op:'set'}. */
+      set: function (key, value) {
+        if (!O.schemaOf(key)) return;
+        var v = O.clean(key, value);
+        store.dispatch({ type: 'set', key: key, value: v });
+        post({ op: 'set', key: key, value: v });
+      },
+      /* Per gli slider: store subito, messaggio al massimo ogni 80 ms (+ ultimo valore garantito con flush). */
+      setLive: function (key, value) {
+        if (!O.schemaOf(key)) return;
+        var v = O.clean(key, value);
+        store.dispatch({ type: 'set', key: key, value: v });
+        var t = sendSetThrottled[key] || (sendSetThrottled[key] = U.throttle(function (val) { post({ op: 'set', key: key, value: val }); }, 80));
+        t(v);
+      },
+      flush: function (key) { if (sendSetThrottled[key]) sendSetThrottled[key].flush(); },
+      randomLook: function () { post({ op: 'random_look' }); },
+      resetLook: function () { store.dispatch({ type: 'reset_look' }); post({ op: 'reset_look' }); },
+      pickMic: function (name) { store.dispatch({ type: 'pick_mic', name: name }); post({ op: 'pick_mic', name: name }); },
+      refreshDevices: function () { store.dispatch({ type: 'ui', patch: { devicesBusy: true } }); post({ op: 'refresh_devices' }); },
+      keyPaste: function () { store.dispatch({ type: 'event', name: 'key_status', payload: { kind: 'busy', msg: 'Controllo…' } }); post({ op: 'key_paste' }); },
+      /* Rimuovi con doppio tocco: il primo tocco arma per 3 s, il secondo invia key_remove. */
+      keyRemoveTap: function () {
+        var ui = store.get().ui, now = Date.now();
+        if (ui.keyArmedAt && now - ui.keyArmedAt < 3000) {
+          store.dispatch({ type: 'ui', patch: { keyArmedAt: 0 } });
+          post({ op: 'key_remove' });
+          return true;
+        }
+        store.dispatch({ type: 'ui', patch: { keyArmedAt: now } });
+        setTimeout(function () { var u = store.get().ui; if (u.keyArmedAt === now) store.dispatch({ type: 'ui', patch: { keyArmedAt: 0 } }); }, 3050);
+        return false;
+      },
+      openGroq: function () { post({ op: 'open_groq' }); },
+      captureStart: function (action) { store.dispatch({ type: 'ui', patch: { capture: action } }); post({ op: 'capture_start', action: action }); },
+      captureCancel: function () { store.dispatch({ type: 'ui', patch: { capture: null } }); post({ op: 'capture_cancel' }); },
+      removeBinding: function (action, index) { store.dispatch({ type: 'remove_binding', action: action, index: index }); post({ op: 'key_remove_binding', action: action, index: index }); },
+      setGesture: function (action, index, gesture) { store.dispatch({ type: 'set_gesture', action: action, index: index, gesture: gesture }); post({ op: 'key_set_gesture', action: action, index: index, gesture: gesture }); },
+      setTab: function (tab) { if (store.get().tab === tab) return; store.dispatch({ type: 'tab', tab: tab }); post({ op: 'set_tab', tab: tab }); },
+      close: function () { post({ op: 'close' }); },
+      dragStart: function (sx, sy) { post({ op: 'drag_start', sx: sx || 0, sy: sy || 0 }); },
+      interact: function () { post({ op: 'interact' }); },
+      hb: function () { post({ op: 'hb' }); },
+      resizeRequest: function (w, h) { post({ op: 'resize_request', w: Math.min(Math.round(w), HARD_MAX_W), h: Math.min(Math.round(h), HARD_MAX_H) }); },
+      ready: function () { post({ op: 'ready' }); },
+      toggleKeyOpen: function () { store.dispatch({ type: 'ui', patch: { keyOpen: !store.get().ui.keyOpen } }); },
+      setCat: function (id) { store.dispatch({ type: 'ui', patch: { cat: id, catTouched: true } }); },
+      hoverStyle: function (id) { if (store.get().ui.hoverStyle !== id) store.dispatch({ type: 'ui', patch: { hoverStyle: id } }); }
+    };
+    return A;
+  }
+  GW.actions = { create: create, SIZES: SIZES, capHeight: capHeight, HARD_MAX_W: HARD_MAX_W, HARD_MAX_H: HARD_MAX_H };
+  if (typeof module !== 'undefined') module.exports = GW.actions;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {});
+  var O = GW.options || require('./options.js');
+  function hsl(h, s, l) {
+    h = ((h % 360) + 360) % 360; s /= 100; l /= 100;
+    var a = s * Math.min(l, 1 - l);
+    function f(n) { var k = (n + h / 30) % 12; var c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); return ('0' + Math.round(255 * c).toString(16)).slice(-2); }
+    return '#' + f(0) + f(8) + f(4);
+  }
+  function gen(id, name, cat, hue, n, seed) {
+    var spread = [0, 0, 38, 46, 52][n] || 40;
+    var gd = [], gl = [];
+    for (var i = 0; i < n; i++) { gd.push(hsl(hue + i * spread + (seed % 7) * 3, 85, 64 - i * 2)); gl.push(hsl(hue + i * spread + (seed % 7) * 3, 78, 40 - i * 2)); }
+    return { id: id, name: name, cat: cat,
+      dark: { bg1: hsl(hue, 34, 14), bg2: hsl(hue, 42, 6), fg: hsl(hue, 40, 95), fg2: hsl(hue, 16, 68), accent: gd[0], grad: gd },
+      light: { bg1: hsl(hue, 100, 98), bg2: hsl(hue, 62, 90), fg: hsl(hue, 55, 10), fg2: hsl(hue, 25, 36), accent: gl[0], grad: gl },
+      fx: seed % 5 === 0 ? { bar: 'pixel' } : seed % 4 === 0 ? { bar: 'square' } : seed % 9 === 0 ? { bar: 'ghost' } : null };
+  }
+  var REAL = [
+    { id: 'gold', name: 'Gold', cat: 'cl',
+      dark: { bg1: '#1b1914', bg2: '#0a0907', fg: '#f7f2e6', fg2: '#b8ad94', accent: '#d6af5e', grad: ['#ebcb85', '#b48b3b'] },
+      light: { bg1: '#fffcf3', bg2: '#f4e8ce', fg: '#2a2012', fg2: '#6e5d3d', accent: '#b3822a', grad: ['#cb9c3a', '#966a1b'] }, fx: null },
+    { id: 'mono', name: 'Mono', cat: 'cl',
+      dark: { bg1: '#1e1e21', bg2: '#0c0c0e', fg: '#f5f5f7', fg2: '#a1a1a8', accent: '#e4e4e9', grad: ['#ffffff', '#b6b6be'] },
+      light: { bg1: '#ffffff', bg2: '#ececf1', fg: '#17171a', fg2: '#62626b', accent: '#2b2b31', grad: ['#474750', '#18181c'] }, fx: null },
+    { id: 'ocean', name: 'Ocean', cat: 'nt',
+      dark: { bg1: '#101c31', bg2: '#060b16', fg: '#ebf2ff', fg2: '#93a6c6', accent: '#5c9cff', grad: ['#8ebcff', '#3b78e2'] },
+      light: { bg1: '#f9fcff', bg2: '#e2edfc', fg: '#0e1a33', fg2: '#4a5e82', accent: '#2563d6', grad: ['#4380f0', '#1b4db0'] }, fx: null },
+    { id: 'sunset', name: 'Sunset', cat: 'fk',
+      dark: { bg1: '#2a1424', bg2: '#12060f', fg: '#fff0ea', fg2: '#d2a5a8', accent: '#ff7a59', grad: ['#ffb259', '#ff6a5a', '#e8466e', '#b45cff'] },
+      light: { bg1: '#fff8f3', bg2: '#ffe3d6', fg: '#3a1620', fg2: '#865560', accent: '#e2552f', grad: ['#e8691e', '#e04a38', '#d03a6e', '#8e44d8'] }, fx: null },
+    { id: 'aurora', name: 'Aurora', cat: 'nt',
+      dark: { bg1: '#0e1f2b', bg2: '#050e16', fg: '#e8fff8', fg2: '#8fb8b8', accent: '#3df0b4', grad: ['#3df0b4', '#38c8f0', '#7b6cff', '#c65cff'] },
+      light: { bg1: '#f5fffc', bg2: '#d8f2ee', fg: '#0b2a2e', fg2: '#43706f', accent: '#0b9e86', grad: ['#0ea07c', '#1688c8', '#5a50dc', '#a03cd0'] }, fx: null },
+    { id: 'neon', name: 'Neon', cat: 'ne',
+      dark: { bg1: '#12102a', bg2: '#07061a', fg: '#f2f0ff', fg2: '#a09cd0', accent: '#00f0ff', grad: ['#00f0ff', '#8a5cff', '#ff2ea6'] },
+      light: { bg1: '#fbfaff', bg2: '#e4e0ff', fg: '#15123a', fg2: '#5a5690', accent: '#0aa0c8', grad: ['#0a93ba', '#6240d8', '#d81c86'] }, fx: { bar: 'square' } }
+  ];
+  var NAMES = {
+    cl: ['Gold', 'Mono', 'Inchiostro', 'Caffè', 'Nebbia', 'Ardesia', 'Bordeaux', 'Platino', 'Rame', 'Avorio', 'Seppia'],
+    fk: ['Sunset', 'Cosmo', 'Gelato', 'Cioccolato', 'Bacche', 'Memphis', 'Candy', 'Lava', 'Citrus', 'Pop Art', 'Cometa'],
+    nt: ['Ocean', 'Aurora', 'Deserto', 'Abissi', 'Matcha', 'Corallo', 'Lavanda', 'Forest', 'Lagoon', 'Muschio', 'Scogliera'],
+    ne: ['Neon', 'Digital Rain', 'Cyber', 'Tokyo', 'Acido', 'UV', 'Synthwave', 'Laser'],
+    rt: ['Arcade', 'Vapor', 'Pirata', 'Noir', 'Miami', 'LCD', 'Ambra', 'Steam'],
+    pp: ['Blue Rush', 'Blocky', 'Turbo Ball', 'Quahog', 'Quest', 'Zap', 'Funghetto'],
+    st: ['Spooky', 'Noel', 'Sakura', 'Autunno', 'Estate', 'Primavera', 'Inverno', 'Cuori', 'Brindisi']
+  };
+  var CAT_ORDER = ['cl', 'fk', 'nt', 'ne', 'rt', 'pp', 'st'];
+  var CAT_HUE = { cl: 38, fk: 300, nt: 150, ne: 190, rt: 330, pp: 220, st: 20 };
+  function buildStyles(total) {
+    var out = [], seed = 0, byId = {};
+    REAL.forEach(function (s) { byId[s.id] = s; });
+    CAT_ORDER.forEach(function (cat) {
+      NAMES[cat].forEach(function (nm, i) {
+        var id = nm.toLowerCase().replace(/[^a-z0-9]+/g, '');
+        seed++;
+        out.push(byId[id] || gen(id, nm, cat, CAT_HUE[cat] + i * 23, cat === 'cl' ? 2 : (cat === 'ne' || cat === 'nt' ? 3 : 4), seed));
+      });
+    });
+    var k = 0;
+    while (out.length < total) { k++; var cat = CAT_ORDER[k % CAT_ORDER.length]; out.push(gen('extra' + k, 'Extra ' + k, cat, (k * 47) % 360, 2 + (k % 3), k)); }
+    REAL.forEach(function (s) { if (!out.some(function (o) { return o.id === s.id; })) out.push(s); });
+    var order = [];
+    CAT_ORDER.forEach(function (c) { out.forEach(function (s) { if (s.cat === c) order.push(s); }); });
+    return order;
+  }
+  var DEVICES = [
+    { name: 'MacBook Pro Microphone', bt: false }, { name: 'AirPods Pro di Sasha', bt: true }, { name: 'Beats Studio Buds', bt: true },
+    { name: 'Studio Display Microphone', bt: false }, { name: 'Blue Yeti Nano', bt: false }, { name: 'Jabra Evolve2 65', bt: true },
+    { name: 'Scarlett Solo USB', bt: false }, { name: 'Rode NT-USB Mini', bt: false }, { name: 'iPhone di Sasha (Continuity)', bt: false },
+    { name: 'WH-1000XM5', bt: true }, { name: 'Microfono con un nome molto molto lungo che non sta in una riga da quattrocento pixel', bt: false },
+    { name: '<img src=x onerror=alert(1)> <script>alert("xss")<\/script>', bt: false }
+  ];
+  var st = null, timers = [];
+  function after(ms, fn) { timers.push(setTimeout(fn, ms)); }
+  function snapshot() {
+    return JSON.parse(JSON.stringify({ version: '1.2.0-mock', tab: st.tab, look: st.look, general: st.general, keys: st.keys, groq: st.groq,
+      styles: st.styles, cats: st.cats, effectiveMode: effective(), assets: {} }));
+  }
+  function effective() {
+    var m = st.look.themeMode;
+    if (m === 'auto') return (root.matchMedia && root.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+    return m;
+  }
+  function push() { if (root.gw && root.gw.onState) root.gw.onState(snapshot()); }
+  function evt(name, payload) { if (root.gw && root.gw.onEvent) root.gw.onEvent(name, payload); }
+  /* cambiando solo l'hash (#material=glass) il browser non ricarica: lo facciamo noi, cosi' si confrontano i materiali con un solo cambio di URL */
+  if (root.addEventListener) root.addEventListener('hashchange', function () { try { root.location.reload(); } catch (e) { /* jsdom */ } });
+  function init() {
+    var styles = buildStyles(70);
+    var counts = {}; styles.forEach(function (s) { counts[s.cat] = (counts[s.cat] || 0) + 1; });
+    var parts = (root.location && root.location.hash || '').slice(1).split(/[&,;]/), h = '', mat = null;     // #theme  #material=glass  #theme&material=solid
+    var extra = {};     // qualsiasi opzione del look: #theme&material=glass&style=ocean&themeMode=light
+    parts.forEach(function (x) {
+      var kv = x.split('=');
+      if (kv.length === 2 && O.scopeOf(kv[0]) === 'look') { if (kv[0] === 'material') mat = kv[1]; else extra[kv[0]] = kv[1]; } else if (!h && kv.length === 1) h = x;
+    });
+    st = { tab: ['general', 'keys', 'theme'].indexOf(h) >= 0 ? h : 'general', look: O.defaultsLook(), styles: styles,
+      cats: O.CATS_DEFAULT.slice(),
+      general: { micName: DEVICES[1].name, devices: DEVICES.slice(), sizePreset: 'standard', orientation: 'horizontal' },
+      keys: { ss: [{ label: 'F5', gesture: 'double' }, { label: '⌥ dx', gesture: 'hold' }], pause: [{ label: 'F6', gesture: 'single' }] },
+      groq: { has: false, mask: '' } };
+    if (mat) st.look.material = O.clean('material', mat);
+    Object.keys(extra).forEach(function (k) { st.look[k] = O.clean(k, extra[k]); });
+  }
+  function handle(m) {
+    if (!st) init();
+    var L = st.look;
+    switch (m.op) {
+      case 'ready': after(60, push); break;
+      case 'set':
+        if (O.scopeOf(m.key) === 'look') L[m.key] = O.clean(m.key, m.value);
+        else if (O.scopeOf(m.key) === 'general') st.general[m.key] = O.clean(m.key, m.value);
+        break;                                                  // come Lua: nessuna risposta obbligatoria; stato completo solo su richiesta
+      case 'random_look': {
+        var pick = function (a) { return a[Math.floor(Math.random() * a.length)]; };
+        var s2 = pick(st.styles.filter(function (s) { return s.id !== L.style; }));
+        L.style = s2.id; L.waveStyle = pick(['bars', 'thin', 'dots', 'line']); L.waveColor = s2.dark.grad.length > 2 ? 'gradient' : 'accent';
+        L.cornerStyle = pick(['round', 'round', 'medium', 'square']); L.micPulse = Math.round((0.25 + Math.random() * 0.6) * 100) / 100;
+        L.glassOpacity = Math.round((0.82 + Math.random() * 0.18) * 100) / 100; L.timerFont = pick(['mono', 'sf', 'rounded']); L.uiFont = pick(['sf', 'sf', 'rounded']);
+        push(); evt('toast', { text: 'Sorpresa: ' + s2.name }); break;
+      }
+      case 'reset_look': st.look = O.defaultsLook(); push(); break;
+      case 'pick_mic': st.general.micName = String(m.name || ''); break;
+      case 'refresh_devices': after(700, function () { var d = DEVICES.slice().sort(function () { return Math.random() - 0.5; }); st.general.devices = d; evt('devices', d); }); break;
+      case 'key_paste':
+        evt('key_status', { has: st.groq.has, mask: st.groq.mask, msg: 'Controllo…', kind: 'busy' });
+        after(1100, function () {
+          if (Math.random() < 0.25) { evt('key_status', { has: st.groq.has, mask: st.groq.mask, msg: 'Chiave non valida: Groq ha risposto 401', kind: 'error' }); return; }
+          st.groq = { has: true, mask: 'gsk_…ab12' };
+          evt('key_status', { has: true, mask: st.groq.mask, msg: 'Chiave salvata e verificata', kind: 'ok' });
+        });
+        break;
+      case 'key_remove': st.groq = { has: false, mask: '' }; evt('key_status', { has: false, mask: '', msg: 'Chiave rimossa', kind: 'ok' }); break;
+      case 'open_groq': evt('toast', { text: '(mock) Apro console.groq.com nel browser' }); break;
+      case 'capture_start': after(1600, function () {
+        var lab = ['F13', '⌘ dx', 'F7', '⌃ sx'][Math.floor(Math.random() * 4)];
+        st.keys[m.action].push({ label: lab, gesture: m.action === 'ss' ? 'double' : 'single' });
+        evt('capture_result', { ok: true, label: lab, action: m.action }); push();
+      }); break;
+      case 'capture_cancel': break;
+      case 'key_remove_binding': if (st.keys[m.action]) st.keys[m.action].splice(m.index, 1); break;
+      case 'key_set_gesture': if (st.keys[m.action] && st.keys[m.action][m.index]) st.keys[m.action][m.index].gesture = m.gesture; break;
+      case 'set_tab': st.tab = m.tab; break;
+      case 'close': evt('toast', { text: '(mock) Finestra chiusa' }); break;
+      case 'resize_request': GW.mock.lastResize = { w: m.w, h: m.h }; break;
+      case 'drag_start': case 'interact': case 'hb': break;
+    }
+  }
+  GW.mock = { handle: handle, buildStyles: buildStyles, devices: DEVICES, lastResize: null, reset: function () { timers.forEach(clearTimeout); timers = []; st = null; } };
+  if (typeof module !== 'undefined') module.exports = GW.mock;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.ui = GW.ui || {};
+  var U = GW.util;
+  /* opts: { items:[{value,label,icon}], value, onChange(v), size:'sm'|'xs'|'', label (aria), iconSize, cls } */
+  function segmented(opts) {
+    var items = opts.items, btns = [];
+    var el = U.h('div', { class: 'seg' + (opts.size ? ' ' + opts.size : '') + (opts.cls ? ' ' + opts.cls : ''), role: 'radiogroup', aria: { label: opts.label || '' } });
+    var pill = U.h('span', { class: 'seg-pill', aria: { hidden: 'true' } });
+    el.appendChild(pill);
+    el.style.setProperty('--n', items.length);
+    items.forEach(function (it, i) {
+      var b = U.h('button', { class: 'seg-b', type: 'button', role: 'radio', 'aria-checked': 'false', tabindex: '-1', data: { value: it.value }, title: it.label,
+        on: { click: function () { choose(i, true); },
+          keydown: function (e) {
+            var d = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+            if (d) { e.preventDefault(); var n = (i + d + items.length) % items.length; choose(n, true); btns[n].focus(); }
+          } } });
+      if (it.icon) b.appendChild(GW.icons.make(it.icon, opts.iconSize || (opts.size ? 13 : 15)));
+      b.appendChild(U.h('span', { text: it.label }));
+      btns.push(b); el.appendChild(b);
+    });
+    var cur = -1;
+    function paint(i) {
+      cur = i;
+      el.style.setProperty('--i', Math.max(0, i));
+      pill.style.opacity = i < 0 ? '0' : '1';
+      btns.forEach(function (b, k) { var on = k === i; b.classList.toggle('is-sel', on); b.setAttribute('aria-checked', on ? 'true' : 'false'); b.tabIndex = on || (i < 0 && k === 0) ? 0 : -1; });
+    }
+    function indexOf(v) { for (var i = 0; i < items.length; i++) if (items[i].value === v) return i; return -1; }
+    function choose(i, user) { if (i === cur) return; paint(i); if (user && opts.onChange) opts.onChange(items[i].value); }
+    paint(indexOf(opts.value));
+    return { el: el, set: function (v) { var i = indexOf(v); if (i !== cur) paint(i); }, get: function () { return cur >= 0 ? items[cur].value : null; } };
+  }
+  GW.ui.segmented = segmented;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.ui = GW.ui || {};
+  var U = GW.util;
+  function toggle(opts) {
+    var on = !!opts.checked;
+    var el = U.h('button', { class: 'sw', type: 'button', role: 'switch', 'aria-checked': on ? 'true' : 'false', aria: { label: opts.label || '' },
+      on: { click: function () { api.set(!on); if (opts.onChange) opts.onChange(on); } } }, [U.h('i')]);
+    var api = { el: el, set: function (v) { on = !!v; el.setAttribute('aria-checked', on ? 'true' : 'false'); }, get: function () { return on; } };
+    return api;
+  }
+  /* riga cliccabile con icona, etichetta e switch */
+  function switchRow(opts) {
+    var sw = toggle({ checked: opts.checked, label: opts.label, onChange: opts.onChange });
+    var ic = opts.icon ? GW.icons.make(opts.icon, 15) : null;
+    var lbl = U.h('span', { class: 'lbl', text: opts.label });
+    var row = U.h('div', { class: 'row hov' + (opts.checked ? ' is-on' : ''), on: { click: function (e) { if (e.target.closest && e.target.closest('.sw')) return; sw.el.click(); } } }, [ic, lbl, sw.el]);
+    return { el: row, set: function (v, label) { sw.set(v); row.classList.toggle('is-on', !!v); if (label) lbl.textContent = label; }, sw: sw };
+  }
+  GW.ui.toggle = toggle; GW.ui.switchRow = switchRow;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.ui = GW.ui || {};
+  var U = GW.util;
+  /* opts: { icon, label, min, max, step, value, fmt(v), onInput(v), onCommit(v) } */
+  function slider(opts) {
+    var min = opts.min, max = opts.max;
+    var fmt = opts.fmt || function (v) { return Math.round(v * 100) + '%'; };
+    var input = U.h('input', { class: 'rng', type: 'range', min: min, max: max, step: opts.step || 0.01, aria: { label: opts.label } });
+    var val = U.h('span', { class: 'val', text: '' });
+    var el = U.h('div', { class: 'slider' }, [opts.icon ? GW.icons.make(opts.icon, 15) : null, U.h('span', { class: 'lbl', text: opts.label }), input, val]);
+    function paint(v) { input.style.setProperty('--r', String(U.clamp((v - min) / (max - min), 0, 1))); val.textContent = fmt(v); }
+    input.addEventListener('input', function () { var v = parseFloat(input.value); paint(v); if (opts.onInput) opts.onInput(v); });
+    input.addEventListener('change', function () { if (opts.onCommit) opts.onCommit(parseFloat(input.value)); });
+    var dragging = false;
+    input.addEventListener('pointerdown', function () { dragging = true; });
+    root.addEventListener('pointerup', function () { dragging = false; });
+    var api = { el: el, input: input, set: function (v) { if (dragging) return; input.value = String(v); paint(v); } };
+    api.set(opts.value === undefined ? min : opts.value);
+    return api;
+  }
+  GW.ui.slider = slider;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.ui = GW.ui || {};
+  var U = GW.util;
+  function chip(opts) {
+    var ct = U.h('span', { class: 'ct', text: String(opts.count || 0) });
+    var el = U.h('button', { class: 'chip', type: 'button', role: 'tab', 'aria-selected': 'false', data: { id: opts.id }, aria: { label: opts.name + ', ' + (opts.count || 0) + ' stili' },
+      on: { click: function () { if (opts.onClick) opts.onClick(opts.id); } } },
+      [opts.icon ? GW.icons.make(opts.icon, 14) : null, U.h('span', { class: 'nm', text: opts.name }), ct]);
+    return { el: el, set: function (sel, count) { el.classList.toggle('is-sel', !!sel); el.setAttribute('aria-selected', sel ? 'true' : 'false'); if (count !== undefined) ct.textContent = String(count); } };
+  }
+  GW.ui.chip = chip;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.ui = GW.ui || {};
+  var U = GW.util;
+  /* punti della mini onda (come la carta Lua): rotonda / a blocchi ('pixel') / a punta ('square'). Pura. */
+  function wavePoints(kind, w, h) {
+    var pts = [], n = 12, pad = 12, x0 = pad, span = (w || 74) - pad * 2, cy = (h || 42) / 2 + 0;
+    for (var i = 0; i <= n; i++) {
+      var u = i / n, v = Math.sin(u * Math.PI * 3.4 + 0.6) * Math.sin(u * Math.PI);
+      if (kind === 'pixel') v = Math.floor(v * 3 + 0.5) / 3;
+      else if (kind === 'square') v = (i % 2 === 0 ? 1 : -1) * Math.abs(v);
+      pts.push([+(x0 + u * span).toFixed(1), +(cy + v * 11).toFixed(1)]);
+    }
+    return pts;
+  }
+  function card(style, assets, onPick) {
+    var kind = style.fx && style.fx.bar || 'round';
+    var W = 74, H = 42;
+    var pl = U.svg('polyline', { points: wavePoints(kind, W, H).map(function (p) { return p.join(','); }).join(' '), fill: 'none', 'stroke-width': 2,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: kind === 'ghost' ? 0.6 : 0.92 });
+    var svg = U.svg('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'xMidYMid meet', 'aria-hidden': 'true' }, [pl]);
+    var g = U.h('span', { class: 'sw-g' }, [svg]);
+    var icon = assets && assets[style.id] && assets[style.id].icon;
+    if (icon) g.appendChild(U.h('img', { src: icon, alt: '', draggable: 'false' }));
+    var el = U.h('button', { class: 'card', type: 'button', role: 'option', 'aria-selected': 'false', data: { id: style.id }, aria: { label: style.name },
+      style: GW.theme.cardVars(style), on: { click: function () { onPick(style.id); } } },
+      [g, U.h('span', { class: 'nm', text: style.name })]);
+    return el;
+  }
+  /* carta corrente: classe + spunta (creata solo per la carta corrente: meno nodi per le altre) */
+  function setCurrent(el, on) {
+    el.classList.toggle('is-cur', !!on); el.setAttribute('aria-selected', on ? 'true' : 'false');
+    var t = el.querySelector('.tick');
+    if (on && !t) el.appendChild(U.h('span', { class: 'tick', aria: { hidden: 'true' } }, [GW.icons.make('check', 11, { sw: 2.4 })]));
+    else if (!on && t) el.removeChild(t);
+  }
+  GW.ui.card = card; GW.ui.cardSetCurrent = setCurrent; GW.ui.wavePoints = wavePoints;
+  if (typeof module !== 'undefined') module.exports = { wavePoints: wavePoints };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.ui = GW.ui || {};
+  var U = GW.util;
+  /* opts: { title, steps[], anchorTop } -> { btn, bubble, close() }. Il bubble va messo in un contenitore position:relative. */
+  function infoBubble(opts) {
+    var bubble = U.h('div', { class: 'bubble', role: 'tooltip' }, [U.h('h4', { text: opts.title }),
+      U.h('ol', null, opts.steps.map(function (s) { return U.h('li', { text: s }); }))]);
+    bubble.style.top = (opts.top || 26) + 'px';
+    var btn = U.h('button', { class: 'info-btn', type: 'button', 'aria-expanded': 'false', aria: { label: opts.title }, on: { click: function (e) { e.stopPropagation(); toggle(); } } },
+      [GW.icons.make('info', 11, { sw: 2 })]);
+    function isOpen() { return bubble.classList.contains('is-open'); }
+    function set(v) { bubble.classList.toggle('is-open', v); btn.setAttribute('aria-expanded', v ? 'true' : 'false'); }
+    function toggle() { set(!isOpen()); }
+    root.document && root.document.addEventListener('click', function (e) { if (isOpen() && !bubble.contains(e.target)) set(false); });
+    root.document && root.document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && isOpen()) { set(false); btn.focus(); } });
+    return { btn: btn, bubble: bubble, close: function () { set(false); } };
+  }
+  GW.ui.infoBubble = infoBubble;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.ui = GW.ui || {};
+  var U = GW.util;
+  function toast(host) {
+    var el = U.h('div', { class: 'toast', role: 'status', 'aria-live': 'polite' });
+    host.appendChild(el);
+    var t = null;
+    return { el: el, show: function (text) {
+      el.textContent = text; el.classList.add('is-on');
+      clearTimeout(t); t = setTimeout(function () { el.classList.remove('is-on'); }, 2600);
+    } };
+  }
+  GW.ui.toast = toast;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.ui = GW.ui || {};
+  var U = GW.util;
+  function sec(title, icon, extra) {
+    return U.h('div', { class: 'sec' }, [icon ? GW.icons.make(icon, 14) : null, U.h('span', { text: title }), extra || null]);
+  }
+  function box(kids, cls) { return U.h('div', { class: 'box' + (cls ? ' ' + cls : '') }, kids); }
+  function sep() { return U.h('div', { class: 'sep' }); }
+  GW.ui.sec = sec; GW.ui.box = box; GW.ui.sep = sep;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {});
+  /* --- parti pure (testabili) --- */
+  function barCount(style, w) { return style === 'thin' ? Math.floor(w / 4) : style === 'dots' ? Math.floor(w / 7) : style === 'line' ? 40 : Math.floor(w / 5.6); }
+  /* ampiezze 0..1 per n barre. t = secondi (null = posa statica), speed = moltiplicatore durata (>1 piu' lento). */
+  function levels(n, t, speed) {
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var env = Math.sin(Math.PI * (i + 0.5) / n);                         // piu' alte al centro
+      if (t === null) out.push(0.18 + 0.72 * Math.abs(Math.sin(i * 0.83 + 0.55)) * (0.55 + 0.45 * env));
+      else {
+        var ph = t / (speed || 1);
+        var v = 0.5 + 0.5 * Math.sin(ph * 5.2 + i * 0.7) * Math.cos(ph * 2.3 + i * 0.23);
+        out.push(0.12 + 0.88 * v * (0.45 + 0.55 * env));
+      }
+    }
+    return out;
+  }
+  function waveGradientOn(look, style, mode) {
+    if (look.waveColor === 'gradient') return true;
+    if (look.waveColor === 'accent') return false;
+    return (mode === 'light' ? style.light : style.dark).grad.length > 2;
+  }
+  function fmtTime(sec) { sec = Math.max(0, Math.floor(sec)); return ('0' + Math.floor(sec / 60)).slice(-2) + ':' + ('0' + (sec % 60)).slice(-2); }
+  function hudShadow(look, accent, rgba) {
+    var parts = [], i = look.shadowIntensity, k = look.shadowOn ? 1 : 0;
+    if (k) parts.push('0 ' + Math.round(6 + 12 * i) + 'px ' + Math.round(14 + 26 * i) + 'px rgba(0,0,0,' + (0.16 + 0.42 * i).toFixed(2) + ')');
+    if (look.glowOn) parts.push('0 0 ' + Math.round(16 + 12 * i) + 'px ' + rgba(accent, 0.42));
+    return parts.length ? parts.join(',') : 'none';
+  }
+  function create(ctx) {
+    var U = GW.util, S = ctx.store;
+    var canvas = U.h('canvas', { class: 'hud-wave', aria: { hidden: 'true' } });
+    var c2d = canvas.getContext ? canvas.getContext('2d') : null;
+    var badge = U.h('div', { class: 'hud-badge' });
+    var timer = U.h('span', { class: 'hud-timer', text: '00:07' });
+    var hud = U.h('div', { class: 'hud' }, [badge, canvas, timer]);
+    var el = U.h('div', { class: 'pv', role: 'img', aria: { label: 'Anteprima dell’HUD' } }, [hud, U.h('span', { class: 'pv-hint', text: 'passa il mouse per animare' })]);
+    el.dataset.running = '0';
+    var hover = false, active = false, raf = 0, last = 0, t0 = 0, dirty = false, lastIcon = '#', dpr = 1, cw = 0, chh = 0;
+    var reduce = root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)');
+    function colors(s) {
+      var st = GW.state.currentStyle(s), tk = s.effectiveMode === 'light' ? st.light : st.dark;
+      var useG = waveGradientOn(s.look, st, s.effectiveMode);
+      return { st: st, tk: tk, useG: useG };
+    }
+    function fit() {
+      var r = canvas.getBoundingClientRect(); dpr = Math.min(2, root.devicePixelRatio || 1);
+      var w = Math.max(40, Math.round(r.width || 100)), h = Math.max(16, Math.round(r.height || 30));
+      if (w !== cw || h !== chh) { cw = w; chh = h; canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+    }
+    function draw(t) {
+      if (!c2d) return;
+      var s = S.get(); fit();
+      var C = colors(s), kind = (C.st.fx && C.st.fx.bar) || 'round', style = s.look.waveStyle;
+      c2d.setTransform(dpr, 0, 0, dpr, 0, 0); c2d.clearRect(0, 0, cw, chh);
+      var fill;
+      if (C.useG && C.tk.grad.length > 1) { fill = c2d.createLinearGradient(0, 0, cw, 0); C.tk.grad.forEach(function (g, i) { fill.addColorStop(i / (C.tk.grad.length - 1), g); }); } else fill = C.tk.accent;
+      c2d.fillStyle = fill; c2d.strokeStyle = fill; c2d.globalAlpha = kind === 'ghost' ? 0.55 : 1;
+      var speed = O_SPEED[s.look.animSpeed] || 1;
+      var n = barCount(style, cw), lv = levels(n, t, speed), pitch = cw / n, mid = chh / 2, maxH = chh - 2;
+      if (style === 'line') {
+        c2d.lineWidth = 2; c2d.lineJoin = 'round'; c2d.lineCap = 'round'; c2d.beginPath();
+        for (var i = 0; i < n; i++) { var x = (i + 0.5) * pitch, y = mid + (lv[i] - 0.5) * (maxH * 0.9) * (i % 2 ? -1 : 1) * 0.9; if (i === 0) c2d.moveTo(x, y); else c2d.lineTo(x, y); }
+        c2d.stroke();
+      } else if (style === 'dots') {
+        for (var j = 0; j < n; j++) { var cnt = Math.max(1, Math.round(lv[j] * 4)); for (var k = 0; k < cnt; k++) { var off = (k - (cnt - 1) / 2) * 6.2; c2d.beginPath(); c2d.arc((j + 0.5) * pitch, mid + off, 1.7, 0, 6.2832); c2d.fill(); } }
+      } else {
+        var bw = style === 'thin' ? 1.4 : Math.max(2, pitch * 0.55);
+        for (var b = 0; b < n; b++) {
+          var v = lv[b]; if (kind === 'pixel') v = Math.max(0.15, Math.round(v * 4) / 4);
+          var hh = Math.max(3, v * maxH), x0 = (b + 0.5) * pitch - bw / 2, rad = kind === 'square' || kind === 'pixel' ? Math.min(0.8, bw / 2) : bw / 2;
+          roundRect(c2d, x0, mid - hh / 2, bw, hh, rad);
+        }
+      }
+      c2d.globalAlpha = 1;
+    }
+    function roundRect(g, x, y, w, h, r) {
+      g.beginPath(); g.moveTo(x + r, y); g.lineTo(x + w - r, y); g.arcTo(x + w, y, x + w, y + r, r); g.lineTo(x + w, y + h - r); g.arcTo(x + w, y + h, x + w - r, y + h, r);
+      g.lineTo(x + r, y + h); g.arcTo(x, y + h, x, y + h - r, r); g.lineTo(x, y + r); g.arcTo(x, y, x + r, y, r); g.closePath(); g.fill();
+    }
+    function shouldRun() {
+      var s = S.get();
+      return hover && active && s.look.animOn && !(reduce && reduce.matches) && !(root.document && root.document.hidden);
+    }
+    function frame(ts) {
+      raf = 0;
+      if (!shouldRun()) { settle(); return; }
+      raf = root.requestAnimationFrame(frame);
+      if (ts - last < 33) return;                                         // <= ~30 Hz
+      last = ts; var t = (ts - t0) / 1000, s = S.get();
+      draw(t);
+      var env = 0.5 + 0.5 * Math.sin(t * 6.1 / (O_SPEED[s.look.animSpeed] || 1));
+      badge.style.transform = 'scale(' + (1 + s.look.micPulse * 0.14 * env).toFixed(3) + ')';
+      timer.textContent = fmtTime(7 + t);
+    }
+    function settle() { el.dataset.running = '0'; badge.style.transform = ''; timer.textContent = '00:07'; draw(null); }
+    function start() { if (!raf && shouldRun()) { el.dataset.running = '1'; t0 = performance.now(); last = 0; raf = root.requestAnimationFrame(frame); } }
+    function stop() { if (raf) { root.cancelAnimationFrame(raf); raf = 0; settle(); } }
+    function sync() { if (shouldRun()) start(); else stop(); }
+    function scheduleDraw() { if (dirty || raf) return; dirty = true; root.requestAnimationFrame(function () { dirty = false; if (!raf) draw(null); }); }
+    el.addEventListener('pointerenter', function () { hover = true; sync(); });
+    el.addEventListener('pointerleave', function () { hover = false; sync(); });
+    root.document && root.document.addEventListener('visibilitychange', sync);
+    root.addEventListener('blur', function () { hover = false; sync(); });
+    var O_SPEED = GW.options.SPEED_MUL;
+    function update(s) {
+      var C = colors(s);
+      el.style.setProperty('--hud-shadow', hudShadow(s.look, C.tk.accent, GW.theme.rgba));
+      var icon = s.assets[C.st.id] && s.assets[C.st.id].icon || '';
+      if (icon !== lastIcon) {
+        lastIcon = icon; U.clear(badge);
+        badge.appendChild(icon ? U.h('img', { src: icon, alt: '', draggable: 'false' }) : GW.icons.make('mic', 18, { sw: 1.8 }));
+      }
+      scheduleDraw(); sync();
+    }
+    update(S.get());
+    return { el: el, update: update, setActive: function (v) { active = !!v; if (active) scheduleDraw(); sync(); }, redraw: scheduleDraw };
+  }
+  GW.preview = { create: create, levels: levels, barCount: barCount, waveGradientOn: waveGradientOn, fmtTime: fmtTime, hudShadow: hudShadow };
+  if (typeof module !== 'undefined') module.exports = GW.preview;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.tabs = GW.tabs || {};
+  var U = GW.util, O = GW.options, UI = GW.ui;
+  function create(ctx) {
+    var A = ctx.actions, S = ctx.store;
+    var refs = {};
+    /* ---------- chiave Groq: scheda in evidenza (nessuna chiave) ---------- */
+    function keyButtons(prefix) {
+      var paste = U.h('button', { class: 'btn primary press', type: 'button', on: { click: function () { A.keyPaste(); } } },
+        [GW.icons.make('paste', 15), U.h('span', { text: prefix ? 'Incolla nuova chiave' : 'Incolla chiave dal clipboard' })]);
+      var open = U.h('button', { class: 'btn soft press', type: 'button', on: { click: function () { A.openGroq(); } } },
+        [GW.icons.make('external', 14), U.h('span', { text: 'Prendi / crea la chiave su Groq' })]);
+      return { paste: paste, open: open, pasteLbl: paste.lastChild };
+    }
+    var tipTop = UI.infoBubble({ title: 'Come ottenere la chiave', steps: O.KEY_STEPS, top: 24 });
+    var top = {}; top.b = keyButtons(false);
+    top.dot = U.h('span', { class: 'key-dot' });
+    top.l1 = U.h('div', { class: 'key-l1', text: 'Nessuna chiave' });
+    top.l2 = U.h('div', { class: 'key-l2', text: 'Serve per trascrivere · gratis su Groq' });
+    top.wrap = U.h('div', { class: 'sec-wrap' }, [
+      UI.sec('CHIAVE GROQ', 'key', tipTop.btn),
+      UI.box([U.h('div', { class: 'key-card' }, [U.h('div', { class: 'key-status' }, [top.dot, U.h('div', { class: 'key-txt' }, [top.l1, top.l2])]), top.b.paste, top.b.open])]),
+      tipTop.bubble]);
+    /* ---------- chiave Groq: riga riducibile (chiave presente) ---------- */
+    var tipFold = UI.infoBubble({ title: 'Come ottenere la chiave', steps: O.KEY_STEPS, top: 52 });
+    var fold = {}; fold.b = keyButtons(true);
+    fold.mask = U.h('span', { class: 'mask', text: '' });
+    fold.chev = GW.icons.make('chevron', 16, { cls: 'chev' });
+    fold.head = U.h('button', { class: 'key-head hov', type: 'button', 'aria-expanded': 'false', aria: { label: 'Chiave Groq' }, on: { click: function () { A.toggleKeyOpen(); } } },
+      [U.h('span', { class: 'key-dot is-ok' }), U.h('span', { class: 'lbl', style: { 'font-weight': '650' }, text: 'Chiave Groq' }), fold.mask, fold.chev]);
+    fold.msgTxt = U.h('span', { text: '' });
+    fold.msg = U.h('div', { class: 'msg' }, [fold.msgTxt, tipFold.btn]);
+    fold.remove = U.h('button', { class: 'btn danger press', type: 'button', on: { click: function () { A.keyRemoveTap(); } } }, [GW.icons.make('trash', 14), U.h('span', { text: 'Rimuovi chiave' })]);
+    fold.removeLbl = fold.remove.lastChild;
+    fold.body = U.h('div', { class: 'key-body' }, [fold.msg, fold.b.paste, fold.b.open, fold.remove]);
+    fold.card = U.h('div', { class: 'box key-fold' }, [fold.head, fold.body]);
+    fold.wrap = U.h('div', { class: 'sec-wrap' }, [fold.card, tipFold.bubble]);
+    /* ---------- microfono ---------- */
+    refs.devSig = '';
+    refs.micList = U.h('div', { class: 'mic-list', role: 'radiogroup', aria: { label: 'Microfono' } });
+    refs.refreshBtn = U.h('button', { class: 'btn-ic sec-tools', type: 'button', aria: { label: 'Aggiorna elenco microfoni' }, title: 'Aggiorna elenco',
+      on: { click: function () { A.refreshDevices(); } } }, [GW.icons.make('refresh', 14)]);
+    var micSec = U.h('div', { class: 'sec-wrap' }, [UI.sec('MICROFONO', 'mic', refs.refreshBtn), UI.box([refs.micList])]);
+    /* ---------- dimensione / orientamento ---------- */
+    var size = UI.segmented({ items: O.SCHEMA.general.sizePreset.choices, value: 'standard', label: 'Dimensione', onChange: function (v) { A.set('sizePreset', v); } });
+    var orient = UI.segmented({ items: O.SCHEMA.general.orientation.choices, value: 'horizontal', label: 'Orientamento', onChange: function (v) { A.set('orientation', v); } });
+    size.el.style.height = orient.el.style.height = '36px';
+    var sizeSec = U.h('div', { class: 'sec-wrap' }, [UI.sec('DIMENSIONE', 'sizeM'), size.el]);
+    var orientSec = U.h('div', { class: 'sec-wrap' }, [UI.sec('ORIENTAMENTO', 'orientH'), orient.el]);
+    var inner = U.h('div', { class: 'pane-pad inner' }, [top.wrap, micSec, sizeSec, orientSec, fold.wrap]);
+    var el = U.h('div', { class: 'scroll', style: { flex: '1' } }, [inner]);
+    function renderDevices(s) {
+      var devs = s.general.devices, cur = s.general.micName;
+      var sig = devs.map(function (d) { return d.name + (d.bt ? '*' : ''); }).join('\u0001');
+      if (sig !== refs.devSig) {
+        refs.devSig = sig; U.clear(refs.micList); refs.rows = [];
+        if (!devs.length) refs.micList.appendChild(U.h('div', { class: 'mic-empty', text: 'Nessun microfono trovato' }));
+        devs.forEach(function (d) {
+          var row = U.h('button', { class: 'mic hov', type: 'button', role: 'radio', 'aria-checked': 'false', data: { name: d.name }, title: d.name,
+            on: { click: function () { A.pickMic(d.name); } } },
+            [U.h('span', { class: 'dot' }, [GW.icons.make('check', 12, { sw: 2.4 })]), U.h('span', { class: 'nm', text: d.name }), d.bt ? GW.icons.make('bluetooth', 14, { cls: 'bt' }) : null]);
+          refs.rows.push({ el: row, name: d.name }); refs.micList.appendChild(row);
+        });
+      }
+      (refs.rows || []).forEach(function (r) { var on = r.name === cur; r.el.classList.toggle('is-cur', on); r.el.setAttribute('aria-checked', on ? 'true' : 'false'); });
+    }
+    var lastOpen = false, lastBusy = null;
+    function update(s) {
+      var has = s.groq.has, ui = s.ui, msg = ui.msg, busy = !!(msg && msg.kind === 'busy');
+      top.wrap.hidden = has; fold.wrap.hidden = !has;
+      /* scheda in evidenza */
+      top.dot.classList.toggle('is-ok', has);
+      var l2 = msg ? msg.text : 'Serve per trascrivere · gratis su Groq';
+      top.l2.textContent = l2; top.l2.className = 'key-l2' + (msg ? ' ' + msg.kind : '');
+      /* riga riducibile */
+      fold.mask.textContent = (msg && !ui.keyOpen && msg.kind !== 'busy') ? msg.text : (s.groq.mask || 'chiave salvata');
+      fold.mask.className = 'mask' + (msg && !ui.keyOpen && msg.kind !== 'busy' ? ' ' + msg.kind : '');
+      fold.msgTxt.textContent = msg ? msg.text : 'Salvata su questo Mac · incolla per sostituirla';
+      fold.msg.className = 'msg' + (msg ? ' ' + msg.kind : '');
+      var open = !!ui.keyOpen;
+      fold.head.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open !== lastOpen) {
+        lastOpen = open; fold.card.classList.toggle('is-open', open);
+        if (open) requestAnimationFrame(function () { requestAnimationFrame(function () { fold.card.classList.add('is-shown'); }); }); else fold.card.classList.remove('is-shown');
+      }
+      if (busy !== lastBusy) {
+        lastBusy = busy;
+        [top.b, fold.b].forEach(function (b, i) { b.paste.disabled = busy; b.pasteLbl.textContent = busy ? 'Controllo…' : (i ? 'Incolla nuova chiave' : 'Incolla chiave dal clipboard'); });
+      }
+      var armed = ui.keyArmedAt > 0;
+      fold.remove.classList.toggle('is-armed', armed); fold.removeLbl.textContent = armed ? 'Sicuro? Tocca ancora' : 'Rimuovi chiave';
+      /* microfoni, dimensione, orientamento */
+      renderDevices(s);
+      refs.refreshBtn.classList.toggle('is-spin', !!ui.devicesBusy);
+      size.set(s.general.sizePreset); orient.set(s.general.orientation);
+    }
+    update(S.get());
+    return { el: el, inner: inner, natural: function () { return inner.offsetHeight; }, update: update, closeBubbles: function () { tipTop.close(); tipFold.close(); } };
+  }
+  GW.tabs.general = { create: create };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.tabs = GW.tabs || {};
+  var U = GW.util, O = GW.options, UI = GW.ui;
+  function create(ctx) {
+    var A = ctx.actions, S = ctx.store;
+    var groups = {};
+    function group(action, title, icon) {
+      var g = { action: action, list: U.h('div', { class: 'binds' }), sig: '' };
+      g.addLbl = U.h('span', { text: 'Aggiungi tasto' });
+      g.add = U.h('button', { class: 'btn dashed add-key press', type: 'button', on: { click: function () {
+        if (S.get().ui.capture === action) A.captureCancel(); else A.captureStart(action);
+      } } }, [GW.icons.make('plus', 15, { sw: 1.9 }), g.addLbl]);
+      g.addIc = g.add.firstChild;
+      g.el = U.h('div', { class: 'sec-wrap' }, [UI.sec(title, icon), g.list, g.add]);
+      groups[action] = g; return g;
+    }
+    var gSs = group('ss', 'AVVIO / STOP', 'play');
+    var gPause = group('pause', 'PAUSA', 'pause');
+    var hint = U.h('p', { class: 'hint', text: 'Premi «Aggiungi tasto», poi il tasto o la combinazione che vuoi usare. Esc annulla.' });
+    var inner = U.h('div', { class: 'pane-pad inner' }, [gSs.el, gPause.el, hint]);
+    var el = U.h('div', { class: 'scroll', style: { flex: '1' } }, [inner]);
+    function renderGroup(g, s) {
+      var list = s.keys[g.action];
+      var sig = list.map(function (b) { return b.label + '|' + b.gesture; }).join('\u0001');
+      if (sig !== g.sig) {
+        g.sig = sig; U.clear(g.list);
+        if (!list.length) g.list.appendChild(U.h('div', { class: 'box bind-empty', text: 'Nessun tasto assegnato' }));
+        list.forEach(function (b, i) {
+          var seg = UI.segmented({ items: O.GESTURES[g.action], value: b.gesture, size: 'sm', label: 'Gesto per ' + b.label, onChange: function (v) { A.setGesture(g.action, i, v); } });
+          var del = U.h('button', { class: 'btn-ic', type: 'button', aria: { label: 'Elimina il tasto ' + b.label }, title: 'Elimina', on: { click: function () { A.removeBinding(g.action, i); } } },
+            [GW.icons.make('x', 14, { sw: 1.8 })]);
+          g.list.appendChild(U.h('div', { class: 'box bind' }, [U.h('span', { class: 'kcap', text: b.label }), seg.el, del]));
+        });
+      }
+      var cap = s.ui.capture === g.action;
+      g.add.classList.toggle('is-capturing', cap);
+      g.addLbl.textContent = cap ? 'Premi un tasto… (tocca per annullare)' : 'Aggiungi tasto';
+      g.addIc.style.display = cap ? 'none' : '';
+      g.add.disabled = !!s.ui.capture && !cap;
+    }
+    function update(s) { renderGroup(gSs, s); renderGroup(gPause, s); }
+    update(S.get());
+    return { el: el, inner: inner, natural: function () { return inner.offsetHeight; }, update: update };
+  }
+  GW.tabs.keys = { create: create };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW || (root.GW = {}); GW.tabs = GW.tabs || {};
+  var U = GW.util, O = GW.options, UI = GW.ui, SC = O.SCHEMA.look;
+  function create(ctx) {
+    var A = ctx.actions, S = ctx.store;
+    var preview = GW.preview.create(ctx);
+    /* ---------- hero: stile attuale / anteprima ---------- */
+    var heroN = U.h('div', { class: 'hero-n', text: '' }), heroS = U.h('div', { class: 'hero-s', text: '' });
+    var wave = U.svg('svg', { class: 'hero-w', viewBox: '0 0 110 40', 'aria-hidden': 'true' });
+    for (var i = 0; i <= 10; i++) { var bh = 8 + 24 * Math.abs(Math.sin(i * 0.83 + 0.55)); wave.appendChild(U.svg('rect', { x: 4 + i * 10, y: (40 - bh) / 2, width: 3.2, height: bh, rx: 1.6 })); }
+    var hero = U.h('div', { class: 'hero', role: 'status', 'aria-live': 'polite' }, [U.h('div', { class: 'hero-t' }, [heroN, heroS]), wave]);
+    /* ---------- categorie + carte ---------- */
+    var catsEl = U.h('div', { class: 'cats', role: 'tablist', aria: { label: 'Categorie' } });
+    var grid = U.h('div', { class: 'cards', role: 'listbox', aria: { label: 'Stili' } });
+    var cardsScroll = U.h('div', { class: 'cards-wrap scroll' }, [grid]);
+    var empty = U.h('div', { class: 'cards-empty', text: 'Nessuno stile in questa categoria', hidden: true });
+    cardsScroll.appendChild(empty);
+    var left = U.h('div', { class: 'col' }, [hero, U.h('div', { class: 'theme-body' }, [catsEl, cardsScroll])]);
+    /* Carte a FINESTRA: nel DOM solo le righe visibili +- BUF righe (spaziatori sopra/sotto per l'altezza). Una carta (e la sua mini onda SVG)
+       nasce solo quando la sua riga entra nella finestra; cambio categoria = si rifa' solo la lista. */
+    var PITCH = 84, ROWH = 76, GAP = 8, BUF = 3, FALLBACK_VH = 480, FALLBACK_COLS = 3;
+    var built = { sig: '', cache: {}, chips: {} }, list = [], win = { r0: -1, r1: -2 }, cols = FALLBACK_COLS;
+    var lastStyle = null, lastCat = null, hoverId = null, active = false, curId = null, picked = false, userScrolled = false, keepCat = null;
+    var spTop = U.h('div', { class: 'cards-sp', 'aria-hidden': 'true' }), spBot = U.h('div', { class: 'cards-sp', 'aria-hidden': 'true' });
+    function catName(s, id) { for (var i = 0; i < s.cats.length; i++) if (s.cats[i].id === id) return s.cats[i].name; return ''; }
+    function setHero(s, id, isPreview) {
+      var st = null; for (var i = 0; i < s.styles.length; i++) if (s.styles[i].id === id) st = s.styles[i];
+      st = st || GW.state.currentStyle(s);
+      var tk = s.effectiveMode === 'light' ? st.light : st.dark;
+      hero.style.setProperty('--hero-grad', GW.theme.gradientCss(tk.grad, 90));
+      hero.style.setProperty('--hero-on', GW.theme.onAccent(tk));
+      heroN.textContent = st.name;
+      heroS.textContent = (isPreview ? 'Anteprima · ' : 'Stile attuale · ') + catName(s, st.cat);
+    }
+    /* categorie (chip) + dati: si rifanno solo se cambiano stili/categorie/asset */
+    function buildData(s) {
+      var sig = s.styles.map(function (x) { return x.id + x.name + x.cat; }).join('|') + '#' + s.cats.map(function (c) { return c.id + c.name; }).join('|') + '#' + JSON.stringify(s.assets);
+      if (sig === built.sig) return;
+      built.sig = sig; built.cache = {}; built.chips = {}; U.clear(catsEl);
+      var counts = { all: s.styles.length };
+      s.styles.forEach(function (st) { counts[st.cat] = (counts[st.cat] || 0) + 1; });
+      s.cats.forEach(function (c) {
+        var ch = UI.chip({ id: c.id, name: c.name, icon: O.CAT_ICONS[c.id] || 'catAll', count: counts[c.id] || 0, onClick: function (id) { A.setCat(id); } });
+        ch.el.classList.add('cat'); built.chips[c.id] = ch; catsEl.appendChild(ch.el);
+      });
+      keepCat = lastCat; lastCat = null; win = { r0: -1, r1: -2 };       // dati rifatti: se la categoria e' la stessa si resta dove si e'
+    }
+    function getCard(s, st) {
+      var el = built.cache[st.id];
+      if (!el) {
+        el = built.cache[st.id] = UI.card(st, s.assets, function (id) { picked = true; A.set('style', id); });
+        if (st.id === curId) UI.cardSetCurrent(el, true);
+      }
+      return el;
+    }
+    function layoutCols() {
+      var w = grid.clientWidth;
+      cols = w > 0 ? Math.max(1, Math.floor((w - 6 + GAP) / (84 + GAP))) : FALLBACK_COLS;
+      grid.style.setProperty('--cols', String(cols));
+    }
+    function viewH() { return cardsScroll.clientHeight || FALLBACK_VH; }
+    /* ricostruisce il contenuto della griglia per la finestra di righe corrente (force = anche se la finestra e' uguale) */
+    function renderWindow(force) {
+      var s = S.get(), rows = Math.ceil(list.length / cols);
+      var vh = viewH(), top = Math.min(Math.max(0, cardsScroll.scrollTop - 3), Math.max(0, rows * PITCH - vh));
+      var r0 = Math.max(0, Math.floor(top / PITCH) - BUF), r1 = Math.min(rows - 1, Math.floor((top + vh) / PITCH) + BUF);
+      if (!force && r0 === win.r0 && r1 === win.r1) return;
+      win = { r0: r0, r1: r1 };
+      var frag = root.document.createDocumentFragment();
+      if (r0 > 0) { spTop.style.height = (r0 * PITCH - GAP) + 'px'; frag.appendChild(spTop); }
+      for (var i = r0 * cols; i <= Math.min(list.length - 1, (r1 + 1) * cols - 1); i++) frag.appendChild(getCard(s, list[i]));
+      if (r1 < rows - 1) { spBot.style.height = ((rows - 1 - r1) * PITCH - GAP) + 'px'; frag.appendChild(spBot); }
+      U.clear(grid); grid.appendChild(frag);
+      grid.dataset.count = String(list.length); grid.dataset.rendered = String(grid.querySelectorAll('.card').length);
+    }
+    function curIndex() { for (var i = 0; i < list.length; i++) if (list[i].id === curId) return i; return -1; }
+    function scrollToRow(idx, center) {
+      if (idx < 0) { cardsScroll.scrollTop = 0; return; }
+      var y = Math.floor(idx / cols) * PITCH, vh = viewH();
+      cardsScroll.scrollTop = Math.max(0, center ? y - (vh - ROWH) / 2 : y);
+    }
+    /* nuova lista (categoria cambiata / prima apertura): filtra, mette a posto le colonne, porta la carta corrente in vista */
+    function applyList(s) {
+      var cat = s.ui.cat;
+      list = s.styles.filter(function (st) { return cat === 'all' || st.cat === cat; });
+      empty.hidden = list.length > 0;
+      layoutCols();
+      var idx = curIndex();
+      if (keepCat === cat && userScrolled) cardsScroll.scrollTop = Math.min(cardsScroll.scrollTop, Math.max(0, Math.ceil(list.length / cols) * PITCH - viewH()));
+      else { userScrolled = false; scrollToRow(idx, true); }
+      keepCat = null;
+      renderWindow(true);
+      Object.keys(built.chips).forEach(function (id) { built.chips[id].set(id === cat); });
+      lastCat = cat;
+    }
+    function syncCur(s) {
+      var id = GW.state.currentStyle(s).id;
+      if (id === curId) return;
+      var old = built.cache[curId], nu = built.cache[id]; curId = id;
+      if (old) UI.cardSetCurrent(old, false);
+      if (nu) UI.cardSetCurrent(nu, true);
+    }
+    cardsScroll.addEventListener('scroll', function () { if (active) renderWindow(false); }, { passive: true });
+    ['wheel', 'pointerdown', 'keydown', 'touchstart'].forEach(function (ev) { cardsScroll.addEventListener(ev, function () { userScrolled = true; }, { passive: true }); });
+    /* la finestra cambia misura (resize dell'host): colonne e righe visibili cambiano; se l'utente non ha ancora scorso si ricentra la carta corrente */
+    if (root.ResizeObserver) new root.ResizeObserver(function () {
+      if (!active) return; var c = cols; layoutCols();
+      if (!userScrolled) scrollToRow(curIndex(), true);
+      renderWindow(c !== cols);
+    }).observe(cardsScroll);
+    grid.addEventListener('pointerover', function (e) {
+      var c = e.target.closest && e.target.closest('.card'); var id = c ? c.dataset.id : null;
+      if (id === hoverId) return; hoverId = id; setHero(S.get(), id || S.get().look.style, !!id && id !== S.get().look.style);
+    });
+    grid.addEventListener('pointerleave', function () { if (hoverId) { hoverId = null; var s = S.get(); setHero(s, s.look.style, false); } });
+    /* ---------- controlli (colonna destra) ---------- */
+    var C = {};
+    function seg(key, size, label) { return UI.segmented({ items: SC[key].choices, value: SC[key].def, size: size, label: label || SC[key].section, onChange: function (v) { A.set(key, v); } }); }
+    function sl(key, label) {
+      var d = SC[key];
+      return UI.slider({ icon: d.icon, label: label || d.label, min: d.min, max: d.max, value: d.uiDef || d.def,
+        onInput: function (v) { A.setLive(key, v); }, onCommit: function () { A.flush(key); } });
+    }
+    function cs(title, icon, kids) { return U.h('div', { class: 'csec' }, [UI.sec(title, icon)].concat(kids)); }
+    C.mode = seg('themeMode');
+    C.shadow = UI.switchRow({ icon: 'shadow', label: 'Ombra attiva', checked: true, onChange: function (v) { A.set('shadowOn', v); } });
+    C.shadowI = sl('shadowIntensity');
+    C.glow = UI.switchRow({ icon: 'glow', label: 'Alone accento', checked: false, onChange: function (v) { A.set('glowOn', v); } });
+    C.shadowSep = UI.sep(); C.glowSep = UI.sep();
+    C.glass = sl('glassOpacity');
+    C.corner = seg('cornerStyle', 'sm');
+    C.wave = seg('waveStyle', 'sm'); C.wcol = seg('waveColor');
+    C.pulse = sl('micPulse');
+    C.anim = UI.switchRow({ icon: 'sine2', label: 'Animazioni attive', checked: true, onChange: function (v) { A.set('animOn', v); } });
+    C.speed = seg('animSpeed', 'xs'); C.speedWrap = U.h('div', { style: { padding: '0 10px 10px' } }, [C.speed.el]); C.speedSep = UI.sep();
+    C.ui = seg('uiFont', 'sm'); C.timer = seg('timerFont', 'sm'); C.dens = seg('density'); C.idle = sl('idleOpacity');
+    C.material = seg('material');
+    var armTimer = 0;
+    C.random = U.h('button', { class: 'btn primary press', type: 'button', on: { click: function () { A.randomLook(); } } }, [GW.icons.make('sparkle', 15), U.h('span', { text: 'Sorprendimi' })]);
+    C.resetLbl = U.h('span', { text: 'Reset look' });
+    C.reset = U.h('button', { class: 'btn soft press', type: 'button', on: { click: function () {
+      if (armTimer) { clearTimeout(armTimer); armTimer = 0; setArmed(false); A.resetLook(); return; }
+      setArmed(true); armTimer = setTimeout(function () { armTimer = 0; setArmed(false); }, 3000);
+    } } }, [GW.icons.make('reset', 14), C.resetLbl]);
+    function setArmed(v) { C.reset.classList.toggle('is-armed', v); C.resetLbl.textContent = v ? 'Confermi?' : 'Reset look'; }
+    var controlsInner = U.h('div', { class: 'inner-c' }, [
+      cs('MODO', 'auto', [C.mode.el]),
+      cs('OMBRA E ALONE', 'shadow', [UI.box([C.shadow.el, C.shadowSep, C.shadowI.el, C.glowSep, C.glow.el])]),
+      cs('VETRO', 'glass', [UI.box([C.glass.el])]),
+      cs('ANGOLI', 'cornerMd', [C.corner.el]),
+      cs('ONDA', 'wvBars', [C.wave.el, C.wcol.el]),
+      cs('PULSAZIONE MIC', 'micPulse', [UI.box([C.pulse.el])]),
+      cs('ANIMAZIONI', 'sine2', [UI.box([C.anim.el, C.speedSep, C.speedWrap])]),
+      cs('TESTO', 'aa', [C.ui.el]),
+      cs('TIMER', 'clock', [C.timer.el]),
+      cs('DENSITÀ', 'rowsN', [C.dens.el]),
+      cs('HUD A RIPOSO', 'ghost', [UI.box([C.idle.el])]),
+      cs('MATERIALE', 'matSolid', [C.material.el]),
+      U.h('div', { class: 'actions' }, [C.random, C.reset])
+    ]);
+    var controls = U.h('div', { class: 'controls scroll' }, [controlsInner]);
+    var pvHead = UI.sec('ANTEPRIMA', 'eye'); pvHead.style.marginBottom = '8px';
+    var right = U.h('div', { class: 'col' }, [pvHead, preview.el, controls]);
+    var el = U.h('div', { class: 'pane-theme' }, [left, right]);
+    function update(s) {
+      buildData(s);
+      var L = s.look;
+      if (active) {
+        if (lastCat !== s.ui.cat) { curId = GW.state.currentStyle(s).id; Object.keys(built.cache).forEach(function (id) { UI.cardSetCurrent(built.cache[id], id === curId); }); applyList(s); lastStyle = L.style; }
+        else if (lastStyle !== L.style) {
+          syncCur(s); lastStyle = L.style;
+          if (!picked) { var ix = curIndex(); if (ix >= 0) { var rr = Math.floor(ix / cols) * PITCH; if (rr < cardsScroll.scrollTop || rr + ROWH > cardsScroll.scrollTop + viewH()) { scrollToRow(ix, true); renderWindow(false); } } }
+        }
+        picked = false;
+      }
+      if (!hoverId) setHero(s, L.style, false);
+      C.mode.set(L.themeMode);
+      C.shadow.set(L.shadowOn, L.shadowOn ? 'Ombra attiva' : 'Ombra disattivata');
+      C.shadowI.el.hidden = C.shadowSep.hidden = !L.shadowOn;
+      C.shadowI.set(L.shadowIntensity);
+      C.glow.set(L.glowOn, L.glowOn ? 'Alone accento attivo' : 'Alone accento');
+      C.glass.set(L.glassOpacity > 0 ? L.glassOpacity : SC.glassOpacity.uiDef);
+      C.corner.set(L.cornerStyle); C.wave.set(L.waveStyle);
+      C.wcol.set(GW.preview.waveGradientOn(L, GW.state.currentStyle(s), s.effectiveMode) ? 'gradient' : 'accent');
+      C.pulse.set(L.micPulse);
+      C.anim.set(L.animOn, L.animOn ? 'Animazioni attive' : 'Animazioni disattivate');
+      C.speedWrap.hidden = C.speedSep.hidden = !L.animOn; C.speed.set(L.animSpeed);
+      C.ui.set(L.uiFont); C.timer.set(L.timerFont); C.dens.set(L.density); C.idle.set(L.idleOpacity); C.material.set(L.material);
+      preview.update(s);
+    }
+    update(S.get());
+    return { el: el, update: update, inner: controlsInner,
+      natural: function () { return pvHead.offsetHeight + 8 + preview.el.offsetHeight + 12 + controlsInner.offsetHeight + 24; },
+      setActive: function (v) {
+        preview.setActive(v);
+        if (v && !active) { active = true; lastCat = null; update(S.get()); }       // prima apertura (o riapertura): categoria dello stile corrente + scroll alla carta
+        else if (!v) active = false;
+      } };
+  }
+  GW.tabs.theme = { create: create };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+<script>
+(function (root) {
+  'use strict';
+  var GW = root.GW, U = GW.util, O = GW.options, UI = GW.ui;
+  var doc = root.document;
+  root.__gwErrors = [];
+  root.addEventListener('error', function (e) { root.__gwErrors.push(String(e.message || e)); });
+  var store = GW.state.createStore();
+  var bridge = GW.bridge;
+  var A = GW.actions.create(store, bridge);
+  GW.app = { store: store, actions: A };
+  var ctx = { store: store, actions: A };
+  if (bridge.isMock) doc.documentElement.classList.add('mock');
+  var panel = doc.getElementById('app');
+  /* ---------- header + tab ---------- */
+  var ver = U.h('span', { class: 'hdr-ver', text: '' });
+  var closeBtn = U.h('button', { class: 'hdr-x hov', type: 'button', aria: { label: 'Chiudi impostazioni' }, title: 'Chiudi', on: { click: function () { A.close(); } } }, [GW.icons.make('x', 15, { sw: 1.8 })]);
+  var hdr = U.h('div', { class: 'hdr' }, [U.h('div', { class: 'hdr-ic' }, [GW.icons.make('gear', 17, { sw: 1.7 })]), U.h('div', { class: 'hdr-title', text: 'Impostazioni' }), ver, closeBtn]);
+  /* l'header e' la maniglia: mousedown -> drag_start (Lua sposta la finestra seguendo il mouse). Niente -webkit-app-region. */
+  hdr.addEventListener('mousedown', function (e) { if (e.button === 0 && !(e.target.closest && e.target.closest('button'))) A.dragStart(e.screenX, e.screenY); });
+  var TAB_ITEMS = [{ value: 'general', label: 'Generale', icon: 'sliders' }, { value: 'keys', label: 'Tasti', icon: 'keyboard' }, { value: 'theme', label: 'Tema', icon: 'palette' }];
+  var tabs = UI.segmented({ items: TAB_ITEMS, value: 'general', label: 'Sezioni', iconSize: 15, onChange: function (v) { A.setTab(v); } });
+  var tabbar = U.h('div', { class: 'tabbar' }, [tabs.el]);
+  /* ---------- pannelli: il guscio c'e' subito, il CONTENUTO di ogni tab si costruisce alla prima apertura (meno nodi DOM all'avvio) ---------- */
+  var T = {}, ro = null;
+  var panes = U.h('div', { class: 'panes' });
+  var P = {};
+  GW.state.TABS.forEach(function (name) {
+    P[name] = U.h('div', { class: 'pane', role: 'tabpanel', data: { tab: name } });
+    panes.appendChild(P[name]);
+  });
+  function tabOf(name) {
+    if (!T[name]) { T[name] = GW.tabs[name].create(ctx); P[name].appendChild(T[name].el); if (ro) ro.observe(T[name].inner); }
+    return T[name];
+  }
+  var toast = UI.toast(panel);
+  U.append(panel, [hdr, tabbar, panes]);
+  panel.appendChild(toast.el);
+  if (bridge.isMock) doc.body.appendChild(U.h('div', { class: 'mock-note', text: 'MOCK: nessun host Lua collegato · le azioni sono simulate' }));
+  /* scroll: filo sotto i tab quando il contenuto e' scorso */
+  panes.addEventListener('scroll', function (e) { var t = e.target; if (t && t.classList && t.classList.contains('scroll')) panes.classList.toggle('is-scrolled', t.scrollTop > 2); }, true);
+  /* ---------- cambio tab: cross-fade + translate ---------- */
+  var shownTab = null, hideTimers = {};
+  function showTab(name) {
+    if (name === shownTab) return;
+    var prev = shownTab, dir = prev ? (GW.state.TABS.indexOf(name) > GW.state.TABS.indexOf(prev) ? 1 : -1) : 1;
+    panel.dataset.tab = name; tabs.set(name);
+    var nu = P[name], old = prev && P[prev];
+    tabOf(name);
+    clearTimeout(hideTimers[name]);
+    nu.classList.add('is-shown'); nu.classList.toggle('is-left', dir < 0); nu.classList.remove('is-active');
+    void nu.offsetWidth;                                                  // reflow: parte la transizione
+    nu.classList.remove('is-left'); nu.classList.add('is-active');
+    if (old) {
+      old.classList.remove('is-active'); old.classList.toggle('is-left', dir > 0);
+      hideTimers[prev] = setTimeout(function () { if (shownTab !== prev) old.classList.remove('is-shown', 'is-left'); }, 280);
+    }
+    shownTab = name;
+    tabOf(name);
+    if (T.theme) T.theme.setActive(name === 'theme');
+    if (T.general && T.general.closeBubbles && name !== 'general') T.general.closeBubbles();
+    requestResize();
+  }
+  /* ---------- richiesta di resize (la finestra la ridimensiona Lua; qui niente animazioni di width/height) ---------- */
+  var resizeT = 0, lastReq = '';
+  function requestResize() {
+    clearTimeout(resizeT);
+    resizeT = setTimeout(function () {
+      var name = shownTab || 'general', t = T[name];
+      if (!t) return;
+      var chrome = hdr.offsetHeight + tabbar.offsetHeight + 1;
+      var natural = t.natural ? t.natural() : 0;
+      var w = GW.actions.SIZES[name].w, h = GW.actions.capHeight(name, Math.max(300, Math.round(chrome + natural + (name === 'theme' ? 0 : 6))));   // tetto: oltre scorre dentro
+      var k = w + 'x' + h; if (k === lastReq) return; lastReq = k;
+      A.resizeRequest(w, h);
+    }, 90);
+  }
+  if (root.ResizeObserver) {
+    ro = new root.ResizeObserver(requestResize);
+  }
+  /* ---------- store -> UI ---------- */
+  var msgTimer = 0, lastMsg = null, lastToast = null, rendered = false;
+  function render(s) {
+    GW.theme.apply(s);
+    ver.textContent = s.version ? 'v' + s.version : '';
+    showTab(s.tab);
+    rendered = true;
+    Object.keys(T).forEach(function (n) { T[n].update(s); });
+    if (s.ui.msg !== lastMsg) {                                           // i messaggi della chiave spariscono dopo 9 s (come in Lua)
+      lastMsg = s.ui.msg; clearTimeout(msgTimer);
+      if (lastMsg && lastMsg.kind !== 'busy') { var m = lastMsg; msgTimer = setTimeout(function () { if (store.get().ui.msg === m) store.dispatch({ type: 'ui', patch: { msg: null } }); }, 9000); }
+    }
+    if (s.ui.toast !== lastToast) { lastToast = s.ui.toast; if (lastToast) toast.show(lastToast.text); }
+  }
+  store.dispatch({ type: 'ui', patch: { bridgeMock: bridge.isMock } });
+  GW.theme.apply(store.get());
+  store.subscribe(render);
+  bridge.attach(store);
+  /* niente render a vuoto: la pagina e' invisibile finche' Lua non manda lo stato (se tarda, dopo 400 ms si mostra comunque il default) */
+  setTimeout(function () { if (!rendered) render(store.get()); }, 400);
+  A.ready();                                                              // Lua risponde con gw.onState(stato completo)
+  /* interact: UNA volta, al primo pointerdown (l'host restituisce il focus all'app in primo piano). hb: heartbeat ogni 1000 ms (catena di setTimeout). */
+  var interacted = false;
+  doc.addEventListener('pointerdown', function () { if (!interacted) { interacted = true; A.interact(); } }, true);
+  (function beat() { A.hb(); setTimeout(beat, 1000); })();
+  /* Esc lo gestisce l'host (chiude la finestra): qui solo capture_cancel se la cattura tasti e' attiva. */
+  doc.addEventListener('keydown', function (e) { if (e.key === 'Escape' && store.get().ui.capture) A.captureCancel(); });
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+</script>
+</body>
+</html>
+]==]
+end
+-- <<WEB_HTML_END>>
+
+------------------------------------------------------------------------
+-- IMPOSTAZIONI WEB: finestra hs.webview + ponte JS<->Lua. Chiave `settingsUI` = "web" | "canvas" (default "canvas": nulla cambia
+-- finche' non la si attiva). La finestra a canvas RESTA ed e' il RIPIEGO: se hs.webview/usercontent manca, la creazione lancia, o la
+-- pagina non manda `ready` entro 4 s, si apre la canvas (e per il resto della sessione si resta li').
+-- Regole anti-blocco: niente hs.audiodevice/hs.sound, niente hs.execute pesanti negli handler, ogni handler in pcall con ICON.log
+-- (che ha il suo tetto). La chiave Groq non passa MAI da qui: il JS vede solo `groq.has` e `groq.mask`.
+-- Tutto in una funzione: nessun nuovo `local` di file (limite 200 del chunk).
+-- Ponte (JS -> Lua: window.webkit.messageHandlers.gw.postMessage({op, ...}); Lua -> JS: gw.onState(json) / gw.onEvent(nome, json), JSON sempre
+-- da hs.json.encode, al massimo 1 onState ogni 50 ms). Op: ready, hb, interact, set{key,value}, random_look, reset_look, pick_mic{name},
+-- refresh_devices, key_paste, key_remove, open_groq, capture_start{action}, capture_cancel, key_remove_binding{action,index (da 0)},
+-- key_set_gesture{action,index,gesture}, set_tab{tab}, close, fallback, drag_start{sx,sy}, resize_request{w,h}.
+-- Eventi: key_status{kind,msg,has,mask}, capture_result{ok,action,label,reason,dup}, devices[{name,bt}], toast{text}.
+-- Pagina: scritta su ~/.config/groq-dictation/ui/settings.html e caricata con url() (cosi' le immagini file:// del tema si vedono).
+------------------------------------------------------------------------
+ICON.web = (function()
+  -- maxW/maxH: tetto di sicurezza per resize_request (la pagina non puo' chiedere finestre enormi; l'host clampa comunque a schermo-24)
+  local W = { cur = nil, failed = nil, pos = nil, size = { w = 560, h = 640 }, readySec = 4, devs = nil, stylesC = nil, maxW = 820, maxH = 760 }
+  local canvasOpen, canvasClose = openSettings, closeSettings
+  local LOOK = config.LOOK
+  local LOOK_KEYS = { "style", "themeMode", "glassOpacity", "cornerStyle", "animOn", "animSpeed", "waveStyle", "waveColor", "micPulse",
+    "glowOn", "uiFont", "timerFont", "density", "idleOpacity", "shadowOn", "shadowIntensity", "material" }
+  local LOOK_SET = {}; for _, k in ipairs(LOOK_KEYS) do LOOK_SET[k] = true end
+  local SLIDER = { glassOpacity = true, shadowIntensity = true, micPulse = true, idleOpacity = true }   -- trascinamento continuo: persist/rebuild a coda
+  local REBUILD = { style = true, themeMode = true, glassOpacity = true, cornerStyle = true, waveStyle = true, waveColor = true,
+    uiFont = true, timerFont = true, density = true, glowOn = true, shadowOn = true, shadowIntensity = true }
+  local TABS = { general = true, keys = true, theme = true }
+  local EVENTS = { key_status = true, capture_result = true, devices = true, toast = true }
+  local function now_() return hs.timer.secondsSinceEpoch() end
+  local function try(obj, name, ...) local f = obj and obj[name]; if f then return pcall(f, obj, ...) end return false end
+  local function log(m) pcall(ICON.log, "[GW] web: " .. tostring(m)) end
+  local function str(s, max)
+    s = tostring(s == nil and "" or s)
+    if not utf8.len(s) then s = s:gsub("[\128-\255]", "?") end
+    if #s > (max or 200) then s = s:sub(1, max or 200); if not utf8.len(s) then s = s:gsub("[\128-\255]", "?") end end
+    return s
+  end
+  local function enc(v)                          -- SEMPRE hs.json.encode: mai concatenare stringhe utente nel JS
+    local ok, s = pcall(hs.json.encode, v)
+    if not ok or type(s) ~= "string" then return nil end
+    return (s:gsub("\226\128\168", "\\u2028"):gsub("\226\128\169", "\\u2029"))
+  end
+  local function hex6(c) local function b(v) return string.format("%02X", math.floor(clampN(v, 0, 1) * 255 + 0.5)) end return "#" .. b(c.red) .. b(c.green) .. b(c.blue) end
+  local function tok(T)
+    local g = {}; for i, c in ipairs(T.grad or {}) do g[i] = hex6(c) end
+    return { bg1 = hex6(T.bg), bg2 = hex6(T.solid), fg = hex6(T.fg), fg2 = hex6(T.fg2), accent = hex6(T.accent), ink = hex6(T.accentInk),
+             on = hex6(T.accentText), grad = g }
+  end
+  local function version()
+    local f = io.open(os.getenv("HOME") .. "/.config/groq-dictation/version", "r"); if not f then return "" end
+    local v = f:read("*a") or ""; f:close(); return str((v:gsub("%s+", "")), 40)
+  end
+
+  -- ---------- stato verso il JS ----------
+  function W.styles()
+    if W.stylesC then return W.stylesC end
+    local list, cats = {}, {}
+    for _, id in ipairs(FAMILY_ORDER) do
+      local F = FAMILIES[id]
+      if F then
+        local fx
+        if type(F.fx) == "table" and (F.fx.icon or F.fx.bar or F.fx.part) then fx = { icon = F.fx.icon, bar = F.fx.bar, part = F.fx.part } end
+        list[#list + 1] = { id = id, name = str(F.name, 60), cat = F.cat or "cl", dark = tok(F.dark), light = tok(F.light), fx = fx }
+      end
+    end
+    for _, c in ipairs(FAMILY_ORDER.cats or {}) do cats[#cats + 1] = { id = c[1], name = c[2] } end
+    W.stylesC = { list = list, cats = cats }
+    return W.stylesC
+  end
+  function W.deviceList()
+    local src = W.devs or deviceCache or {}
+    local out = {}
+    for i, d in ipairs(src) do
+      if i > 64 then break end
+      local n = str(d.name, 120)
+      out[#out + 1] = { name = n, bt = ICON.micIsBluetooth(n) }
+    end
+    return out
+  end
+  function W.keyList(list, defG)
+    local out = {}
+    for i, b in ipairs(list or {}) do if i <= 32 then out[#out + 1] = { label = str(bindLabel(b), 40), gesture = b.gesture or defG } end end
+    return out
+  end
+  function W.state(inst)
+    local look = {}
+    for _, k in ipairs(LOOK_KEYS) do look[k] = LOOK.clean(k, config[k]) end
+    local K = SET.K
+    local st = {
+      version = inst.version, tab = TABS[settingsPage] and settingsPage or "general", look = look,
+      general = { micName = str(config.micName, 120), devices = W.deviceList(),
+                  sizePreset = (config.sizePreset == "large" or config.sizePreset == "minimal") and config.sizePreset or "standard",
+                  orientation = (config.orientation == "vertical") and "vertical" or "horizontal" },
+      keys = { ss = W.keyList(config.ssBindings, "double"), pause = W.keyList(config.pauseBindings, "single") },
+      groq = { has = K.has and true or false, mask = K.has and str(K.mask, 40) or nil },
+      styles = W.styles().list, cats = W.styles().cats, effectiveMode = resolveMode(),
+    }
+    if inst.assetsPending and inst.assets then st.assets = inst.assets; inst.assetsPending = false end
+    return st
+  end
+
+  -- ---------- invio (coalescing: al massimo 1 onState ogni 50 ms) ----------
+  local function evalJS(inst, js)
+    if inst.dead or not inst.wv then return end
+    inst.nEval = (inst.nEval or 0) + 1
+    local ok, e = pcall(inst.wv.evaluateJavaScript, inst.wv, js)
+    if not ok then log("evaluateJavaScript: " .. tostring(e)) end
+  end
+  local function flush(inst)
+    inst.dirty = false; inst.lastPush = now_()
+    local ok, st = pcall(W.state, inst)
+    if not ok then log("stato: " .. tostring(st)); return end
+    local j = enc(st)
+    if not j then log("stato: json non valido"); return end
+    inst.nState = (inst.nState or 0) + 1
+    evalJS(inst, "gw.onState(" .. j .. ")")
+  end
+  function W.push(inst)
+    inst = inst or W.cur
+    if not inst or inst.dead or not inst.ready then return end
+    inst.dirty = true
+    if inst.pushT then return end
+    local dt = now_() - (inst.lastPush or -1)
+    if dt >= 0.05 then flush(inst); return end
+    inst.pushT = hs.timer.doAfter(0.05 - dt + 0.002, function()
+      inst.pushT = nil
+      if not inst.dead and inst.dirty then flush(inst) end
+    end)
+  end
+  function W.event(inst, name, data)
+    inst = inst or W.cur
+    if not inst or inst.dead or not inst.ready or not EVENTS[name] then return end
+    local j = enc(data == nil and {} or data)
+    if j then evalJS(inst, "gw.onEvent('" .. name .. "', " .. j .. ")") end
+  end
+  -- key_status {kind = ok|error|busy, msg, has, mask}: testi fissi + maschera (prime 4 + ... + ultime 4), MAI la chiave
+  function W.keyStatus(kind, text)
+    local inst = W.cur; if not inst then return end
+    local K = SET.K
+    local k = (kind == "err") and "error" or ((kind == "busy") and "busy" or "ok")      -- "info" (chiave rimossa, sito aperto) -> ok
+    W.event(inst, "key_status", { kind = k, msg = str(text, 140), text = str(text, 140), has = K.has and true or false, mask = K.has and str(K.mask, 40) or nil })
+    if k == "ok" then W.push(inst) end                                  -- la chiave e' cambiata: stato completo
+  end
+  -- capture_result {ok, action, label, reason, dup}: esito della cattura tasto; se ok la UI riceve anche lo stato completo (nuova lista tasti)
+  function W.capture(r)
+    local inst = W.cur; if not inst then return end
+    local d = { ok = r.ok and true or false, action = r.action, label = r.label and str(r.label, 40) or nil, reason = r.reason, dup = r.dup }
+    W.event(inst, "capture_result", d)
+    if d.ok then W.push(inst) end
+  end
+  function W.toast(inst, text) W.event(inst, "toast", { text = str(text, 120) }) end
+
+  -- ---------- finestra ----------
+  local function screens()
+    local out = {}
+    local ok, all = pcall(hs.screen.allScreens)
+    if ok and type(all) == "table" then for _, s in ipairs(all) do out[#out + 1] = s:frame() end end
+    if #out == 0 then out[1] = hs.screen.mainScreen():frame() end
+    return out
+  end
+  local function clampFrame(f)                    -- la finestra resta (in buona parte) dentro l'unione degli schermi
+    local a, b, c, d = 1e9, 1e9, -1e9, -1e9
+    for _, s in ipairs(screens()) do a = math.min(a, s.x); b = math.min(b, s.y); c = math.max(c, s.x + s.w); d = math.max(d, s.y + s.h) end
+    local w, h = clampN(f.w, 200, math.max(200, c - a)), clampN(f.h, 140, math.max(140, d - b))
+    return { x = clampN(f.x, a - w + 80, c - 80), y = clampN(f.y, b, math.max(b, d - 40)), w = w, h = h }
+  end
+  local function cspHtml(html)                    -- rete chiusa dalla CSP (immagini solo data:/file:/blob:, niente fetch/XHR/websocket/frame)
+    local meta = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " ..
+      "img-src data: file: blob:; font-src data:; media-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'\">"
+    local s, e = html:find("<[Hh][Ee][Aa][Dd][^>]*>")
+    if s then return html:sub(1, e) .. meta .. html:sub(e + 1) end
+    s, e = html:find("<[Hh][Tt][Mm][Ll][^>]*>")
+    if s then return html:sub(1, e) .. meta .. html:sub(e + 1) end
+    return meta .. html
+  end
+  local function pctDecode(u) return (u:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)) end
+  local function pctEncode(p) return (p:gsub("[^%w%-%._~/]", function(c) return string.format("%%%02X", c:byte()) end)) end
+  local function dir_() return os.getenv("HOME") .. "/.config/groq-dictation" end
+  -- nessuna navigazione fuori da about:blank / data: / la pagina stessa (file://.../ui/settings.html) / file:// della cartella temi.
+  -- NB: nel callback l'URL e' una TABELLA ({URL = {url = "..."}} o {url = "..."}): si scartocciano fino a una stringa.
+  local function allowedURL(u)
+    for _ = 1, 4 do if type(u) == "table" then u = u.URL or u.url or u.absoluteString else break end end
+    if type(u) == "table" then return false end
+    if u == nil or u == "" then return true end
+    u = tostring(u)
+    if u == "about:blank" or u:sub(1, 5) == "data:" then return true end
+    if u:sub(1, 7) ~= "file://" then return false end
+    local path = pctDecode(u:sub(8)):gsub("[?#].*$", "")
+    if path:find("..", 1, true) or u:find("%2e%2e", 1, true) or u:find("%2E%2E", 1, true) then return false end
+    if path == dir_() .. "/ui/settings.html" then return true end
+    return path:sub(1, #dir_() + 8) == dir_() .. "/themes/"
+  end
+  function W.isHS(app)
+    local ok, r = pcall(function() local b = app:bundleID(); return b ~= nil and b == hs.processInfo.bundleID end)
+    return ok and r == true
+  end
+  function W.available()
+    local ok, m = pcall(function() return hs.webview end)
+    if not ok or type(m) ~= "table" or type(m.new) ~= "function" then return false, "hs.webview assente" end
+    local ok2, uc = pcall(function() return m.usercontent end)
+    if not ok2 or type(uc) ~= "table" or type(uc.new) ~= "function" then return false, "hs.webview.usercontent assente" end
+    if type(ICON.webHtml) ~= "string" or #ICON.webHtml < 20 then return false, "pagina HTML non incollata (build.py)" end
+    return true
+  end
+
+  local OP = {}
+  local function onMsg(inst, msg)
+    if inst.dead or W.cur ~= inst then return end
+    local ok, e = pcall(function()
+      local b = type(msg) == "table" and msg.body
+      if type(b) ~= "table" or type(b.op) ~= "string" then return end
+      local t = now_()
+      if t - (inst.rlT or 0) >= 1 then inst.rlT = t; inst.rlN = 0 end
+      inst.rlN = inst.rlN + 1
+      if inst.rlN > 600 then if inst.rlN == 601 then log("troppi messaggi dal JS: scarto") end return end
+      local f = OP[b.op]
+      if f then f(inst, b) else log("op sconosciuta " .. str(b.op, 40)) end
+    end)
+    if not ok then log("handler: " .. tostring(e)) end
+  end
+
+  function W.stopTimers(inst)
+    for _, k in ipairs({ "readyT", "pushT", "pendT", "animT", "dragGuard", "scanT", "wdT" }) do
+      local t = inst[k]; inst[k] = nil
+      if t then pcall(function() t:stop() end) end
+    end
+    for _, k in ipairs({ "dragTap", "escTap" }) do
+      local t = inst[k]; inst[k] = nil
+      if t then pcall(function() t:stop() end) end
+    end
+  end
+  function W.flushPend(inst)
+    local keys = {}
+    for k in pairs(inst.pend or {}) do keys[#keys + 1] = k end
+    inst.pend = {}
+    if #keys == 0 then return end
+    table.sort(keys)
+    local rb = false
+    for _, k in ipairs(keys) do persist(k, config[k]); if REBUILD[k] then rb = true end end
+    if rb then rebuildHUD() end
+  end
+  function W.teardown(inst, immediate)
+    if not inst or inst.dead then return end
+    pcall(W.flushPend, inst)
+    inst.dead = true
+    if W.cur == inst then W.cur = nil end
+    if inst.wv then
+      local ok, f = pcall(inst.wv.frame, inst.wv)
+      if ok and type(f) == "table" and f.w then W.pos = { cx = f.x + f.w / 2, top = f.y }; W.size = { w = f.w, h = f.h } end
+      try(inst.wv, "hide")
+    end
+    W.stopTimers(inst)
+    if ICON.capTap then pcall(function() ICON.capTap:stop() end); ICON.capTap = nil end      -- cattura tasto in corso: annullata con la finestra
+    if ICON.capT then pcall(function() ICON.capT:stop() end); ICON.capT = nil end
+    -- distruzione DIFFERITA: puo' partire dentro il callback nativo del messaggio JS (cancellare la webview li' dentro e' pericoloso);
+    -- immediata solo dal watchdog (timer Lua): delete() uccide anche un WebContent in loop
+    local wv, uc = inst.wv, inst.uc
+    inst.wv, inst.uc = nil, nil
+    local function kill()
+      if uc then pcall(function() uc:setCallback(nil) end) end
+      if wv then try(wv, "navigationCallback", nil); try(wv, "policyCallback", nil); pcall(function() wv:delete() end) end
+    end
+    if immediate then kill() else hs.timer.doAfter(0.03, kill) end
+  end
+  -- pagina morta (processo WebContent ucciso: nessun callback, pagina vuota): ricrea, al massimo 2 volte, poi canvas
+  function W.restart(inst, why)
+    if not inst or inst.dead then return end
+    local n = (inst.restarts or 0) + 1
+    log("pagina bloccata (" .. tostring(why) .. "): ricreo " .. n .. "/2")
+    if n > 2 then return W.fail(inst, "pagina bloccata: " .. tostring(why)) end
+    W.teardown(inst, true)
+    local av, avWhy = W.available()
+    if not av then W.failed = avWhy; log(avWhy); return canvasOpen() end
+    local ok, ni = pcall(W.create, n)
+    if not ok or not ni then
+      if type(ni) ~= "table" and W.cur then W.teardown(W.cur, true) end
+      W.failed = tostring(ni); log("ricreazione: " .. tostring(ni)); return canvasOpen()
+    end
+    W.refreshDevices(ni)
+  end
+  function W.fail(inst, why)
+    log("impostazioni web non disponibili (" .. tostring(why) .. "): uso la finestra classica")
+    W.failed = tostring(why)
+    W.teardown(inst, true)
+    canvasOpen()
+  end
+  -- la pagina va su FILE (e caricata con url): solo cosi' le immagini del tema (file://...) si vedono; con html(str) sono bloccate.
+  -- Riscritta a ogni apertura (cosi' segue gli aggiornamenti). Se la scrittura fallisce: html(str) e asset disattivati.
+  function W.writePage(html)
+    local dir = dir_() .. "/ui"
+    pcall(hs.fs.mkdir, dir_()); pcall(hs.fs.mkdir, dir)
+    local path = dir .. "/settings.html"
+    local f = io.open(path, "w")
+    if not f then return nil end
+    local okw = f:write(html); f:close()
+    if not okw then return nil end
+    if not W.chmodDone then W.chmodDone = true; pcall(hs.execute, "/bin/chmod 600 '" .. path .. "'") end    -- una volta per sessione
+    return path
+  end
+
+  function W.create(restarts)
+    local wvm = hs.webview
+    local sf = hs.screen.mainScreen():frame()
+    local sz = W.size
+    local f = { x = sf.x + (sf.w - sz.w) / 2, y = sf.y + (sf.h - sz.h) / 2, w = sz.w, h = sz.h }
+    if W.pos then f.x = W.pos.cx - sz.w / 2; f.y = W.pos.top end
+    f = clampFrame(f)
+    local inst = { ready = false, dead = false, pend = {}, lastPush = -1, version = version(), t0 = now_(), restarts = restarts or 0 }
+    local okf, pa = pcall(hs.application.frontmostApplication)          -- l'app in primo piano: se un click ci ruba il focus, glielo ridiamo (op interact)
+    if okf and pa and not W.isHS(pa) then inst.prevApp = pa end
+    inst.uc = wvm.usercontent.new("gw")
+    inst.uc:setCallback(function(msg) onMsg(inst, msg) end)
+    local okW, wv = pcall(wvm.new, f, {}, inst.uc)
+    if not okW or not wv then
+      pcall(function() inst.uc:setCallback(nil) end)                       -- niente callback orfano
+      error(okW and "hs.webview.new ha restituito nil" or tostring(wv))
+    end
+    inst.wv = wv
+    W.cur = inst
+    local m = wvm.windowMasks or {}
+    if not try(wv, "windowStyle", { "borderless", "nonactivating" }) then try(wv, "windowStyle", (m.borderless or 0) + (m.nonactivating or 128)) end
+    try(wv, "transparent", true); try(wv, "shadow", false)
+    try(wv, "level", (hs.canvas.windowLevels and hs.canvas.windowLevels.overlay) or 102)
+    local db = (hs.drawing and hs.drawing.windowBehaviors) or {}
+    if not try(wv, "behavior", (db.canJoinAllSpaces or 1) + (db.fullScreenAuxiliary or 256)) then try(wv, "behavior", { "canJoinAllSpaces", "fullScreenAuxiliary" }) end
+    try(wv, "allowTextEntry", false); try(wv, "allowNewWindows", false); try(wv, "privateBrowsing", true); try(wv, "allowGestures", false)
+    try(wv, "policyCallback", function(action, _w, details)
+      if action ~= "navigationAction" and action ~= "navigationResponse" then return false end     -- newWindow, challenge...: no
+      local u = details
+      if type(details) == "table" then u = details.request or details.response or details end
+      return allowedURL(u)
+    end)
+    try(wv, "navigationCallback", function(action)
+      if not inst.ready and not inst.dead and type(action) == "string" and action:find("[Ff]ail") then
+        hs.timer.doAfter(0, function() if W.cur == inst and not inst.ready then W.fail(inst, "caricamento pagina fallito") end end)
+      end
+    end)
+    try(wv, "alpha", 0)
+    local page = cspHtml(ICON.webHtml)
+    inst.pagePath = W.writePage(page)
+    if inst.pagePath then wv:url("file://" .. pctEncode(inst.pagePath)); inst.mode = "file"
+    else wv:html(page); inst.mode = "html"; log("scrittura della pagina fallita: html() senza asset locali") end
+    wv:show()
+    inst.readyT = hs.timer.doAfter(W.readySec, function()
+      inst.readyT = nil
+      if W.cur == inst and not inst.ready then W.fail(inst, "nessun ready entro " .. W.readySec .. " s") end
+    end)
+    return inst
+  end
+
+  function W.refreshDevices(inst)
+    getAudioDevices(function(list)
+      if #list > 0 then deviceCache = list end
+      if inst.dead then return end
+      W.devs = (#list > 0) and list or deviceCache
+      settingsDevices = W.devs
+      local dl = W.deviceList()
+      W.event(inst, "devices", dl)                                      -- array [{name, bt}]
+      if #dl == 0 and #list == 0 then W.toast(inst, "Nessun microfono trovato") end
+    end)
+  end
+  function W.open()
+    if W.cur then                                              -- gia' aperta: in primo piano + stato fresco
+      local inst = W.cur
+      SET.K.refresh(); try(inst.wv, "show"); W.push(inst); W.refreshDevices(inst)
+      return
+    end
+    if config.settingsUI ~= "web" or W.failed then return canvasOpen() end
+    local ok, why = W.available()
+    if not ok then W.failed = why; log(why); return canvasOpen() end
+    SET.K.refresh()
+    local okc, inst = pcall(W.create)
+    if not okc or not inst then
+      if type(inst) ~= "table" and W.cur then W.teardown(W.cur) end
+      W.failed = tostring(inst); log("creazione: " .. tostring(inst)); return canvasOpen()
+    end
+    W.devs = deviceCache
+    W.refreshDevices(inst)
+  end
+  function W.close()
+    local inst = W.cur
+    if inst then W.teardown(inst) end
+  end
+
+  -- ---------- operazioni JS -> Lua ----------
+  -- WATCHDOG (a pagina pronta) + Esc. Se il processo WebContent muore non arriva nessun callback e la pagina resta vuota: lo si vede da
+  -- url() == nil, oppure (se la pagina manda `hb` ogni secondo) da 3 s senza battito. evaluateJavaScript NON e' un segnale (su pagina
+  -- bloccata non ritorna). Esc: tap TEMPORANEO (solo finche' la finestra e' aperta), non ingoia mai il tasto e chiude solo se il mouse e'
+  -- sopra la finestra e non c'e' una cattura tasto in corso (che ha il suo Esc).
+  function W.watch(inst)
+    inst.wdT = hs.timer.doEvery(1, function()
+      if inst.dead or W.cur ~= inst or not inst.wv then return end
+      local dead
+      local okU, u = pcall(inst.wv.url, inst.wv)
+      if okU and (u == nil or u == "") then dead = "url() nil" end
+      if not dead and inst.hbSeen and now_() - (inst.lastHb or 0) > 3 then dead = "nessun battito da 3 s" end
+      if dead then hs.timer.doAfter(0, function() if W.cur == inst and not inst.dead then W.restart(inst, dead) end end) end
+    end)
+    local T = hs.eventtap.event.types
+    inst.escTap = hs.eventtap.new({ T.keyDown }, function(e)
+      pcall(function()
+        if inst.dead or not inst.wv or ICON.capTap or e:getKeyCode() ~= 53 then return end
+        local m, f = hs.mouse.absolutePosition(), inst.wv:frame()
+        if m.x >= f.x and m.x <= f.x + f.w and m.y >= f.y and m.y <= f.y + f.h then
+          hs.timer.doAfter(0, function() if W.cur == inst then W.teardown(inst) end end)
+        end
+      end)
+      return false
+    end)
+    inst.escTap:start()
+  end
+  function OP.hb(inst) inst.lastHb = now_(); inst.hbSeen = true end
+  -- primo click nella pagina: un mousedown su range/div puo' rendere Hammerspoon l'app in primo piano anche con nonactivating
+  -- (provato nello spike): se e' successo, si riattiva l'app che c'era prima (il testo che stai dettando non perde il cursore)
+  function OP.interact(inst)
+    local t = now_()
+    if t - (inst.lastInter or -1) < 0.25 then return end
+    inst.lastInter = t
+    local prev = inst.prevApp; if not prev then return end
+    local ok, f = pcall(hs.application.frontmostApplication)
+    if ok and f and W.isHS(f) then pcall(function() prev:activate() end) end
+  end
+  function OP.ready(inst)
+    local first = not inst.ready
+    inst.ready = true
+    if inst.readyT then inst.readyT:stop(); inst.readyT = nil end
+    inst.tReady = now_(); inst.lastHb = inst.tReady
+    try(inst.wv, "alpha", 1)
+    if first then W.watch(inst) end
+    if inst.assets then inst.assetsPending = true end
+    inst.lastPush = -1; W.push(inst)
+    if first then W.scanAssets(inst) end
+  end
+  function OP.close(inst) W.teardown(inst) end
+  function OP.fallback(inst) W.fail(inst, "richiesto dalla pagina") end
+  function OP.set_tab(inst, b) if type(b.tab) == "string" and TABS[b.tab] then settingsPage = b.tab end end
+  -- `set`: valore sanificato, applicato e salvato. La UI e' OTTIMISTICA: niente eco a ogni set (ogni onState durante il trascinamento di
+  -- uno slider farebbe saltare il cursore). Stato completo solo se il valore e' stato CORRETTO (diverso da quello inviato) o per themeMode
+  -- (effectiveMode puo' cambiare con "auto").
+  function OP.set(inst, b)
+    local key, sent = b.key, b.value
+    local v = sent
+    if type(key) ~= "string" then return end
+    if key == "sizePreset" then
+      v = (v == "standard" or v == "large" or v == "minimal") and v or "standard"
+      config.sizePreset = v; config.scale = scaleFor(v); persist("sizePreset", v); rebuildHUD()
+    elseif key == "orientation" then
+      v = (v == "vertical") and "vertical" or "horizontal"
+      config.orientation = v; persist("orientation", v); resetLevels(); rebuildHUD()
+    elseif LOOK_SET[key] then
+      v = LOOK.clean(key, v)
+      if SLIDER[key] then
+        config[key] = v
+        if key == "glassOpacity" then applyTheme() end
+        inst.pend[key] = true; inst.pendAt = now_()
+        if not inst.pendT then
+          local function arm()
+            inst.pendT = hs.timer.doAfter(0.25, function()
+              inst.pendT = nil
+              if inst.dead then return end
+              if now_() - (inst.pendAt or 0) >= 0.24 then W.flushPend(inst) else arm() end
+            end)
+          end
+          arm()
+        end
+      else
+        ICON.look.set(key, v)
+        if key == "style" or key == "themeMode" then applyTheme() end
+        if REBUILD[key] then rebuildHUD() end
+      end
+    else return end
+    if v ~= sent or key == "themeMode" then W.push(inst) end
+  end
+  function OP.random_look(inst) W.flushPend(inst); ICON.look.random(); W.push(inst) end
+  function OP.reset_look(inst) W.flushPend(inst); ICON.look.reset(); W.push(inst) end
+  function OP.pick_mic(inst, b)
+    if type(b.name) ~= "string" then return end
+    for _, list in ipairs({ W.devs or {}, deviceCache or {} }) do
+      for _, d in ipairs(list) do
+        if d.name == b.name then
+          config.audioDevice = d.idx; config.micName = d.name; persist("micDevice", d.idx); persist("micName", d.name)
+          return
+        end
+      end
+    end
+    log("pick_mic: dispositivo sconosciuto"); W.toast(inst, "Microfono non trovato: aggiorna la lista")
+  end
+  function OP.refresh_devices(inst) W.refreshDevices(inst) end
+  function OP.key_paste(inst) SET.K.paste() end
+  function OP.key_remove(inst)
+    os.remove(config.keyPath)
+    SET.K.refresh(); SET.K.exp = false; SET.K.q = 0
+    SET.K.setMsg("info", "Chiave rimossa")
+    W.push(inst)
+  end
+  function OP.open_groq(inst) SET.K.open() end
+  function OP.capture_start(inst, b)
+    if b.action ~= "ss" and b.action ~= "pause" then return end
+    startCapture(b.action)
+  end
+  function OP.capture_cancel(inst)
+    local had = ICON.capTap ~= nil
+    if ICON.capTap then pcall(function() ICON.capTap:stop() end); ICON.capTap = nil end
+    if ICON.capT then pcall(function() ICON.capT:stop() end); ICON.capT = nil end
+    if had then W.capture({ ok = false, reason = "cancel" }) end
+  end
+  local function bindList(a) if a == "ss" then return config.ssBindings elseif a == "pause" then return config.pauseBindings end end
+  function OP.key_remove_binding(inst, b)
+    local list = bindList(b.action); local i = tonumber(b.index)
+    if not list or not i or i ~= math.floor(i) then return end
+    i = i + 1                                                    -- indice JS (da 0) -> Lua
+    if list[i] then table.remove(list, i); saveBindings() end
+  end
+  function OP.key_set_gesture(inst, b)
+    local list = bindList(b.action); local i = tonumber(b.index)
+    if not list or not i or i ~= math.floor(i) then return end
+    local okG = (b.action == "ss") and { double = true, single = true, hold = true } or { single = true, double = true }
+    if type(b.gesture) ~= "string" or not okG[b.gesture] then return end
+    i = i + 1
+    if list[i] then list[i].gesture = b.gesture; saveBindings() end
+  end
+
+  -- trascinamento finestra: eventtap SOLO durante il drag, con rilascio garantito (mouse su, timeout 15 s, chiusura)
+  function OP.drag_start(inst)
+    if inst.dragTap or not inst.wv then return end
+    local m0 = hs.mouse.absolutePosition(); local f0 = inst.wv:frame()
+    local off = { dx = m0.x - f0.x, dy = m0.y - f0.y }
+    local T = hs.eventtap.event.types
+    local function release()
+      if inst.dragTap then local t = inst.dragTap; inst.dragTap = nil; pcall(function() t:stop() end) end
+      if inst.dragGuard then local t = inst.dragGuard; inst.dragGuard = nil; pcall(function() t:stop() end) end
+      if inst.wv then local ok, f = pcall(inst.wv.frame, inst.wv); if ok and f then W.pos = { cx = f.x + f.w / 2, top = f.y } end end
+    end
+    inst.dragTap = hs.eventtap.new({ T.leftMouseDragged, T.leftMouseUp }, function(e)
+      pcall(function()
+        if inst.dead or not inst.wv then release(); return end
+        if e:getType() == T.leftMouseUp then release(); return end
+        local m = hs.mouse.absolutePosition()
+        local f = inst.wv:frame()
+        local c = clampFrame({ x = m.x - off.dx, y = m.y - off.dy, w = f.w, h = f.h })
+        inst.wv:topLeft({ x = c.x, y = c.y })
+      end)
+      return false
+    end)
+    inst.dragTap:start()
+    local t0 = now_()
+    inst.dragGuard = hs.timer.doEvery(0.25, function()
+      local down = true
+      if hs.mouse and type(hs.mouse.getButtons) == "function" then
+        local ok, bt = pcall(hs.mouse.getButtons)
+        if ok and type(bt) == "table" then down = (bt[1] == true or bt.left == true) end
+      end
+      if inst.dead or not down or now_() - t0 > 15 then release() end
+    end)
+  end
+
+  -- ridimensionamento animato: larghezza centrata sul centro x, bordo alto fisso, dentro lo schermo
+  function OP.resize_request(inst, b)
+    local w, h = tonumber(b.w), tonumber(b.h)
+    if not w or not h or w ~= w or h ~= h or w == math.huge or h == math.huge then return end
+    local sf = hs.screen.mainScreen():frame()
+    w = math.floor(clampN(w, 240, math.max(240, math.min(sf.w - 24, W.maxW)))); h = math.floor(clampN(h, 160, math.max(160, math.min(sf.h - 24, W.maxH))))
+    local f = inst.wv:frame()
+    local top = f.y
+    if top + h > sf.y + sf.h then top = math.max(sf.y, sf.y + sf.h - h) end
+    local to = { x = f.x + f.w / 2 - w / 2, y = top, w = w, h = h }
+    to.x = clampN(to.x, sf.x, math.max(sf.x, sf.x + sf.w - w))
+    if inst.animT then inst.animT:stop(); inst.animT = nil end
+    local from = { x = f.x, y = f.y, w = f.w, h = f.h }
+    if math.abs(from.w - to.w) < 1 and math.abs(from.h - to.h) < 1 and math.abs(from.x - to.x) < 1 and math.abs(from.y - to.y) < 1 then return end
+    if inst.tReady and now_() - inst.tReady < 0.6 and not inst.anim1 then       -- la misura iniziale della pagina: subito, senza animare
+      inst.anim1 = true; inst.wv:frame(to); return
+    end
+    inst.anim1 = true
+    local N, i = 8, 0
+    inst.animT = hs.timer.doEvery(1 / 60, function()
+      if inst.dead or not inst.wv then return end
+      i = i + 1
+      local e = 1 - (1 - i / N) ^ 3
+      if i >= N then
+        if inst.animT then inst.animT:stop(); inst.animT = nil end
+        e = 1
+      end
+      pcall(function() inst.wv:frame({ x = from.x + (to.x - from.x) * e, y = from.y + (to.y - from.y) * e,
+        w = from.w + (to.w - from.w) * e, h = from.h + (to.h - from.h) * e }) end)
+    end)
+  end
+
+  -- ---------- asset locali di tema: ~/.config/groq-dictation/themes/<styleId>/*.png|gif|jpg|webp (li mette Sasha, non sono nel repo) ----------
+  -- Metodo (verificato dallo spike): la pagina e' un FILE caricato con url(); le immagini si riferiscono con file:///ASSOLUTO/themes/<id>/x.gif
+  -- (percent-encoded), serviti da WebKit: niente lettura/base64 qui, le GIF si animano. Con html(str) le file:// sono bloccate: in quel caso
+  -- gli asset sono disattivati. SOSTITUIBILE: ridefinire ICON.web.assetUrl(path, ext, size) -> url|nil.
+  -- Tetti: 20 file/stile, 5 MB/file, 600 file in tutto, ~0,25 s di lavoro per giro.
+  W.MIME = { png = true, gif = true, jpg = true, jpeg = true, webp = true }
+  W.CAP = { files = 20, bytes = 5 * 1024 * 1024, total = 600 }
+  function W.assetUrl(path, ext, size) return "file://" .. pctEncode(path) end
+  function W.scanAssets(inst)
+    if inst.mode ~= "file" then return end                                             -- html(str): file:// bloccate
+    local base = dir_() .. "/themes"
+    local okA, aBase = pcall(hs.fs.attributes, base)
+    if not okA or type(aBase) ~= "table" or aBase.mode ~= "directory" then return end          -- nessuna cartella temi: niente da fare
+    local ok, it, dobj = pcall(hs.fs.dir, base)
+    if not ok or type(it) ~= "function" then return end
+    local styles = {}
+    local okl = pcall(function()
+      for name in it, dobj do
+        if #styles >= 200 then break end
+        if type(name) == "string" and FAMILIES[name] then styles[#styles + 1] = name end
+      end
+    end)
+    if not okl or #styles == 0 then return end
+    table.sort(styles)
+    local out, total, idx = {}, 0, 0
+    local function step()
+      inst.scanT = nil
+      if inst.dead then return end
+      local t0 = os.clock()
+      while idx < #styles and os.clock() - t0 < 0.25 do
+        idx = idx + 1
+        local sid = styles[idx]
+        local dir = base .. "/" .. sid
+        local isDir = false
+        pcall(function() local a = hs.fs.symlinkAttributes and hs.fs.symlinkAttributes(dir) or hs.fs.attributes(dir); isDir = a and a.mode == "directory" end)
+        if isDir then
+          local files = {}
+          local ok2, it2, d2 = pcall(hs.fs.dir, dir)
+          if ok2 and type(it2) == "function" then
+            pcall(function() for n in it2, d2 do if type(n) == "string" and n:match("^[%w][%w_%-%.]*$") and #files < 400 then files[#files + 1] = n end end end)
+          end
+          table.sort(files)
+          local cnt = 0
+          for _, n in ipairs(files) do
+            if cnt >= W.CAP.files or total >= W.CAP.total then break end
+            local base_, ext = n:match("^([%w_%-]+)%.(%a+)$")
+            ext = ext and ext:lower()
+            if base_ and W.MIME[ext] then
+              local p = dir .. "/" .. n
+              local a = nil
+              pcall(function() a = hs.fs.symlinkAttributes and hs.fs.symlinkAttributes(p) or hs.fs.attributes(p) end)
+              if a and a.mode == "file" and (a.size or 0) > 0 and a.size <= W.CAP.bytes then
+                local okU, url = pcall(W.assetUrl, p, ext, a.size)
+                if okU and type(url) == "string" then
+                  out[sid] = out[sid] or {}; out[sid][base_] = url
+                  cnt = cnt + 1; total = total + 1
+                end
+              end
+            end
+          end
+        end
+      end
+      if idx < #styles then inst.scanT = hs.timer.doAfter(0.01, step); return end
+      if next(out) then inst.assets = out; inst.assetsPending = true; W.push(inst) end
+    end
+    inst.scanT = hs.timer.doAfter(0.02, step)
+  end
+
+  -- ---------- instradamento: tutti i punti d'ingresso (menu, bottone HUD, M.settings) passano da qui ----------
+  openSettings = function()
+    local ok, e = pcall(W.open)
+    if not ok then
+      log("apertura: " .. tostring(e)); W.failed = tostring(e)
+      if W.cur then pcall(W.teardown, W.cur) end
+      canvasOpen()
+    end
+  end
+  closeSettings = function()
+    if W.cur then pcall(W.close) end
+    canvasClose()
+  end
+  W.OP = OP
+  return W
+end)()
 
 function M.update() checkUpdate(false) end
 -- Ritrascrive a mano l'audio salvato/recuperato che non ha ancora un testo (.txt) accanto.
